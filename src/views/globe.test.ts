@@ -6,8 +6,7 @@ import {
   RELIEF_EXAGGERATION,
   clusterFeatures,
   createGlobeView,
-  labelsOverlap,
-  markerVisibility,
+  onNearSide,
   sampleTile,
   subsolarPoint,
 } from './globe';
@@ -129,28 +128,42 @@ test('co-located features build one marker group, named for the flagship', () =>
   expect(groups[0]!.name).toBe('feature-Home');
 });
 
-test('markerVisibility hides everything past the limb and labels far from view center', () => {
+test('onNearSide admits markers up to the limb and rejects the far side', () => {
   const cam = new THREE.Vector3(0, 0, 6); // r/d = 1/3 → horizon ≈ 70.5°
   const at = (thetaDeg: number) => {
     const t = (thetaDeg * Math.PI) / 180;
     return new THREE.Vector3(Math.sin(t), 0, Math.cos(t));
   };
-  expect(markerVisibility(at(0), cam, 2)).toEqual({ dot: true, label: true });
-  expect(markerVisibility(at(20), cam, 2)).toEqual({ dot: true, label: true });
-  // Past the 30° label cap but well inside the horizon: dot only.
-  expect(markerVisibility(at(60), cam, 2)).toEqual({ dot: true, label: false });
-  // The far side: nothing.
-  expect(markerVisibility(at(180), cam, 2)).toEqual({ dot: false, label: false });
+  expect(onNearSide(at(0), cam, 2)).toBe(true);
+  expect(onNearSide(at(60), cam, 2)).toBe(true);
+  expect(onNearSide(at(90), cam, 2)).toBe(false); // past the ≈70.5° horizon
+  expect(onNearSide(at(180), cam, 2)).toBe(false);
 });
 
-test('markerVisibility tightens the label circle as the camera closes in', () => {
-  const cam = new THREE.Vector3(0, 0, 2.4); // horizon ≈ 33.6°, label cut ≈ 20.1°
-  const at = (thetaDeg: number) => {
-    const t = (thetaDeg * Math.PI) / 180;
-    return new THREE.Vector3(Math.sin(t), 0, Math.cos(t));
-  };
-  expect(markerVisibility(at(15), cam, 2)).toEqual({ dot: true, label: true });
-  expect(markerVisibility(at(25), cam, 2)).toEqual({ dot: true, label: false });
+test('labels stay hidden until their site is selected', () => {
+  const tiles = markerTiles([
+    { name: 'Alpha', kind: 'settlement', latitude: 0, longitude: 10 },
+    { name: 'Beta', kind: 'settlement', latitude: 5, longitude: 40 },
+  ]);
+  const view = createGlobeView(tiles, spinningSys());
+  const labelOf = (name: string) =>
+    view.object3d.getObjectByName(`feature-${name}`)!.children.find((c) => (c as THREE.Sprite).isSprite)! as THREE.Sprite;
+  const dotOf = (name: string) =>
+    view.object3d.getObjectByName(`feature-${name}`)!.children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
+  view.object3d.updateMatrixWorld(true);
+  const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.05, 100);
+  camera.position.copy(dotOf('Alpha').getWorldPosition(new THREE.Vector3()).normalize().multiplyScalar(6));
+  camera.lookAt(0, 0, 0);
+  view.update(0, camera);
+  expect(labelOf('Alpha').visible).toBe(false);
+  expect(labelOf('Beta').visible).toBe(false);
+  view.setSelected('Alpha');
+  view.update(0, camera);
+  expect(labelOf('Alpha').visible).toBe(true);
+  expect(labelOf('Beta').visible).toBe(false);
+  view.setSelected(null);
+  view.update(0, camera);
+  expect(labelOf('Alpha').visible).toBe(false);
 });
 
 test('update(day, camera) hides far-side markers and shows near ones', () => {
@@ -167,36 +180,6 @@ test('update(day, camera) hides far-side markers and shows near ones', () => {
   camera.position.copy(facing).negate();
   view.update(0, camera);
   expect(dot.visible).toBe(false);
-});
-
-test('labelsOverlap is a plain half-extent rectangle test', () => {
-  const a = { x: 0, y: 0, halfW: 0.2, halfH: 0.1 };
-  expect(labelsOverlap(a, { x: 0.3, y: 0, halfW: 0.2, halfH: 0.1 })).toBe(true);
-  expect(labelsOverlap(a, { x: 0.5, y: 0, halfW: 0.2, halfH: 0.1 })).toBe(false);
-  expect(labelsOverlap(a, { x: 0, y: 0.15, halfW: 0.2, halfH: 0.1 })).toBe(true);
-  expect(labelsOverlap(a, { x: 0, y: 0.25, halfW: 0.2, halfH: 0.1 })).toBe(false);
-});
-
-test('of two labels that would overprint on screen, the one nearer view center wins', () => {
-  const tiles = markerTiles([
-    { name: 'Alpha', kind: 'settlement', latitude: 0, longitude: 10 },
-    { name: 'Beta', kind: 'settlement', latitude: 3, longitude: 13 },
-  ]);
-  const view = createGlobeView(tiles, spinningSys());
-  const alpha = view.object3d.getObjectByName('feature-Alpha')!;
-  const beta = view.object3d.getObjectByName('feature-Beta')!;
-  const dotOf = (g: THREE.Object3D) => g.children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
-  const labelOf = (g: THREE.Object3D) => g.children.find((c) => (c as THREE.Sprite).isSprite)! as THREE.Sprite;
-  view.object3d.updateMatrixWorld(true);
-  // Camera dead-on Alpha: both sites pass the proximity gate, their sprites
-  // collide on screen, and Alpha is nearer the view center.
-  const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.05, 100);
-  camera.position.copy(dotOf(alpha).getWorldPosition(new THREE.Vector3()).normalize().multiplyScalar(6));
-  camera.lookAt(0, 0, 0);
-  view.update(0, camera);
-  expect(labelOf(alpha).visible).toBe(true);
-  expect(labelOf(beta).visible).toBe(false);
-  expect(dotOf(beta).visible).toBe(true); // the dot still marks the site
 });
 
 test('subsolar longitude is frozen for a tidally locked world', () => {

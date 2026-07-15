@@ -441,6 +441,8 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       for (let o: THREE.Object3D | null = hit.object; o; o = o.parent) {
         const target = namedTarget(o.name);
         if (!target) continue;
+        // Any non-feature card supersedes a selected site's label.
+        if (target.kind !== 'feature') globeView.setSelected(null);
         if (target.kind === 'star') return infoCard.show(starInfo(system));
         if (target.kind === 'world') return infoCard.show(worldInfo(system, day));
         if (target.kind === 'moon') return infoCard.show(moonInfo(system, target.index, day));
@@ -451,12 +453,17 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
           const residents = tiles.features
             .filter((x) => x.latitude === f.latitude && x.longitude === f.longitude)
             .sort((a, b) => Number(b.kind === 'flagship') - Number(a.kind === 'flagship'));
+          globeView.setSelected(target.name); // the clicked site wears its label
           return infoCard.show(siteInfo(tiles, residents));
         }
       }
     }
+    globeView.setSelected(null);
     infoCard.hide(); // click-away on empty space
   }
+  // The card's own Escape handler only hides the card; the site label
+  // follows the same dismissal.
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') globeView.setSelected(null); });
   systemCanvas.addEventListener('pointerdown', onPointerDown);
   globeCanvas.addEventListener('pointerdown', onPointerDown);
   systemCanvas.addEventListener('pointerup', (e) => pick(e, systemCamera, systemScene));

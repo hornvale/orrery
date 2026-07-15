@@ -159,6 +159,7 @@ function buildSiteMarker(tiles: TilesScene, site: FeatureSite): Marker {
     new THREE.MeshBasicMaterial({ color: site.hasFlagship ? 0xffd76e : 0xe8e8f0 }),
   );
   const label = buildLabelSprite(site.names);
+  label.visible = false; // labels are quiet by default; selection shows them
   group.add(dot);
   group.add(label);
   return { group, dot, label, up, elevationM: sampleTile(tiles, site.latitude, site.longitude, 'elevation_m') };
@@ -169,41 +170,13 @@ function buildSiteMarker(tiles: TilesScene, site: FeatureSite): Marker {
  * (barely) visible; hide it a touch past instead of exactly at. */
 const DOT_HORIZON_SLACK = 0.02;
 
-/** Labels show inside this fraction of the visible cap's angular radius —
- * aiming the camera at a region names that region, while the rest of the
- * disc stays uncluttered dots. */
-const LABEL_VIEW_FRACTION = 0.6;
-
-/** Hard cap on the label circle (radians) so a far-out camera, whose
- * horizon is nearly a hemisphere, doesn't light up every label at once. */
-const LABEL_MAX_ANGLE = Math.PI / 6;
-
-/** What of a marker shows for this camera: the dot whenever its site is on
- * the near side of the globe (a point at angle θ from the camera direction
- * is past the limb when cos θ < r/d), the label only when the site is
- * additionally near the view center — proximity, not a permanent shout. */
-export function markerVisibility(
-  upWorld: THREE.Vector3,
-  cameraPos: THREE.Vector3,
-  radius: number,
-): { dot: boolean; label: boolean } {
+/** Whether a surface point at world-frame direction `upWorld` is on the
+ * camera's side of the globe: a point at angle θ from the camera direction
+ * passes the limb when cos θ < r/d. */
+export function onNearSide(upWorld: THREE.Vector3, cameraPos: THREE.Vector3, radius: number): boolean {
   const d = cameraPos.length();
-  if (d <= radius) return { dot: false, label: false };
-  const horizonCos = radius / d;
-  const cosTheta = upWorld.dot(cameraPos) / d;
-  const dot = cosTheta > horizonCos - DOT_HORIZON_SLACK;
-  const theta = Math.acos(Math.min(1, Math.max(-1, cosTheta)));
-  const labelCut = Math.min(LABEL_VIEW_FRACTION * Math.acos(Math.min(1, horizonCos)), LABEL_MAX_ANGLE);
-  return { dot, label: dot && theta < labelCut };
-}
-
-/** A label's screen-space footprint in NDC: center plus half-extents. */
-export interface LabelRect { x: number; y: number; halfW: number; halfH: number }
-
-/** Whether two label footprints overlap — the test behind label collision
- * culling (nearby sites would otherwise overprint into unreadable text). */
-export function labelsOverlap(a: LabelRect, b: LabelRect): boolean {
-  return Math.abs(a.x - b.x) < a.halfW + b.halfW && Math.abs(a.y - b.y) < a.halfH + b.halfH;
+  if (d <= radius) return false;
+  return upWorld.dot(cameraPos) / d > radius / d - DOT_HORIZON_SLACK;
 }
 
 /** Seat a marker on the terrain as the mesh renders it: the dot at the
@@ -223,12 +196,16 @@ export interface GlobeView {
   object3d: THREE.Object3D;
   /** Repositions the terminator light and spins the mesh for `day`; call
    * every frame. Given the rendering `camera`, also culls markers past the
-   * limb and keeps labels to sites near the view center — omitting it (a
-   * caller that predates marker gating) leaves every marker shown. */
+   * limb and shows the selected site's label — omitting it (a caller that
+   * predates marker gating) leaves every marker shown. */
   update(day: number, camera?: THREE.Camera): void;
   /** Toggle exaggerated relief (the default, `RELIEF_EXAGGERATION`×) vs true
    * (1×) relief — swaps in lazily built true-scale face geometry. */
   setTrueRelief(on: boolean): void;
+  /** Select the site whose marker group is named for `featureName` — its
+   * stacked name label shows (while on the near side) until deselected with
+   * `null`. Labels are quiet by default; a click asks for a name. */
+  setSelected(featureName: string | null): void;
 }
 
 /** Build the globe view: a cube-sphere mesh displaced by real relief,
@@ -283,8 +260,12 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   root.add(light);
   root.add(light.target);
 
+  let selectedGroup: string | null = null;
+  function setSelected(featureName: string | null): void {
+    selectedGroup = featureName === null ? null : `feature-${featureName}`;
+  }
+
   const upWorld = new THREE.Vector3(); // update()'s scratch — no per-frame allocation
-  const labelPos = new THREE.Vector3();
   const zAxis = new THREE.Vector3(0, 0, 1);
   function update(day: number, camera?: THREE.Camera): void {
     const sub = subsolarPoint(sys, day);
@@ -294,45 +275,15 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = rotationPhase(sys, day) * TAU;
     if (!camera) return;
-    // Pass 1: per-marker limb/proximity gating; collect label candidates
-    // with how close each sits to the view center.
-    const candidates: { m: Marker; cosTheta: number }[] = [];
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
-      const vis = markerVisibility(upWorld, camera.position, GLOBE_RADIUS);
-      m.dot.visible = vis.dot;
-      m.label.visible = false;
-      if (vis.label) {
-        candidates.push({ m, cosTheta: upWorld.dot(camera.position) / camera.position.length() });
-      }
-    }
-    // Pass 2: screen-space collision culling, nearest view center first —
-    // neighboring sites would otherwise overprint into unreadable text.
-    // Off-axis projection distortion is ignored; labels live near the view
-    // center by construction, where the half-extent estimate is accurate.
-    camera.updateMatrixWorld();
-    const fovDeg = (camera as THREE.PerspectiveCamera).fov ?? 50;
-    const aspect = (camera as THREE.PerspectiveCamera).aspect ?? 1;
-    const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
-    candidates.sort((a, b) => b.cosTheta - a.cosTheta);
-    const accepted: LabelRect[] = [];
-    for (const { m } of candidates) {
-      labelPos.copy(m.label.position).applyAxisAngle(zAxis, spinGroup.rotation.z);
-      const dist = labelPos.distanceTo(camera.position);
-      labelPos.project(camera);
-      const rect: LabelRect = {
-        x: labelPos.x,
-        y: labelPos.y,
-        halfW: m.label.scale.x / 2 / (dist * tanHalfFov * aspect),
-        halfH: m.label.scale.y / 2 / (dist * tanHalfFov),
-      };
-      if (accepted.some((r) => labelsOverlap(r, rect))) continue;
-      accepted.push(rect);
-      m.label.visible = true;
+      const near = onNearSide(upWorld, camera.position, GLOBE_RADIUS);
+      m.dot.visible = near;
+      m.label.visible = near && m.group.name === selectedGroup;
     }
   }
 
   update(0);
 
-  return { object3d: root, update, setTrueRelief };
+  return { object3d: root, update, setTrueRelief, setSelected };
 }
