@@ -215,6 +215,18 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       systemControls.minDistance = on ? 5e-4 : WORLD_CLOSE_DISTANCE;
       systemCamera.near = on ? 1e-5 : 0.05;
       systemCamera.updateProjectionMatrix();
+      if (!on) {
+        // Returning to schematic from a deep true-scale zoom: re-frame
+        // OUTSIDE the restored floor ourselves. Left alone, OrbitControls'
+        // next update() hard-clamps the camera onto minDistance exactly —
+        // which is also the wheel handoff's trigger boundary, so the next
+        // inward scroll would descend to the globe as a surprise.
+        const offset = systemCamera.position.clone().sub(systemControls.target);
+        const comfortable = WORLD_CLOSE_DISTANCE * 1.5;
+        if (offset.length() < comfortable) {
+          systemCamera.position.copy(systemControls.target).add(offset.setLength(comfortable));
+        }
+      }
     } else {
       globeView.setTrueRelief(on);
     }
