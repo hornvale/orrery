@@ -281,6 +281,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       playStartMs = performance.now();
       dayAtPlayStart = day;
       hud.setDay(day % system.world.yearDays);
+      updateDateLine();
       renderFrame();
       syncUrl(true);
     },
@@ -289,10 +290,19 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       day = Math.floor(day / system.world.yearDays) * system.world.yearDays + scrubbedDay;
       playStartMs = performance.now();
       dayAtPlayStart = day;
+      updateDateLine();
       renderFrame();
       syncUrl(true);
     },
   };
+
+  /** Repaints the calendar text for the current `day`. Every discrete day
+   * mutation (jump, scrub, hash edit) calls this directly — autoplay's
+   * per-frame update is gated on `!paused`, so without these calls the
+   * date line goes stale exactly when the user pauses to look at a date. */
+  function updateDateLine(): void {
+    hud.setDate(formatRawDate(dayToRawDate(day, system.world.yearDays)));
+  }
   const hud = buildHud(hudRoot, state.seed, cb);
   setCaptionFor(view);
   setViewButtonFor(view);
@@ -300,7 +310,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
   hud.setActiveSpeed(speedMemory.restore(view));
   hud.setDay(day % system.world.yearDays);
-  hud.setDate(formatRawDate(dayToRawDate(day, system.world.yearDays)));
+  updateDateLine();
 
   // Reading the URL happens once at boot (above, via `boot()`'s initial
   // state) plus here on `hashchange` — a user editing the address bar by
@@ -326,6 +336,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       dayAtPlayStart = day;
       playStartMs = performance.now();
       hud.setDay(day % system.world.yearDays);
+      updateDateLine();
     }
   });
 
@@ -333,7 +344,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
     if (!paused) {
       day = dayAtPlayStart + clockToDay(performance.now() - playStartMs, daysPerSecond);
       hud.setDay(day % system.world.yearDays);
-      hud.setDate(formatRawDate(dayToRawDate(day, system.world.yearDays)));
+      updateDateLine();
     }
     renderFrame();
     syncUrl();
