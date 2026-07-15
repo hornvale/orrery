@@ -1,6 +1,11 @@
 // The catalog: hornvale's world-wasm behind a typed loader. The ABI is
 // hw_* over linear memory (hornvale spec 2026-07-14-goldengrove §3).
 
+/** The pinned world-wasm release this client is built against (spec §5);
+ * named in fetch-failure errors so a stale deploy or wrong URL is
+ * unambiguous, and matches the tag the README documents. */
+export const CATALOG_VERSION = "world-wasm-v1";
+
 /** A genesis or scene call refused; `code` is the raw hw_* status. */
 export class CatalogError extends Error {
   constructor(
@@ -65,7 +70,8 @@ export interface Catalog {
 /** Fetch and instantiate the world-wasm catalog at `wasmUrl`. */
 export async function loadCatalog(wasmUrl: string): Promise<Catalog> {
   const res = await fetch(wasmUrl);
-  if (!res.ok) throw new CatalogFetchError(`catalog fetch failed: ${res.status} ${wasmUrl}`, -100);
+  if (!res.ok)
+    throw new CatalogFetchError(`catalog ${CATALOG_VERSION} fetch failed: ${res.status} ${wasmUrl}`, -100);
   const { instance } = await WebAssembly.instantiate(await res.arrayBuffer(), {});
   const e = instance.exports as unknown as HwExports;
   const check = (code: number) => {

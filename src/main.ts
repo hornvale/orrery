@@ -275,7 +275,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       syncUrl(true);
     },
   };
-  const hud = buildHud(hudRoot, String(system.seed), cb);
+  const hud = buildHud(hudRoot, state.seed, cb);
   setCaptionFor(view);
   setViewButtonFor(view);
   hud.setDayRange(system.world.yearDays);
