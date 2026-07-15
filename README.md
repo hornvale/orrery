@@ -1,8 +1,10 @@
-# goldengrove
+# orrery
 
 The planetarium: a glamorous 3D client for [Hornvale](https://github.com/hornvale/hornvale)
-worlds. Enter a seed; genesis runs in your browser via the world-wasm
-catalog; the system and the globe render in three.js.
+worlds — live at <https://hornvale.github.io/orrery/>. Enter a seed; genesis
+runs in your browser via the world-wasm catalog; the system and the globe
+render in three.js. (Formerly `goldengrove`; renamed 2026-07-14 — Pages
+URLs do not redirect, so the old `/goldengrove/` path is gone.)
 
 Lineage: the three.js views descend from bitterbridge/goldengrove; the
 ephemeris/scene modules from hornvale's retired in-book orrery client.

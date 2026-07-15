@@ -17,7 +17,7 @@ jobs:
       - run: npm test
       - run: npm run wasm:release
       - run: npm run smoke
-      - run: npm run build -- --base=/goldengrove/
+      - run: npm run build -- --base=/orrery/
       - uses: actions/upload-pages-artifact@v3
         with: { path: dist }
   deploy:
