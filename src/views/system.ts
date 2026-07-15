@@ -114,8 +114,9 @@ function buildOrbitLine(radiusUnits: number): THREE.LineLoop {
 }
 
 /** Build the system's three.js scene graph: star sphere tinted by spectral
- * class, an HZ annulus, the world's orbit line, the world sphere, and its
- * moons — all positioned by `update(day)` from the golden-pinned
+ * class, an HZ annulus, the world's orbit line, the world itself (six
+ * cube-sphere faces wearing the real tile colors, spun by rotationPhase),
+ * and its moons — all positioned by `update(day)` from the golden-pinned
  * ephemeris. */
 export function createSystemView(sys: SystemScene, tiles: TilesScene): SystemView {
   const root = new THREE.Object3D();

@@ -32,12 +32,6 @@ canvas { display: block; }
 .error-schema h1 { color: #c792ea; }
 .error-seed-parse h1 { color: #e2574c; }
 .error-unknown h1 { color: #9fb0c8; }
-.compass-window { position: relative; width: 100%; height: 16px; overflow: hidden; }
-.compass-tape { position: absolute; top: 0; height: 100%; white-space: nowrap; }
-.compass-mark { position: absolute; font-size: 0.65rem; color: #9fb0c8; transform: translateX(-50%); }
-.compass-mark.cardinal { color: #f5d76e; font-weight: bold; }
-.compass-needle { font-size: 0.55rem; color: #f5d76e; line-height: 0.6; }
-.compass-readout { font-size: 0.7rem; }
 .info-card { position: absolute; top: 56px; right: 12px; max-width: 280px; padding: 10px 14px;
   background: rgba(8, 12, 22, 0.85); border: 1px solid #2c3550; border-radius: 6px;
   font-size: 0.8rem; color: #cfd8e3; }

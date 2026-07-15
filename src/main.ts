@@ -5,9 +5,8 @@
 // system camera dollies toward the world's own position as the zoom
 // (src/views/zoom.ts) eases between them. One shared rAF loop owns `day`.
 // Deep links round-trip through `history.replaceState` (no reload, no
-// scroll-jack) — the one exception is a hand-edited `#seed=`, which reloads
-// the page: a live reroll-without-reload is out of this task's scope (see
-// `onReroll`'s stub below).
+// scroll-jack) — the one exception is a changed `#seed=` (hand-edited or
+// rerolled), which deliberately reloads the page: genesis is a fresh boot.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './styles.css';
@@ -372,7 +371,9 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
     onShare() {
       navigator.clipboard.writeText(location.href).then(
         () => hud.flashShared(),
-        () => hud.setDate('copy failed — copy the address bar'), // clipboard can be denied; the date line self-heals next frame
+        // Clipboard can be denied; the date line carries the notice until
+        // the next date repaint (next unpaused frame or discrete jump).
+        () => hud.setDate('copy failed — copy the address bar'),
       );
     },
     onDateJump(year, dayOfYear) {
