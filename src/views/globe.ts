@@ -197,6 +197,15 @@ export function markerVisibility(
   return { dot, label: dot && theta < labelCut };
 }
 
+/** A label's screen-space footprint in NDC: center plus half-extents. */
+export interface LabelRect { x: number; y: number; halfW: number; halfH: number }
+
+/** Whether two label footprints overlap — the test behind label collision
+ * culling (nearby sites would otherwise overprint into unreadable text). */
+export function labelsOverlap(a: LabelRect, b: LabelRect): boolean {
+  return Math.abs(a.x - b.x) < a.halfW + b.halfW && Math.abs(a.y - b.y) < a.halfH + b.halfH;
+}
+
 /** Seat a marker on the terrain as the mesh renders it: the dot at the
  * face-geometry displacement formula plus `MARKER_CLEARANCE`, the label
  * floating just above the dot by its own half-height. */
@@ -275,6 +284,7 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   root.add(light.target);
 
   const upWorld = new THREE.Vector3(); // update()'s scratch — no per-frame allocation
+  const labelPos = new THREE.Vector3();
   const zAxis = new THREE.Vector3(0, 0, 1);
   function update(day: number, camera?: THREE.Camera): void {
     const sub = subsolarPoint(sys, day);
@@ -284,11 +294,41 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = rotationPhase(sys, day) * TAU;
     if (!camera) return;
+    // Pass 1: per-marker limb/proximity gating; collect label candidates
+    // with how close each sits to the view center.
+    const candidates: { m: Marker; cosTheta: number }[] = [];
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
       const vis = markerVisibility(upWorld, camera.position, GLOBE_RADIUS);
       m.dot.visible = vis.dot;
-      m.label.visible = vis.label;
+      m.label.visible = false;
+      if (vis.label) {
+        candidates.push({ m, cosTheta: upWorld.dot(camera.position) / camera.position.length() });
+      }
+    }
+    // Pass 2: screen-space collision culling, nearest view center first —
+    // neighboring sites would otherwise overprint into unreadable text.
+    // Off-axis projection distortion is ignored; labels live near the view
+    // center by construction, where the half-extent estimate is accurate.
+    camera.updateMatrixWorld();
+    const fovDeg = (camera as THREE.PerspectiveCamera).fov ?? 50;
+    const aspect = (camera as THREE.PerspectiveCamera).aspect ?? 1;
+    const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
+    candidates.sort((a, b) => b.cosTheta - a.cosTheta);
+    const accepted: LabelRect[] = [];
+    for (const { m } of candidates) {
+      labelPos.copy(m.label.position).applyAxisAngle(zAxis, spinGroup.rotation.z);
+      const dist = labelPos.distanceTo(camera.position);
+      labelPos.project(camera);
+      const rect: LabelRect = {
+        x: labelPos.x,
+        y: labelPos.y,
+        halfW: m.label.scale.x / 2 / (dist * tanHalfFov * aspect),
+        halfH: m.label.scale.y / 2 / (dist * tanHalfFov),
+      };
+      if (accepted.some((r) => labelsOverlap(r, rect))) continue;
+      accepted.push(rect);
+      m.label.visible = true;
     }
   }
 

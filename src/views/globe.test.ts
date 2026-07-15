@@ -6,6 +6,7 @@ import {
   RELIEF_EXAGGERATION,
   clusterFeatures,
   createGlobeView,
+  labelsOverlap,
   markerVisibility,
   sampleTile,
   subsolarPoint,
@@ -166,6 +167,36 @@ test('update(day, camera) hides far-side markers and shows near ones', () => {
   camera.position.copy(facing).negate();
   view.update(0, camera);
   expect(dot.visible).toBe(false);
+});
+
+test('labelsOverlap is a plain half-extent rectangle test', () => {
+  const a = { x: 0, y: 0, halfW: 0.2, halfH: 0.1 };
+  expect(labelsOverlap(a, { x: 0.3, y: 0, halfW: 0.2, halfH: 0.1 })).toBe(true);
+  expect(labelsOverlap(a, { x: 0.5, y: 0, halfW: 0.2, halfH: 0.1 })).toBe(false);
+  expect(labelsOverlap(a, { x: 0, y: 0.15, halfW: 0.2, halfH: 0.1 })).toBe(true);
+  expect(labelsOverlap(a, { x: 0, y: 0.25, halfW: 0.2, halfH: 0.1 })).toBe(false);
+});
+
+test('of two labels that would overprint on screen, the one nearer view center wins', () => {
+  const tiles = markerTiles([
+    { name: 'Alpha', kind: 'settlement', latitude: 0, longitude: 10 },
+    { name: 'Beta', kind: 'settlement', latitude: 3, longitude: 13 },
+  ]);
+  const view = createGlobeView(tiles, spinningSys());
+  const alpha = view.object3d.getObjectByName('feature-Alpha')!;
+  const beta = view.object3d.getObjectByName('feature-Beta')!;
+  const dotOf = (g: THREE.Object3D) => g.children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
+  const labelOf = (g: THREE.Object3D) => g.children.find((c) => (c as THREE.Sprite).isSprite)! as THREE.Sprite;
+  view.object3d.updateMatrixWorld(true);
+  // Camera dead-on Alpha: both sites pass the proximity gate, their sprites
+  // collide on screen, and Alpha is nearer the view center.
+  const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.05, 100);
+  camera.position.copy(dotOf(alpha).getWorldPosition(new THREE.Vector3()).normalize().multiplyScalar(6));
+  camera.lookAt(0, 0, 0);
+  view.update(0, camera);
+  expect(labelOf(alpha).visible).toBe(true);
+  expect(labelOf(beta).visible).toBe(false);
+  expect(dotOf(beta).visible).toBe(true); // the dot still marks the site
 });
 
 test('subsolar longitude is frozen for a tidally locked world', () => {
