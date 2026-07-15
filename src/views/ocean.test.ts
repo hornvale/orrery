@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import {
   DEEP_ALPHA,
   DEEP_FULL_M,
   SHALLOW_ALPHA,
   seaLevelRadius,
   waterColorAlpha,
+  buildOceanGeometry,
 } from './ocean';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import type { TilesScene } from '../sim/scene';
@@ -46,5 +48,40 @@ describe('waterColorAlpha', () => {
   });
   it('darkens color with depth', () => {
     expect(waterColorAlpha(DEEP_FULL_M).b).toBeLessThan(waterColorAlpha(0).b);
+  });
+});
+
+describe('buildOceanGeometry', () => {
+  it('puts every vertex exactly at the sea-level radius, normals outward', () => {
+    const tiles = oceanTiles();
+    const geom = buildOceanGeometry(tiles, 0, 2, 60)!;
+    const pos = geom.getAttribute('position');
+    const nrm = geom.getAttribute('normal');
+    const r = seaLevelRadius(tiles, 2, 60);
+    for (let i = 0; i < pos.count; i++) {
+      const len = Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i));
+      expect(len).toBeCloseTo(r, 6);
+      // normal = unit position direction (a sphere's exact normal)
+      expect(nrm.getX(i) * r).toBeCloseTo(pos.getX(i), 5);
+      expect(nrm.getY(i) * r).toBeCloseTo(pos.getY(i), 5);
+      expect(nrm.getZ(i) * r).toBeCloseTo(pos.getZ(i), 5);
+    }
+  });
+  it('carries RGBA colors: alpha 0 over land, graded alpha over ocean', () => {
+    const tiles = oceanTiles();
+    const geom = buildOceanGeometry(tiles, 0, 2, 60)!;
+    const color = geom.getAttribute('color');
+    expect(color.itemSize).toBe(4);
+    const alphas = new Set<number>();
+    for (let i = 0; i < color.count; i++) alphas.add(color.getW(i));
+    expect(alphas.has(0)).toBe(true); // land vertices exist on this face
+    // 100 m deep ocean: the exact graded alpha, not a guess
+    const expected = waterColorAlpha(100).a;
+    expect([...alphas].some((a) => Math.abs(a - expected) < 1e-6)).toBe(true);
+  });
+  it('returns null for a face with no ocean at all', () => {
+    const tiles = oceanTiles();
+    tiles.ocean = tiles.ocean.map(() => false);
+    expect(buildOceanGeometry(tiles, 0, 2, 60)).toBeNull();
   });
 });
