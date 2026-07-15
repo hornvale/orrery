@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseSystem } from '../sim/scene';
 import type { TilesScene } from '../sim/scene';
 import { moonPhase } from '../sim/ephemeris';
-import { daysToNextFull, moonInfo, namedTarget, settlementInfo, starInfo, worldInfo } from './inspect';
+import { daysToNextFull, moonInfo, namedTarget, settlementInfo, siteInfo, starInfo, worldInfo } from './inspect';
 
 // Inlined verbatim from src/sim/ephemeris.test.ts (the seed-42 golden
 // system document) — same fixture, same numbers, one more consumer.
@@ -49,6 +49,32 @@ describe('inspector content', () => {
     expect(land.lines.some((l) => l.includes('500 m above sea'))).toBe(true);
     const sea = settlementInfo(tiles, { name: 'Adrift', kind: 'settlement', latitude: 60, longitude: -80 });
     expect(sea.lines.some((l) => l.includes('ocean · 100 m deep'))).toBe(true);
+  });
+  it('a lone feature makes siteInfo a plain settlement card', () => {
+    const tiles = tinyTiles();
+    expect(siteInfo(tiles, [tiles.features[0]!])).toEqual(settlementInfo(tiles, tiles.features[0]!));
+  });
+  it('co-located features share one card naming every resident', () => {
+    const tiles = tinyTiles();
+    const site = [
+      { name: 'Home', kind: 'flagship', latitude: 60, longitude: -170 },
+      { name: 'Alpha', kind: 'settlement', latitude: 60, longitude: -170 },
+      { name: 'Beta', kind: 'settlement', latitude: 60, longitude: -170 },
+    ];
+    const card = siteInfo(tiles, site);
+    expect(card.title).toBe('Home');
+    expect(card.kindLine).toBe('flagship + 2 settlements');
+    expect(card.lines.some((l) => l.includes('Alpha') && l.includes('Beta'))).toBe(true);
+    // The shared ground sample still appears once.
+    expect(card.lines.some((l) => l.includes('steppe'))).toBe(true);
+  });
+  it('a flagship-less site counts plainly', () => {
+    const tiles = tinyTiles();
+    const site = [
+      { name: 'Alpha', kind: 'settlement', latitude: 60, longitude: -170 },
+      { name: 'Beta', kind: 'settlement', latitude: 60, longitude: -170 },
+    ];
+    expect(siteInfo(tiles, site).kindLine).toBe('2 settlements');
   });
   it('days to next full lands on phase 0.5', () => {
     const dt = daysToNextFull(sys, 0, 10);

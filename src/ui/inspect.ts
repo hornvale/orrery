@@ -58,6 +58,26 @@ export function settlementInfo(tiles: TilesScene, f: Feature): InfoCard {
   };
 }
 
+/** One marker site: every feature standing on the same exact coordinates
+ * shares one card — they share the ground truth too (same tile sample), so
+ * the card names every resident instead of pretending the click chose one.
+ * `features[0]` (the marker group's namesake — the flagship when present)
+ * titles the card. */
+export function siteInfo(tiles: TilesScene, features: Feature[]): InfoCard {
+  const first = features[0]!;
+  const base = settlementInfo(tiles, first);
+  if (features.length === 1) return base;
+  const others = features.slice(1);
+  return {
+    title: base.title,
+    kindLine:
+      first.kind === 'flagship'
+        ? `flagship + ${others.length} settlement${others.length === 1 ? '' : 's'}`
+        : `${features.length} settlements`,
+    lines: [...base.lines, `also here: ${others.map((f) => f.name).join(', ')}`],
+  };
+}
+
 /** Moon `i` now: elements plus instantaneous illumination. */
 export function moonInfo(sys: SystemScene, i: number, day: number): InfoCard {
   const m = sys.moons[i]!;

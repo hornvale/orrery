@@ -12,7 +12,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './styles.css';
 import { buildHud, type HudCallbacks } from './ui/hud';
 import { mountInfoCard } from './ui/infoCard';
-import { moonInfo, namedTarget, settlementInfo, starInfo, worldInfo } from './ui/inspect';
+import { moonInfo, namedTarget, siteInfo, starInfo, worldInfo } from './ui/inspect';
 import { clockToDay } from './time/clock';
 import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
 import { createSystemView } from './views/system';
@@ -445,7 +445,14 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
         if (target.kind === 'world') return infoCard.show(worldInfo(system, day));
         if (target.kind === 'moon') return infoCard.show(moonInfo(system, target.index, day));
         const f = tiles.features.find((x) => x.name === target.name);
-        if (f) return infoCard.show(settlementInfo(tiles, f));
+        if (f) {
+          // The whole site shares the card: every feature on these exact
+          // coordinates, the flagship hoisted first (stable otherwise).
+          const residents = tiles.features
+            .filter((x) => x.latitude === f.latitude && x.longitude === f.longitude)
+            .sort((a, b) => Number(b.kind === 'flagship') - Number(a.kind === 'flagship'));
+          return infoCard.show(siteInfo(tiles, residents));
+        }
       }
     }
     infoCard.hide(); // click-away on empty space
