@@ -18,6 +18,8 @@ jobs:
       - run: npm run wasm:release
       - run: npm run smoke
       - run: npm run build -- --base=/orrery/
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
       - uses: actions/upload-pages-artifact@v3
         with: { path: dist }
   deploy:

@@ -2,3 +2,5 @@ node_modules/
 dist/
 public/hornvale_world.wasm
 .superpowers/
+playwright-report/
+test-results/

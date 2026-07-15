@@ -7,6 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
+    "e2e": "playwright test",
     "wasm:local": "mkdir -p public && cp ../hornvale/clients/world-wasm/target/wasm32-unknown-unknown/release/hornvale_world_wasm.wasm public/hornvale_world.wasm",
     "wasm:release": "mkdir -p public && cd public && curl -fL -o hornvale_world.wasm https://github.com/hornvale/hornvale/releases/download/world-wasm-v1/hornvale_world.wasm && curl -fL https://github.com/hornvale/hornvale/releases/download/world-wasm-v1/hornvale_world.wasm.sha256 | shasum -a 256 -c -"
   },
@@ -14,6 +15,7 @@
     "three": "^0.166.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.0.0",
     "@types/three": "^0.166.0",
     "happy-dom": "^15.0.0",
