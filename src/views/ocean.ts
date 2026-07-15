@@ -7,6 +7,7 @@ import type { TilesScene } from '../sim/scene';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import { TILE_QUADS, tileGrid } from './cubeSphere';
 import { sampleTile } from './worldMesh';
+import { fnv1a32, mulberry32 } from '../util/prng';
 
 /** Depth (m below sea level) at which water reaches full darkness/opacity. */
 export const DEEP_FULL_M = 3000;
@@ -82,6 +83,13 @@ export function buildOceanGeometry(
     if (ocean) hasOcean = true;
   }
   if (!hasOcean) return null;
+  // Equirect UVs from each vertex's lat/lon: the wave normal map wraps the
+  // sphere seamlessly at integer repeats.
+  const uvs = new Float32Array(n * n * 2);
+  for (let i = 0; i < n * n; i++) {
+    uvs[2 * i] = (grid.lons[i]! + 180) / 360;
+    uvs[2 * i + 1] = (grid.lats[i]! + 90) / 180;
+  }
   const indices: number[] = [];
   for (let row = 0; row < TILE_QUADS; row++) {
     for (let col = 0; col < TILE_QUADS; col++) {
@@ -98,8 +106,79 @@ export function buildOceanGeometry(
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   geom.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+  geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geom.setIndex(indices);
   return geom;
+}
+
+/** UV drift of the wave normal map per sim day. Two incommensurate rates so
+ * the pattern never visibly loops; slow enough that 1 day/s (the globe
+ * clock's cap) shimmers rather than strobes, fast enough that 1 hr/s
+ * visibly lives. */
+const WAVE_DRIFT_PER_DAY = { x: 0.37, y: 0.13 };
+
+/** How strongly the wave normals dent the lighting — subtle: the sea should
+ * shimmer, not boil. */
+const WAVE_NORMAL_SCALE = 0.15;
+
+/** Repeats of the (tileable) wave texture around the sphere. */
+const WAVE_REPEAT = 6;
+
+const frac = (v: number) => v - Math.floor(v);
+
+/** The wave normal map's UV offset at `day` — pure and wrapped to [0,1), so
+ * the same day always shows the same sea (spec: sim-clock determinism). */
+export function waveOffset(day: number): { x: number; y: number } {
+  return { x: frac(day * WAVE_DRIFT_PER_DAY.x), y: frac(day * WAVE_DRIFT_PER_DAY.y) };
+}
+
+/** A small tileable wave normal map, generated deterministically on a canvas
+ * (the deploy CSP forbids fetched assets). Height field = a seeded sum of
+ * integer-frequency sines (integer wave numbers keep it tileable); normals
+ * come from its finite differences. Returns null where no 2D context exists
+ * (happy-dom) — the ocean then simply has no wave detail, matching how
+ * buildLabelSprite degrades. */
+function buildWaveNormalMap(): THREE.CanvasTexture | null {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const rand = mulberry32(fnv1a32('goldengrove/ocean/waves'));
+  // A fixed handful of tileable plane waves: integer frequencies, random
+  // phase and direction mix.
+  const waves = Array.from({ length: 6 }, () => ({
+    fx: 1 + Math.floor(rand() * 4),
+    fy: 1 + Math.floor(rand() * 4),
+    phase: rand() * Math.PI * 2,
+    amp: 0.5 + rand(),
+  }));
+  const height = (x: number, y: number) =>
+    waves.reduce(
+      (h, w) => h + w.amp * Math.sin(((x * w.fx + y * w.fy) / size) * Math.PI * 2 + w.phase),
+      0,
+    );
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Central differences with wrap: tileable normals from a tileable field.
+      const dx = height((x + 1) % size, y) - height((x - 1 + size) % size, y);
+      const dy = height(x, (y + 1) % size) - height(x, (y - 1 + size) % size);
+      const inv = 1 / Math.hypot(dx, dy, 2);
+      const i = 4 * (y * size + x);
+      img.data[i] = Math.round(((-dx * inv) * 0.5 + 0.5) * 255);
+      img.data[i + 1] = Math.round(((-dy * inv) * 0.5 + 0.5) * 255);
+      img.data[i + 2] = Math.round(((2 * inv) * 0.5 + 0.5) * 255);
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(WAVE_REPEAT, WAVE_REPEAT);
+  return texture;
 }
 
 /** The ocean's public surface: a mountable node plus the two drivers the
@@ -131,6 +210,11 @@ export function createOcean(
     metalness: 0,
     depthWrite: false,
   });
+  const waves = buildWaveNormalMap();
+  if (waves) {
+    material.normalMap = waves;
+    material.normalScale = new THREE.Vector2(WAVE_NORMAL_SCALE, WAVE_NORMAL_SCALE);
+  }
   // Only ocean-bearing faces get meshes; remember which, so the true-relief
   // set (lazily built) pairs up by face index.
   const faceMeshes = new Map<number, THREE.Mesh>();
@@ -156,8 +240,10 @@ export function createOcean(
       mesh.geometry = (on ? trueGeoms! : schematicGeoms).get(f)!;
     }
   }
-  function update(_day: number): void {
-    // Stage 2 (wave drift) fills this in; the signature is the contract.
+  function update(day: number): void {
+    if (!material.normalMap) return; // headless DOM: no waves to drift
+    const { x, y } = waveOffset(day);
+    material.normalMap.offset.set(x, y);
   }
   return { object3d: root, setTrueRelief, update };
 }

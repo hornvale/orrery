@@ -8,6 +8,7 @@ import {
   waterColorAlpha,
   buildOceanGeometry,
   createOcean,
+  waveOffset,
 } from './ocean';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import type { TilesScene } from '../sim/scene';
@@ -119,5 +120,23 @@ describe('createOcean', () => {
     expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 1), 6);
     ocean.setTrueRelief(false);
     expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 60), 6);
+  });
+});
+
+describe('wave drift', () => {
+  it('waveOffset is a pure, wrapped function of the sim day', () => {
+    expect(waveOffset(0)).toEqual({ x: 0, y: 0 });
+    const a = waveOffset(12.375);
+    expect(waveOffset(12.375)).toEqual(a); // deterministic
+    expect(a.x).toBeGreaterThanOrEqual(0);
+    expect(a.x).toBeLessThan(1);
+    expect(a.y).toBeGreaterThanOrEqual(0);
+    expect(a.y).toBeLessThan(1);
+    // Distinct days give distinct sea states.
+    expect(waveOffset(12.5)).not.toEqual(a);
+  });
+  it('update(day) survives a DOM with no 2D canvas (happy-dom)', () => {
+    const ocean = createOcean(oceanTiles(), 2, 60);
+    expect(() => ocean.update(42.5)).not.toThrow();
   });
 });
