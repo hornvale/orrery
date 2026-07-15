@@ -25,3 +25,6 @@ npm run build
 (`hornvale/.claude/worktrees/goldengrove/clients/world-wasm`), since the
 sibling `../hornvale` checkout layout doesn't exist yet.
 # TODO(campaign-close): retarget to ../hornvale once the branch merges
+
+Release consumption: CI and the live Pages deploy pin the catalog to
+hornvale release `world-wasm-v1` (`npm run wasm:release`).
