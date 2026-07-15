@@ -6,6 +6,7 @@ import {
   RELIEF_EXAGGERATION,
   clusterFeatures,
   createGlobeView,
+  markerVisibility,
   sampleTile,
   subsolarPoint,
 } from './globe';
@@ -125,6 +126,46 @@ test('co-located features build one marker group, named for the flagship', () =>
   });
   expect(groups.length).toBe(1);
   expect(groups[0]!.name).toBe('feature-Home');
+});
+
+test('markerVisibility hides everything past the limb and labels far from view center', () => {
+  const cam = new THREE.Vector3(0, 0, 6); // r/d = 1/3 → horizon ≈ 70.5°
+  const at = (thetaDeg: number) => {
+    const t = (thetaDeg * Math.PI) / 180;
+    return new THREE.Vector3(Math.sin(t), 0, Math.cos(t));
+  };
+  expect(markerVisibility(at(0), cam, 2)).toEqual({ dot: true, label: true });
+  expect(markerVisibility(at(20), cam, 2)).toEqual({ dot: true, label: true });
+  // Past the 30° label cap but well inside the horizon: dot only.
+  expect(markerVisibility(at(60), cam, 2)).toEqual({ dot: true, label: false });
+  // The far side: nothing.
+  expect(markerVisibility(at(180), cam, 2)).toEqual({ dot: false, label: false });
+});
+
+test('markerVisibility tightens the label circle as the camera closes in', () => {
+  const cam = new THREE.Vector3(0, 0, 2.4); // horizon ≈ 33.6°, label cut ≈ 20.1°
+  const at = (thetaDeg: number) => {
+    const t = (thetaDeg * Math.PI) / 180;
+    return new THREE.Vector3(Math.sin(t), 0, Math.cos(t));
+  };
+  expect(markerVisibility(at(15), cam, 2)).toEqual({ dot: true, label: true });
+  expect(markerVisibility(at(25), cam, 2)).toEqual({ dot: true, label: false });
+});
+
+test('update(day, camera) hides far-side markers and shows near ones', () => {
+  const tiles = markerTiles([{ name: 'Alpha', kind: 'settlement', latitude: 0, longitude: 45 }]);
+  const view = createGlobeView(tiles, spinningSys());
+  const group = view.object3d.getObjectByName('feature-Alpha')!;
+  const dot = group.children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
+  view.object3d.updateMatrixWorld(true);
+  const facing = dot.getWorldPosition(new THREE.Vector3()).normalize().multiplyScalar(6);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.copy(facing);
+  view.update(0, camera);
+  expect(dot.visible).toBe(true);
+  camera.position.copy(facing).negate();
+  view.update(0, camera);
+  expect(dot.visible).toBe(false);
 });
 
 test('subsolar longitude is frozen for a tidally locked world', () => {

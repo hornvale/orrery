@@ -164,6 +164,39 @@ function buildSiteMarker(tiles: TilesScene, site: FeatureSite): Marker {
   return { group, dot, label, up, elevationM: sampleTile(tiles, site.latitude, site.longitude, 'elevation_m') };
 }
 
+/** Slack on the limb test, in units of cos θ — markers sit slightly above
+ * the surface, so a marker exactly on the geometric horizon is still
+ * (barely) visible; hide it a touch past instead of exactly at. */
+const DOT_HORIZON_SLACK = 0.02;
+
+/** Labels show inside this fraction of the visible cap's angular radius —
+ * aiming the camera at a region names that region, while the rest of the
+ * disc stays uncluttered dots. */
+const LABEL_VIEW_FRACTION = 0.6;
+
+/** Hard cap on the label circle (radians) so a far-out camera, whose
+ * horizon is nearly a hemisphere, doesn't light up every label at once. */
+const LABEL_MAX_ANGLE = Math.PI / 6;
+
+/** What of a marker shows for this camera: the dot whenever its site is on
+ * the near side of the globe (a point at angle θ from the camera direction
+ * is past the limb when cos θ < r/d), the label only when the site is
+ * additionally near the view center — proximity, not a permanent shout. */
+export function markerVisibility(
+  upWorld: THREE.Vector3,
+  cameraPos: THREE.Vector3,
+  radius: number,
+): { dot: boolean; label: boolean } {
+  const d = cameraPos.length();
+  if (d <= radius) return { dot: false, label: false };
+  const horizonCos = radius / d;
+  const cosTheta = upWorld.dot(cameraPos) / d;
+  const dot = cosTheta > horizonCos - DOT_HORIZON_SLACK;
+  const theta = Math.acos(Math.min(1, Math.max(-1, cosTheta)));
+  const labelCut = Math.min(LABEL_VIEW_FRACTION * Math.acos(Math.min(1, horizonCos)), LABEL_MAX_ANGLE);
+  return { dot, label: dot && theta < labelCut };
+}
+
 /** Seat a marker on the terrain as the mesh renders it: the dot at the
  * face-geometry displacement formula plus `MARKER_CLEARANCE`, the label
  * floating just above the dot by its own half-height. */
@@ -180,8 +213,10 @@ export interface GlobeView {
   /** The whole globe's root node — mount this once into a THREE.Scene. */
   object3d: THREE.Object3D;
   /** Repositions the terminator light and spins the mesh for `day`; call
-   * every frame. */
-  update(day: number): void;
+   * every frame. Given the rendering `camera`, also culls markers past the
+   * limb and keeps labels to sites near the view center — omitting it (a
+   * caller that predates marker gating) leaves every marker shown. */
+  update(day: number, camera?: THREE.Camera): void;
   /** Toggle exaggerated relief (the default, `RELIEF_EXAGGERATION`×) vs true
    * (1×) relief — swaps in lazily built true-scale face geometry. */
   setTrueRelief(on: boolean): void;
@@ -239,13 +274,22 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   root.add(light);
   root.add(light.target);
 
-  function update(day: number): void {
+  const upWorld = new THREE.Vector3(); // update()'s scratch — no per-frame allocation
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  function update(day: number, camera?: THREE.Camera): void {
     const sub = subsolarPoint(sys, day);
     // Fixed reference azimuth 0: the daily sweep comes from spinning
     // spinGroup below, not from moving the light's longitude — see the
     // function doc's derivation.
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = rotationPhase(sys, day) * TAU;
+    if (!camera) return;
+    for (const m of markers) {
+      upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
+      const vis = markerVisibility(upWorld, camera.position, GLOBE_RADIUS);
+      m.dot.visible = vis.dot;
+      m.label.visible = vis.label;
+    }
   }
 
   update(0);

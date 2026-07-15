@@ -314,7 +314,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
 
   function renderFrame(): void {
     systemView.update(day);
-    globeView.update(day);
+    globeView.update(day, globeCamera);
 
     const z = zoom.stateAt(performance.now());
     const worldPos = systemView.worldPosition(day);
