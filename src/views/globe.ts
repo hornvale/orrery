@@ -8,9 +8,9 @@
  * the three.js scene graph builder (`createGlobeView`) that consumes it.
  */
 import * as THREE from 'three';
-import type { SystemScene, TilesScene } from '../sim/scene';
+import type { Feature, SystemScene, TilesScene } from '../sim/scene';
 import { rotationPhase, worldPhase } from '../sim/ephemeris';
-import { buildFaceGeometry, stitchNormals } from './worldMesh';
+import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals } from './worldMesh';
 
 const TAU = Math.PI * 2;
 
@@ -24,10 +24,10 @@ export const GLOBE_RADIUS = 2;
  * lie. */
 export const RELIEF_EXAGGERATION = 60;
 
-/** How far above the (undisplaced) globe radius a settlement marker floats,
- * as a multiple of `GLOBE_RADIUS` — comfortably clear of the relief bump so
- * markers never clip into terrain. */
-const MARKER_HEIGHT_FACTOR = 1.05;
+/** How far above the *displaced* terrain a marker dot sits, as a fraction
+ * of `GLOBE_RADIUS` — just enough that the dot never z-fights its own
+ * ground, close enough that it reads as standing on it. */
+export const MARKER_CLEARANCE = 0.006;
 
 /** Distance of the directional "sun" light from the globe center, in world
  * units — far enough to read as parallel light across the whole sphere. */
@@ -63,47 +63,115 @@ function latLonToUnit(latDeg: number, lonDeg: number): THREE.Vector3 {
   return new THREE.Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat));
 }
 
-/** A small canvas-texture sprite carrying `text`, for settlement labels.
+/** World units per label-canvas pixel — the original single-line sprite was
+ * a 256×64 canvas at scale (0.5, 0.125), i.e. 1/512 per px; kept so label
+ * text renders at the same apparent size it always did. */
+const LABEL_WORLD_PER_PX = 0.5 / 256;
+
+/** A canvas-texture sprite carrying one line per entry of `lines` — a
+ * marker site names everything that stands there, stacked, instead of
+ * several sprites overprinting each other at the same coordinates.
  * Real browsers always give a 2D context here (this app already requires
  * WebGL for the rest of the scene); a `null` context only shows up in a
  * headless DOM stub (happy-dom has no canvas 2D renderer) — fall back to an
  * untextured sprite rather than crash createGlobeView in that case. */
-function buildLabelSprite(text: string): THREE.Sprite {
+function buildLabelSprite(lines: string[]): THREE.Sprite {
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 64;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     return new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, opacity: 0 }));
   }
-  ctx.font = '28px ui-monospace, monospace';
+  const font = '28px ui-monospace, monospace';
+  const pad = 8;
+  const lineHeight = 36;
+  ctx.font = font;
+  const textWidth = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  canvas.width = Math.ceil(textWidth) + 2 * pad;
+  canvas.height = lineHeight * lines.length + 2 * pad;
+  ctx.font = font; // resizing the canvas resets 2D state
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#f5e9c8';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, 8, canvas.height / 2);
+  lines.forEach((line, i) => ctx.fillText(line, pad, pad + lineHeight * (i + 0.5)));
   const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
-  sprite.scale.set(0.5, 0.125, 1);
+  sprite.scale.set(canvas.width * LABEL_WORLD_PER_PX, canvas.height * LABEL_WORLD_PER_PX, 1);
   return sprite;
 }
 
-/** One settlement (or the flagship): a small marker dot plus its name label,
- * both fixed to the rotating surface at the feature's lat/lon. */
-function buildFeatureMarker(feature: TilesScene['features'][number]): THREE.Object3D {
+/** One marker site: every feature standing on the same exact (lat, lon).
+ * Real documents put several settlements (and sometimes the flagship) on
+ * identical coordinates, so the site — not the feature — is the drawable
+ * unit; one dot, one stacked label. */
+export interface FeatureSite {
+  latitude: number;
+  longitude: number;
+  /** Names at this site, the flagship's first when present. */
+  names: string[];
+  hasFlagship: boolean;
+}
+
+/** Group features into sites by exact coordinates, keeping first-seen site
+ * order; within a site the flagship's name is hoisted to the front (it
+ * names the marker group, so a click inspects the flagship). */
+export function clusterFeatures(features: Feature[]): FeatureSite[] {
+  const byCoord = new Map<string, FeatureSite>();
+  for (const f of features) {
+    const key = `${f.latitude},${f.longitude}`;
+    const site = byCoord.get(key);
+    if (!site) {
+      byCoord.set(key, {
+        latitude: f.latitude,
+        longitude: f.longitude,
+        names: [f.name],
+        hasFlagship: f.kind === 'flagship',
+      });
+    } else if (f.kind === 'flagship') {
+      site.names.unshift(f.name);
+      site.hasFlagship = true;
+    } else {
+      site.names.push(f.name);
+    }
+  }
+  return [...byCoord.values()];
+}
+
+/** One built marker: its scene nodes plus what placement needs — the site's
+ * surface direction and sampled elevation (placement re-runs on every
+ * relief toggle, so it can't be baked into construction). */
+interface Marker {
+  group: THREE.Object3D;
+  dot: THREE.Mesh;
+  label: THREE.Sprite;
+  up: THREE.Vector3;
+  elevationM: number;
+}
+
+/** Build one site's marker: a dot (flagship gold if the flagship stands
+ * here) plus the stacked name label. Positions are set by `placeMarker`. */
+function buildSiteMarker(tiles: TilesScene, site: FeatureSite): Marker {
   const group = new THREE.Object3D();
-  group.name = `feature-${feature.name}`;
-  const up = latLonToUnit(feature.latitude, feature.longitude);
+  group.name = `feature-${site.names[0]}`;
+  const up = latLonToUnit(site.latitude, site.longitude);
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(GLOBE_RADIUS * 0.015, 8, 6),
-    new THREE.MeshBasicMaterial({ color: feature.kind === 'flagship' ? 0xffd76e : 0xe8e8f0 }),
+    new THREE.MeshBasicMaterial({ color: site.hasFlagship ? 0xffd76e : 0xe8e8f0 }),
   );
-  dot.position.copy(up).multiplyScalar(GLOBE_RADIUS * MARKER_HEIGHT_FACTOR);
+  const label = buildLabelSprite(site.names);
   group.add(dot);
-  const label = buildLabelSprite(feature.name);
-  label.position.copy(up).multiplyScalar(GLOBE_RADIUS * MARKER_HEIGHT_FACTOR * 1.08);
   group.add(label);
-  return group;
+  return { group, dot, label, up, elevationM: sampleTile(tiles, site.latitude, site.longitude, 'elevation_m') };
+}
+
+/** Seat a marker on the terrain as the mesh renders it: the dot at the
+ * face-geometry displacement formula plus `MARKER_CLEARANCE`, the label
+ * floating just above the dot by its own half-height. */
+function placeMarker(m: Marker, reliefScale: number): void {
+  const surface = GLOBE_RADIUS * (1 + (reliefScale * m.elevationM) / REFERENCE_RADIUS_M);
+  const dotRadius = surface + GLOBE_RADIUS * MARKER_CLEARANCE;
+  m.dot.position.copy(m.up).multiplyScalar(dotRadius);
+  m.label.position.copy(m.up).multiplyScalar(dotRadius + m.label.scale.y / 2 + GLOBE_RADIUS * 0.02);
 }
 
 /** The globe view's public surface: a mountable object graph plus the
@@ -153,10 +221,14 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
       stitchNormals(trueGeoms);
     }
     faceMeshes.forEach((m, f) => { m.geometry = (on ? trueGeoms! : schematicGeoms)[f]!; });
+    // The terrain the markers stand on just moved — reseat them on it.
+    for (const marker of markers) placeMarker(marker, on ? 1 : RELIEF_EXAGGERATION);
   }
 
-  for (const feature of tiles.features) {
-    spinGroup.add(buildFeatureMarker(feature));
+  const markers = clusterFeatures(tiles.features).map((site) => buildSiteMarker(tiles, site));
+  for (const marker of markers) {
+    placeMarker(marker, RELIEF_EXAGGERATION);
+    spinGroup.add(marker.group);
   }
 
   // No ambient light here: the night side is meant to fall to shader
