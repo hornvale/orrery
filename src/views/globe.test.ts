@@ -193,3 +193,24 @@ test('subsolar longitude is frozen for a tidally locked world', () => {
   expect(subsolarPoint(sys, 0).lon).toBe(0);
   expect(subsolarPoint(sys, 123).lon).toBe(0);
 });
+
+test('the globe carries an ocean layer that follows the relief toggle', () => {
+  // markerTiles is all land — give the west half sea so the ocean mounts.
+  const tiles = markerTiles([]);
+  tiles.sea_level_m = -2500;
+  tiles.elevation_m = [-2600, -2600, -2000, -2000, -2600, -2600, -2000, -2000];
+  tiles.ocean = [true, true, false, false, true, true, false, false];
+  const view = createGlobeView(tiles, spinningSys());
+  const ocean = view.object3d.getObjectByName('ocean')!;
+  expect(ocean).toBeDefined();
+  const mesh = ocean.children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
+  const radiusOf = () => {
+    const p = mesh.geometry.getAttribute('position');
+    return Math.hypot(p.getX(0), p.getY(0), p.getZ(0));
+  };
+  const before = radiusOf();
+  view.setTrueRelief(true);
+  expect(radiusOf()).not.toBeCloseTo(before, 6);
+  view.setTrueRelief(false);
+  expect(radiusOf()).toBeCloseTo(before, 6);
+});

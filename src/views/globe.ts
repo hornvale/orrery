@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import type { Feature, SystemScene, TilesScene } from '../sim/scene';
 import { rotationPhase, worldPhase } from '../sim/ephemeris';
 import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals } from './worldMesh';
+import { createOcean } from './ocean';
 
 const TAU = Math.PI * 2;
 
@@ -233,6 +234,11 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   // Each face computes its normals alone; reconcile them across cube edges
   // or directional light draws every edge as a seam (worst at 60× relief).
   stitchNormals(schematicGeoms);
+  // The water layer: a smooth translucent sphere at sea level, over the
+  // displaced seafloor — spinning with the ground so wave motion (stage 2)
+  // stays fixed to the world, not the camera.
+  const ocean = createOcean(tiles, GLOBE_RADIUS, RELIEF_EXAGGERATION);
+  spinGroup.add(ocean.object3d);
   // True-relief geometry (1x, honest) is expensive to build and most
   // sessions never ask for it — construct lazily on first toggle, not here.
   let trueGeoms: THREE.BufferGeometry[] | null = null;
@@ -244,6 +250,7 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     faceMeshes.forEach((m, f) => { m.geometry = (on ? trueGeoms! : schematicGeoms)[f]!; });
     // The terrain the markers stand on just moved — reseat them on it.
     for (const marker of markers) placeMarker(marker, on ? 1 : RELIEF_EXAGGERATION);
+    ocean.setTrueRelief(on);
   }
 
   const markers = clusterFeatures(tiles.features).map((site) => buildSiteMarker(tiles, site));
@@ -274,6 +281,7 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     // function doc's derivation.
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = rotationPhase(sys, day) * TAU;
+    ocean.update(day);
     if (!camera) return;
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
