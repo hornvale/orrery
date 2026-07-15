@@ -40,6 +40,16 @@ describe('inspector content', () => {
     expect(card.lines.some((l) => l.includes('60.0°N'))).toBe(true);
     expect(card.lines.some((l) => l.includes('steppe'))).toBe(true);
   });
+  it('altitude is relative to sea level, not the elevation datum', () => {
+    // Real documents put sea level well below the datum's zero (seed 42:
+    // sea_level_m ≈ -2582), so raw elevation_m reads negative on land.
+    const tiles = { ...tinyTiles(), sea_level_m: -2500 };
+    tiles.elevation_m = [-2000, -2600, 5, 5, 5, 5, 5, 5];
+    const land = settlementInfo(tiles, { name: 'Daoqao', kind: 'settlement', latitude: 60, longitude: -170 });
+    expect(land.lines.some((l) => l.includes('500 m above sea'))).toBe(true);
+    const sea = settlementInfo(tiles, { name: 'Adrift', kind: 'settlement', latitude: 60, longitude: -80 });
+    expect(sea.lines.some((l) => l.includes('ocean · 100 m deep'))).toBe(true);
+  });
   it('days to next full lands on phase 0.5', () => {
     const dt = daysToNextFull(sys, 0, 10);
     expect(dt).not.toBeNull();

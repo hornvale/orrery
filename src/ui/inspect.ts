@@ -44,9 +44,13 @@ export function daysToNextFull(sys: SystemScene, i: number, day: number): number
 export function settlementInfo(tiles: TilesScene, f: Feature): InfoCard {
   const elevation = sampleTile(tiles, f.latitude, f.longitude, 'elevation_m');
   const ocean = sampleTile(tiles, f.latitude, f.longitude, 'ocean');
+  // elevation_m is datum-relative and the datum's zero is not sea level
+  // (sea_level_m is far from 0 in real documents) — altitude above the sea
+  // is the number a reader means, on land and under it alike.
+  const altitude = elevation - tiles.sea_level_m;
   const ground = ocean
-    ? `ocean (${elevation.toFixed(0)} m)`
-    : `${tiles.biomeLegend[sampleTile(tiles, f.latitude, f.longitude, 'biome')] ?? 'unknown'} · ${elevation.toFixed(0)} m`;
+    ? `ocean · ${(-altitude).toFixed(0)} m deep`
+    : `${tiles.biomeLegend[sampleTile(tiles, f.latitude, f.longitude, 'biome')] ?? 'unknown'} · ${altitude.toFixed(0)} m above sea`;
   return {
     title: f.name,
     kindLine: f.kind,
