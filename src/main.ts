@@ -28,6 +28,9 @@ const app = document.getElementById('app')!;
 const SPACE_CAPTION =
   'schematic scale: the world’s orbit is to true AU scale, but moon orbits are compressed onto even rungs for legibility — not to true distance.';
 const GROUND_CAPTION = `relief is exaggerated ${RELIEF_EXAGGERATION}× over true scale so mountains and trenches read on a rendered sphere at all — not to true height.`;
+const TRUE_SPACE_CAPTION =
+  'true scale: distances are true to the documents; body sizes use reference radii (Earth/Sol/Luna) — the documents carry no absolute radii. The bodies all but vanish against the orbit’s sweep; zoom in and find them.';
+const TRUE_GROUND_CAPTION = 'relief at true scale (1×): the mountains are down there — the sphere just doesn’t show them at this size. That’s the honest render.';
 
 /** The plain "still generating" state — replaced by either a mounted world
  * or one of `renderError`'s distinct failure screens. */
@@ -187,11 +190,37 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   let view: ZoomTarget = state.view;
   zoom.jumpTo(view); // the initial view from a deep link never animates in
 
+  // Per-rung true-scale state (Task 8): each rung remembers its own toggle
+  // independently, so switching rungs re-presents whichever state that rung
+  // was left in.
+  const trueScaleOn: Record<ZoomTarget, boolean> = { system: false, globe: false };
+
   function setCaptionFor(v: ZoomTarget): void {
-    caption.textContent = v === 'system' ? SPACE_CAPTION : GROUND_CAPTION;
+    caption.textContent =
+      v === 'system'
+        ? (trueScaleOn.system ? TRUE_SPACE_CAPTION : SPACE_CAPTION)
+        : (trueScaleOn.globe ? TRUE_GROUND_CAPTION : GROUND_CAPTION);
   }
   function setViewButtonFor(v: ZoomTarget): void {
     hud.setViewButton(v === 'system' ? 'view: globe' : 'view: system', true);
+  }
+
+  /** Applies the current rung's true-scale state to its view, camera limits,
+   * and HUD button/caption — called on toggle and on every rung switch (each
+   * rung re-presents its own toggle state, button label included). */
+  function applyTrueScale(): void {
+    const on = trueScaleOn[view];
+    if (view === 'system') {
+      systemView.setTrueScale(on);
+      systemControls.minDistance = on ? 5e-4 : WORLD_CLOSE_DISTANCE;
+      systemCamera.near = on ? 1e-5 : 0.05;
+      systemCamera.updateProjectionMatrix();
+    } else {
+      globeView.setTrueRelief(on);
+    }
+    hud.setTrueScaleActive(on);
+    hud.setTrueScaleLabel(on ? 'schematic scale' : 'true scale');
+    setCaptionFor(view);
   }
 
   function resize(): void {
@@ -248,6 +277,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
     setViewButtonFor(view);
     systemCanvas.style.pointerEvents = v === 'system' ? 'auto' : 'none';
     globeCanvas.style.pointerEvents = v === 'globe' ? 'auto' : 'none';
+    applyTrueScale();
   }
 
   /** Writes `seed`/`view`/`day` back to the URL via `replaceState` — no
@@ -315,8 +345,11 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       dayAtPlayStart = day;
       hud.setActiveSpeed(clamped); // corrects the button if the click was over-cap
     },
-    // True-scale isn't part of this task — Task 8 wires it.
-    onTrueScale() {},
+    onTrueScale() {
+      trueScaleOn[view] = !trueScaleOn[view];
+      applyTrueScale();
+      renderFrame();
+    },
     onReroll() {
       // A different seed reloads via the hashchange listener below — the
       // one deliberate full-reload path (module doc comment).

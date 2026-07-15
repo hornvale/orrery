@@ -114,6 +114,9 @@ export interface GlobeView {
   /** Repositions the terminator light and spins the mesh for `day`; call
    * every frame. */
   update(day: number): void;
+  /** Toggle exaggerated relief (the default, `RELIEF_EXAGGERATION`×) vs true
+   * (1×) relief — swaps in lazily built true-scale face geometry. */
+  setTrueRelief(on: boolean): void;
 }
 
 /** Build the globe view: a cube-sphere mesh displaced by real relief,
@@ -130,10 +133,22 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   root.add(spinGroup);
 
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+  const faceMeshes: THREE.Mesh[] = [];
   for (let face = 0; face < 6; face++) {
     const mesh = new THREE.Mesh(buildFaceGeometry(tiles, face, GLOBE_RADIUS, RELIEF_EXAGGERATION), material);
     mesh.name = `globe-face-${face}`;
     spinGroup.add(mesh);
+    faceMeshes.push(mesh);
+  }
+  const schematicGeoms = faceMeshes.map((m) => m.geometry);
+  // True-relief geometry (1x, honest) is expensive to build and most
+  // sessions never ask for it — construct lazily on first toggle, not here.
+  let trueGeoms: THREE.BufferGeometry[] | null = null;
+  function setTrueRelief(on: boolean): void {
+    if (on && trueGeoms === null) {
+      trueGeoms = Array.from({ length: 6 }, (_, f) => buildFaceGeometry(tiles, f, GLOBE_RADIUS, 1));
+    }
+    faceMeshes.forEach((m, f) => { m.geometry = (on ? trueGeoms! : schematicGeoms)[f]!; });
   }
 
   for (const feature of tiles.features) {
@@ -159,5 +174,5 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
 
   update(0);
 
-  return { object3d: root, update };
+  return { object3d: root, update, setTrueRelief };
 }

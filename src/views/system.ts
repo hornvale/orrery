@@ -17,20 +17,16 @@ import { rotationPhase, worldPhase } from '../sim/ephemeris';
 import { starTint } from '../sim/palette';
 import { fnv1a32, mulberry32 } from '../util/prng';
 import { buildFaceGeometry } from './worldMesh';
+import { moonOrbitRadiusUnits, moonRadiusUnits, starRadiusUnits, worldRadiusUnits } from './scale';
 
 const TAU = Math.PI * 2;
 
 /** Schematic world units per AU — governs the star's orbit line, the
- * world's orbit radius, and the HZ annulus. */
+ * world's orbit radius, and the HZ annulus. Must match `./scale.ts`'s
+ * internal AU_SCALE. */
 const AU_SCALE = 3;
 const STAR_RADIUS = 0.35;
 const WORLD_RADIUS = 0.12;
-const MOON_RADIUS = 0.045;
-/** Radial-ladder geometry: moon i's ring sits at `MOON_RUNG_BASE + i *
- * MOON_RUNG_STEP` world units from the world's center, regardless of its
- * true `distanceMm` — see the module doc's scale-honesty note. */
-const MOON_RUNG_BASE = 0.32;
-const MOON_RUNG_STEP = 0.22;
 const ORBIT_SEGMENTS = 128;
 const STARFIELD_COUNT = 400;
 
@@ -56,10 +52,16 @@ function moonOrbitalPhase(sys: SystemScene, i: number, day: number): number {
 }
 
 /** Moon `i`'s position (world units, in the world's local frame) at `day`,
- * on the schematic radial ladder. */
-export function moonLocalPosition(sys: SystemScene, i: number, day: number): THREE.Vector3 {
+ * on the schematic radial ladder, or (if `trueScale`) at its true
+ * `distanceMm` through the same AU scale as the world's orbit. */
+export function moonLocalPosition(
+  sys: SystemScene,
+  i: number,
+  day: number,
+  trueScale = false,
+): THREE.Vector3 {
   const angle = moonOrbitalPhase(sys, i, day) * TAU;
-  const radius = MOON_RUNG_BASE + i * MOON_RUNG_STEP;
+  const radius = moonOrbitRadiusUnits(i, sys.moons[i]!.distanceMm, trueScale);
   return new THREE.Vector3(radius * Math.cos(angle), 0, radius * Math.sin(angle));
 }
 
@@ -73,6 +75,9 @@ export interface SystemView {
   /** The world's position (world units, system-root-local) at `day`,
    * without mutating anything — Task 10's zoom target. */
   worldPosition(day: number): THREE.Vector3;
+  /** Toggle schematic (rung-ladder, exaggerated radii) vs true scale —
+   * repositions rungs and rescales bodies; positions update next frame. */
+  setTrueScale(on: boolean): void;
 }
 
 /** Cosmetic starfield: a scattered point cloud seeded from `sys.seed` only
@@ -119,10 +124,11 @@ export function createSystemView(sys: SystemScene, tiles: TilesScene): SystemVie
   const [r, g, b] = starTint(sys.star.className);
   const starColor = new THREE.Color(r / 255, g / 255, b / 255);
   const star = new THREE.Mesh(
-    new THREE.SphereGeometry(STAR_RADIUS, 32, 16),
+    new THREE.SphereGeometry(1, 32, 16), // unit sphere: scaled per mode below
     new THREE.MeshBasicMaterial({ color: starColor }), // unlit: reads as self-luminous, bloom-ready
   );
   star.name = 'star';
+  star.scale.setScalar(STAR_RADIUS);
   root.add(star);
   root.add(new THREE.PointLight(starColor, 3, 0, 0));
 
@@ -154,18 +160,20 @@ export function createSystemView(sys: SystemScene, tiles: TilesScene): SystemVie
   root.add(worldGroup);
 
   const moonMeshes: THREE.Mesh[] = sys.moons.map((m, i) => {
-    const size = MOON_RADIUS * Math.max(0.3, Math.min(2, m.sizeRel));
     const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 12, 8),
+      new THREE.SphereGeometry(1, 12, 8), // unit sphere: scaled per mode below
       new THREE.MeshStandardMaterial({ color: 0xa8a8a8, roughness: 1 }),
     );
     mesh.name = `moon-${i}`;
+    mesh.scale.setScalar(moonRadiusUnits(m.sizeRel, false));
     worldGroup.add(mesh);
     return mesh;
   });
 
   const reach = Math.max(orbitRadius, hzOuter);
   root.add(buildStarfield(sys.seed, reach));
+
+  let trueScale = false;
 
   function worldPosition(day: number): THREE.Vector3 {
     const angle = orbitAngle(sys, day);
@@ -176,7 +184,7 @@ export function createSystemView(sys: SystemScene, tiles: TilesScene): SystemVie
     worldGroup.position.copy(worldPosition(day));
     worldSpin.rotation.z = rotationPhase(sys, day) * TAU;
     for (let i = 0; i < moonMeshes.length; i++) {
-      moonMeshes[i]!.position.copy(moonLocalPosition(sys, i, day));
+      moonMeshes[i]!.position.copy(moonLocalPosition(sys, i, day, trueScale));
     }
     // moonPhase (illumination, ./ephemeris.ts) is deliberately not consulted
     // here: the real point light at the star produces correct-looking
@@ -184,7 +192,16 @@ export function createSystemView(sys: SystemScene, tiles: TilesScene): SystemVie
     // see moonOrbitalPhase's doc comment above.
   }
 
+  function setTrueScale(on: boolean): void {
+    trueScale = on;
+    star.scale.setScalar(starRadiusUnits(on));
+    worldSpin.scale.setScalar(worldRadiusUnits(on) / WORLD_RADIUS);
+    for (let i = 0; i < moonMeshes.length; i++) {
+      moonMeshes[i]!.scale.setScalar(moonRadiusUnits(sys.moons[i]!.sizeRel, on));
+    }
+  }
+
   update(0);
 
-  return { object3d: root, update, worldPosition };
+  return { object3d: root, update, worldPosition, setTrueScale };
 }
