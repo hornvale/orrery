@@ -101,3 +101,63 @@ export function buildOceanGeometry(
   geom.setIndex(indices);
   return geom;
 }
+
+/** The ocean's public surface: a mountable node plus the two drivers the
+ * globe view forwards (relief toggle, per-frame day). */
+export interface OceanView {
+  object3d: THREE.Object3D;
+  /** Swap to 1× (true) or schematic (false) sea-level radius — mirrors the
+   * terrain's lazily-built second geometry set. */
+  setTrueRelief(on: boolean): void;
+  /** Per-frame driver. Stage 1: reserved (no-op). Stage 2 drifts the wave
+   * normal map deterministically from the sim day. */
+  update(day: number): void;
+}
+
+/** Build the water layer for a globe of `radius` whose schematic relief
+ * exaggeration is `schematicReliefScale` (the globe passes its own
+ * RELIEF_EXAGGERATION; true relief is always 1×). */
+export function createOcean(
+  tiles: TilesScene,
+  radius: number,
+  schematicReliefScale: number,
+): OceanView {
+  const root = new THREE.Object3D();
+  root.name = 'ocean';
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    transparent: true,
+    roughness: 0.2,
+    metalness: 0,
+    depthWrite: false,
+  });
+  // Only ocean-bearing faces get meshes; remember which, so the true-relief
+  // set (lazily built) pairs up by face index.
+  const faceMeshes = new Map<number, THREE.Mesh>();
+  for (let face = 0; face < 6; face++) {
+    const geom = buildOceanGeometry(tiles, face, radius, schematicReliefScale);
+    if (!geom) continue;
+    const mesh = new THREE.Mesh(geom, material);
+    mesh.name = `ocean-face-${face}`;
+    // Clicks pass through the water to the world beneath.
+    mesh.raycast = () => {};
+    root.add(mesh);
+    faceMeshes.set(face, mesh);
+  }
+  const schematicGeoms = new Map([...faceMeshes].map(([f, m]) => [f, m.geometry]));
+  let trueGeoms: Map<number, THREE.BufferGeometry> | null = null;
+  function setTrueRelief(on: boolean): void {
+    if (on && trueGeoms === null) {
+      trueGeoms = new Map(
+        [...faceMeshes.keys()].map((f) => [f, buildOceanGeometry(tiles, f, radius, 1)!]),
+      );
+    }
+    for (const [f, mesh] of faceMeshes) {
+      mesh.geometry = (on ? trueGeoms! : schematicGeoms).get(f)!;
+    }
+  }
+  function update(_day: number): void {
+    // Stage 2 (wave drift) fills this in; the signature is the contract.
+  }
+  return { object3d: root, setTrueRelief, update };
+}

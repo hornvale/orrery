@@ -7,6 +7,7 @@ import {
   seaLevelRadius,
   waterColorAlpha,
   buildOceanGeometry,
+  createOcean,
 } from './ocean';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import type { TilesScene } from '../sim/scene';
@@ -83,5 +84,40 @@ describe('buildOceanGeometry', () => {
     const tiles = oceanTiles();
     tiles.ocean = tiles.ocean.map(() => false);
     expect(buildOceanGeometry(tiles, 0, 2, 60)).toBeNull();
+  });
+});
+
+describe('createOcean', () => {
+  it('mounts one mesh per ocean-bearing face, raycast-transparent, watery material', () => {
+    const ocean = createOcean(oceanTiles(), 2, 60);
+    expect(ocean.object3d.name).toBe('ocean');
+    const meshes = ocean.object3d.children.filter((c): c is THREE.Mesh => (c as THREE.Mesh).isMesh);
+    expect(meshes.length).toBeGreaterThan(0);
+    for (const m of meshes) {
+      expect(m.name.startsWith('ocean-face-')).toBe(true);
+      // Picking must pass through the water to the world beneath.
+      const hits: THREE.Intersection[] = [];
+      m.raycast(new THREE.Raycaster(new THREE.Vector3(0, 0, 6), new THREE.Vector3(0, 0, -1)), hits);
+      expect(hits).toEqual([]);
+      const mat = m.material as THREE.MeshStandardMaterial;
+      expect(mat.transparent).toBe(true);
+      expect(mat.depthWrite).toBe(false);
+      expect(mat.vertexColors).toBe(true);
+      expect(mat.roughness).toBeLessThan(0.5); // glossy enough to glint
+    }
+  });
+  it('setTrueRelief moves the surface to the 1x sea-level radius and back', () => {
+    const tiles = oceanTiles();
+    const ocean = createOcean(tiles, 2, 60);
+    const mesh = ocean.object3d.children.find((c): c is THREE.Mesh => (c as THREE.Mesh).isMesh)!;
+    const radiusOf = (m: THREE.Mesh) => {
+      const p = m.geometry.getAttribute('position');
+      return Math.hypot(p.getX(0), p.getY(0), p.getZ(0));
+    };
+    expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 60), 6);
+    ocean.setTrueRelief(true);
+    expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 1), 6);
+    ocean.setTrueRelief(false);
+    expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 60), 6);
   });
 });
