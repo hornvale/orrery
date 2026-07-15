@@ -4,9 +4,8 @@
  * directly), then the three.js builder that consumes it. */
 import * as THREE from 'three';
 import type { TilesScene } from '../sim/scene';
-import { REFERENCE_RADIUS_M } from './worldMesh';
+import { REFERENCE_RADIUS_M, sampleTile } from './worldMesh';
 import { TILE_QUADS, tileGrid } from './cubeSphere';
-import { sampleTile } from './worldMesh';
 import { fnv1a32, mulberry32 } from '../util/prng';
 
 /** Depth (m below sea level) at which water reaches full darkness/opacity. */
@@ -88,8 +87,9 @@ export function buildOceanGeometry(
   // tried first and rejected in review — atan2's branch cut tears a
   // full-range UV jump across the ±180° antimeridian on face 1, and warps
   // globally on the polar faces 4/5. The tradeoff here is that the wave
-  // pattern doesn't line up exactly across cube-face edges, but at this
-  // normalScale (0.15) that mismatch is imperceptible.
+  // pattern doesn't line up exactly across cube-face edges — and the drift
+  // direction mirrors between faces (their u/v axes differ) — but at this
+  // normalScale (0.15) both mismatches are imperceptible.
   const uvs = new Float32Array(n * n * 2);
   for (let i = 0; i < n * n; i++) {
     const row = Math.floor(i / n);
@@ -118,10 +118,10 @@ export function buildOceanGeometry(
   return geom;
 }
 
-/** UV drift of the wave normal map per sim day. Two incommensurate rates so
- * the pattern never visibly loops; slow enough that 1 day/s (the globe
- * clock's cap) shimmers rather than strobes, fast enough that 1 hr/s
- * visibly lives. */
+/** UV drift of the wave normal map per sim day. Two unequal rates whose
+ * joint period (100 days — both are hundredths) far exceeds any viewing
+ * session; slow enough that 1 day/s (the globe clock's cap) shimmers rather
+ * than strobes, fast enough that 1 hr/s visibly lives. */
 const WAVE_DRIFT_PER_DAY = { x: 0.37, y: 0.13 };
 
 /** How strongly the wave normals dent the lighting — subtle: the sea should
