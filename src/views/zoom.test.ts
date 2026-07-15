@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { dollyLookAt, dollyPosition, easeInOutCubic, lerp, lerpVector3, ZoomController } from './zoom';
+import { dollyLookAt, dollyPosition, easeInOutCubic, lerp, lerpVector3, wheelHandoff, ZoomController } from './zoom';
 
 describe('easeInOutCubic', () => {
   it('is 0 at 0 and 1 at 1', () => {
@@ -101,5 +101,22 @@ describe('dollyPosition / dollyLookAt', () => {
   it('looks at the star at value=0 and the world at value=1', () => {
     expect(dollyLookAt(worldPos, 0).equals(new THREE.Vector3(0, 0, 0))).toBe(true);
     expect(dollyLookAt(worldPos, 1).equals(worldPos)).toBe(true);
+  });
+});
+
+describe('wheelHandoff', () => {
+  it('zooming in at the system floor asks for the globe', () => {
+    expect(wheelHandoff('system', -1, 0.301, 0.3, 40)).toBe('to-globe');
+  });
+  it('zooming out at the globe ceiling asks for the system', () => {
+    expect(wheelHandoff('globe', +1, 11.99, 2.3, 12)).toBe('to-system');
+  });
+  it('mid-range wheel is just a zoom — no handoff', () => {
+    expect(wheelHandoff('system', -1, 5, 0.3, 40)).toBeNull();
+    expect(wheelHandoff('globe', +1, 6, 2.3, 12)).toBeNull();
+  });
+  it('wheeling away from the limit never hands off', () => {
+    expect(wheelHandoff('system', +1, 0.301, 0.3, 40)).toBeNull();
+    expect(wheelHandoff('globe', -1, 11.99, 2.3, 12)).toBeNull();
   });
 });

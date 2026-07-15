@@ -9,13 +9,14 @@
 // the page: a live reroll-without-reload is out of this task's scope (see
 // `onReroll`'s stub below).
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './styles.css';
 import { buildHud, type HudCallbacks } from './ui/hud';
 import { clockToDay } from './time/clock';
 import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
 import { createSystemView } from './views/system';
 import { createGlobeView, RELIEF_EXAGGERATION } from './views/globe';
-import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
+import { ZoomController, dollyLookAt, dollyPosition, wheelHandoff, type ZoomTarget } from './views/zoom';
 import { SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
@@ -136,7 +137,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   const systemView = createSystemView(system, tiles);
   systemScene.add(systemView.object3d);
   const systemReach = Math.max(system.world.orbitAu, system.star.hzOuterAu) * 3 + 2;
-  const systemFraming = new THREE.Vector3(0, systemReach * 0.6, systemReach);
+  let systemFraming = new THREE.Vector3(0, systemReach * 0.6, systemReach);
   const systemCamera = new THREE.PerspectiveCamera(
     50,
     window.innerWidth / window.innerHeight,
@@ -161,6 +162,21 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   const globeCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, globeReach * 20);
   globeCamera.position.set(0, globeReach * 0.4, globeReach);
   globeCamera.lookAt(0, 0, 0);
+
+  /** How close the system camera may dolly toward bodies — also the wheel
+   * handoff floor (matches CLOSE_OFFSET's arrival distance). */
+  const WORLD_CLOSE_DISTANCE = 0.3;
+
+  // The helm: the user owns each camera when its rung is at rest; the
+  // 1.5 s scripted dolly owns the system camera only during transitions.
+  const systemControls = new OrbitControls(systemCamera, systemCanvas);
+  systemControls.enableDamping = true;
+  systemControls.minDistance = WORLD_CLOSE_DISTANCE;
+  systemControls.maxDistance = systemReach * 2;
+  const globeControls = new OrbitControls(globeCamera, globeCanvas);
+  globeControls.enableDamping = true;
+  globeControls.minDistance = globeReach * 0.38; // just above the 60x relief
+  globeControls.maxDistance = globeReach * 2;
 
   // The zoom itself (src/views/zoom.ts): CLOSE_OFFSET is a small, arbitrary
   // "just arrived" framing for the system camera's dolly target (aesthetic,
@@ -190,6 +206,17 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   resize();
   window.addEventListener('resize', resize);
 
+  // Wheel-through: wheeling into a rung's dolly limit is a request to cross
+  // the altitude ladder rather than just a zoom (src/views/zoom.ts).
+  function maybeHandoff(deltaY: number, controls: OrbitControls): void {
+    const intent = wheelHandoff(view, deltaY, controls.getDistance(), controls.minDistance, controls.maxDistance);
+    if (intent) {
+      toggleView();
+    }
+  }
+  systemCanvas.addEventListener('wheel', (e) => maybeHandoff(e.deltaY, systemControls), { passive: true });
+  globeCanvas.addEventListener('wheel', (e) => maybeHandoff(e.deltaY, globeControls), { passive: true });
+
   const hudRoot = document.createElement('div');
   app.append(hudRoot);
 
@@ -214,6 +241,8 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
     hud.setActiveSpeed(mult);
     setCaptionFor(view);
     setViewButtonFor(view);
+    systemCanvas.style.pointerEvents = v === 'system' ? 'auto' : 'none';
+    globeCanvas.style.pointerEvents = v === 'globe' ? 'auto' : 'none';
   }
 
   /** Writes `seed`/`view`/`day` back to the URL via `replaceState` — no
@@ -241,8 +270,18 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
 
     const z = zoom.stateAt(performance.now());
     const worldPos = systemView.worldPosition(day);
-    systemCamera.position.copy(dollyPosition(systemFraming, worldPos, CLOSE_OFFSET, z.value));
-    systemCamera.lookAt(dollyLookAt(worldPos, z.value));
+    if (z.value === 0) {
+      // At rest on the system rung the user owns the camera; remember their
+      // pose so the next descent dollies from where they actually are.
+      systemControls.update();
+      systemFraming = systemCamera.position.clone();
+    } else {
+      systemCamera.position.copy(dollyPosition(systemFraming, worldPos, CLOSE_OFFSET, z.value));
+      systemCamera.lookAt(dollyLookAt(worldPos, z.value));
+    }
+    globeControls.enabled = z.value === 1;
+    if (globeControls.enabled) globeControls.update();
+    systemControls.enabled = z.value === 0;
 
     systemCanvas.style.opacity = String(z.systemOpacity);
     globeCanvas.style.opacity = String(z.globeOpacity);
@@ -314,6 +353,12 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   const hud = buildHud(hudRoot, state.seed, cb);
   setCaptionFor(view);
   setViewButtonFor(view);
+  // Stacked canvases must route input to the visible rung only — mirrors
+  // applyView's pointer-events lines for the initial view (hud isn't built
+  // yet when zoom.jumpTo(view) runs above, so this can't literally call
+  // applyView at that point).
+  systemCanvas.style.pointerEvents = view === 'system' ? 'auto' : 'none';
+  globeCanvas.style.pointerEvents = view === 'globe' ? 'auto' : 'none';
   hud.setDayRange(system.world.yearDays);
   hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
   hud.setActiveSpeed(speedMemory.restore(view));
