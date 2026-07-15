@@ -209,6 +209,11 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   // Wheel-through: wheeling into a rung's dolly limit is a request to cross
   // the altitude ladder rather than just a zoom (src/views/zoom.ts).
   function maybeHandoff(deltaY: number, controls: OrbitControls): void {
+    // Only a rung at rest may hand off: during the 1.5 s transition the
+    // inactive rung's controls are disabled and its camera pose is frozen
+    // wherever it was parked — evaluating that stale distance would let a
+    // continued scroll whipsaw the transition back mid-flight.
+    if (!controls.enabled) return;
     const intent = wheelHandoff(view, deltaY, controls.getDistance(), controls.minDistance, controls.maxDistance);
     if (intent) {
       toggleView();
