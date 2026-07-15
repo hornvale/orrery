@@ -15,17 +15,13 @@ import { clockToDay } from './time/clock';
 import { createSystemView } from './views/system';
 import { createGlobeView, RELIEF_EXAGGERATION } from './views/globe';
 import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
+import { SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
 import { randomSeed } from './ui/seed';
 import type { WorkerErrorKind } from './sim/worker';
 
 const app = document.getElementById('app')!;
-
-/** Default orrery playback rate: a full year sweeps by in ~12 real seconds. */
-function defaultDaysPerSecond(sys: SystemScene): number {
-  return sys.world.yearDays / 12;
-}
 
 const SPACE_CAPTION =
   'schematic scale: the world’s orbit is to true AU scale, but moon orbits are compressed onto even rungs for legibility — not to true distance.';
@@ -196,11 +192,28 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   const hudRoot = document.createElement('div');
   app.append(hudRoot);
 
+  const speedMemory = new SpeedMemory();
   let paused = false;
-  let daysPerSecond = defaultDaysPerSecond(system);
+  let daysPerSecond = speedMemory.restore(view) / 86400;
   let playStartMs = performance.now();
   let dayAtPlayStart = state.day;
   let day = state.day;
+
+  /** Rung switch: restore that rung's speed, re-cap the HUD, rebase the
+   * play-head. Used by the view toggle, the hashchange path, and (Task 7)
+   * the wheel handoff. */
+  function applyView(v: ZoomTarget): void {
+    view = v;
+    zoom.setTarget(view, performance.now());
+    const mult = speedMemory.restore(view);
+    daysPerSecond = mult / 86400;
+    playStartMs = performance.now();
+    dayAtPlayStart = day;
+    hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
+    hud.setActiveSpeed(mult);
+    setCaptionFor(view);
+    setViewButtonFor(view);
+  }
 
   /** Writes `seed`/`view`/`day` back to the URL via `replaceState` — no
    * reload, no scroll-jack. Throttled to ~1/s during autoplay (`force`
@@ -217,10 +230,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   }
 
   function toggleView(): void {
-    view = view === 'system' ? 'globe' : 'system';
-    zoom.setTarget(view, performance.now());
-    setCaptionFor(view);
-    setViewButtonFor(view);
+    applyView(view === 'system' ? 'globe' : 'system');
     syncUrl(true);
   }
 
@@ -253,12 +263,12 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       hud.setPaused(paused);
     },
     onSpeed(mult) {
-      // SPEED_STEPS' `mult` is sim-seconds-elapsed per real second (its
-      // labels read that way — "1 day/s" is mult=86400); daysPerSecond
-      // wants sim-days per real second, hence the /86400.
-      daysPerSecond = mult / 86400;
+      const clamped = clampMult(view, mult);
+      speedMemory.remember(view, clamped);
+      daysPerSecond = clamped / 86400; // SPEED_STEPS mult is sim-s per real s
       playStartMs = performance.now();
       dayAtPlayStart = day;
+      hud.setActiveSpeed(clamped); // corrects the button if the click was over-cap
     },
     // True-scale toggle, reroll, share-link copy, and the calendar
     // date-jump aren't part of this task — no-ops, same as before Task 10.
@@ -279,7 +289,8 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   setCaptionFor(view);
   setViewButtonFor(view);
   hud.setDayRange(system.world.yearDays);
-  hud.setMaxSpeed(null);
+  hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
+  hud.setActiveSpeed(speedMemory.restore(view));
   hud.setDay(day % system.world.yearDays);
 
   // Reading the URL happens once at boot (above, via `boot()`'s initial
@@ -299,10 +310,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       return;
     }
     if (next.view !== view) {
-      view = next.view;
-      zoom.setTarget(view, performance.now());
-      setCaptionFor(view);
-      setViewButtonFor(view);
+      applyView(next.view);
     }
     if (Math.abs(next.day - day) > 1e-9) {
       day = next.day;
