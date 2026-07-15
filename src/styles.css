@@ -32,8 +32,6 @@ canvas { display: block; }
 .error-schema h1 { color: #c792ea; }
 .error-seed-parse h1 { color: #e2574c; }
 .error-unknown h1 { color: #9fb0c8; }
-.hud-compass { bottom: 56px; left: 50%; transform: translateX(-50%); flex-direction: column;
-  padding: 0.25rem 0.5rem; gap: 0; width: 288px; }
 .compass-window { position: relative; width: 100%; height: 16px; overflow: hidden; }
 .compass-tape { position: absolute; top: 0; height: 100%; white-space: nowrap; }
 .compass-mark { position: absolute; font-size: 0.65rem; color: #9fb0c8; transform: translateX(-50%); }

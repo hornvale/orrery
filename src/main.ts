@@ -271,11 +271,19 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       dayAtPlayStart = day;
       hud.setActiveSpeed(clamped); // corrects the button if the click was over-cap
     },
-    // True-scale toggle, reroll, and share-link copy aren't part of this
-    // task — no-ops, same as before Task 10.
+    // True-scale isn't part of this task — Task 8 wires it.
     onTrueScale() {},
-    onReroll() {},
-    onShare() {},
+    onReroll() {
+      // A different seed reloads via the hashchange listener below — the
+      // one deliberate full-reload path (module doc comment).
+      location.hash = serializeAppState(defaultAppState(randomSeed()));
+    },
+    onShare() {
+      navigator.clipboard.writeText(location.href).then(
+        () => hud.flashShared(),
+        () => hud.setDate('copy failed — copy the address bar'), // clipboard can be denied; the date line self-heals next frame
+      );
+    },
     onDateJump(year, dayOfYear) {
       day = rawDateToDay(year, dayOfYear, system.world.yearDays);
       playStartMs = performance.now();
