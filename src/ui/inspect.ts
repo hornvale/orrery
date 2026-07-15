@@ -96,7 +96,7 @@ export function worldInfo(sys: SystemScene, day: number): InfoCard {
     lines: [
       `orbit ${w.orbitAu.toFixed(3)} AU · year ${w.yearDays.toFixed(1)} d`,
       w.dayLengthDays === null ? 'tidally locked (no day)' : `day length ${w.dayLengthDays.toFixed(3)} d`,
-      `obliquity ${w.obliquityDeg.toFixed(1)}°`,
+      `axial tilt ${w.obliquityDeg.toFixed(1)}°`,
       formatRawDate(dayToRawDate(day, w.yearDays)),
     ],
   };
