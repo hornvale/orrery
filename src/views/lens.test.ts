@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { LENSES, lensById, naturalLens } from './lens';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import { HEX } from './colormap';
@@ -6,6 +6,17 @@ import { elevationColor } from '../sim/palette';
 import { moistureLens, temperatureLens, topographicLens, unrestLens, plateLens } from './lens';
 import { PLATE_BOUNDARY, PLATE_SLOTS, colorPlates, isBoundaryTile, plateAdjacency } from './plateColoring';
 import type { TilesScene } from '../sim/scene';
+
+// `loadSeed42Tiles` already memoizes per-argument (see wasmFixture.ts), so
+// every call below with width 64 was already sharing one wasm instantiation
+// within this file. `beforeAll` makes that sharing structural rather than
+// incidental: the one real cost (seconds, not the ~5s vitest default) is
+// paid once, in a hook with room to breathe, and every test below just reads
+// the file-scoped `seed42Tiles` — no test needs its own elevated timeout.
+let seed42Tiles: TilesScene;
+beforeAll(async () => {
+  seed42Tiles = await loadSeed42Tiles(64);
+}, 45000);
 
 /** A 1-tile scene carrying only what the scalar lenses read. */
 const oneTile = (fields: Partial<TilesScene>): TilesScene =>
@@ -33,8 +44,8 @@ describe('the lens registry', () => {
     expect(LENSES[0]!.id).toBe('natural');
   });
 
-  it('gives every lens a label, a caption, and a legend', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('gives every lens a label, a caption, and a legend', () => {
+    const tiles = seed42Tiles;
     for (const lens of LENSES) {
       expect(lens.label.length, lens.id).toBeGreaterThan(0);
       expect(lens.caption.length, lens.id).toBeGreaterThan(0);
@@ -46,8 +57,8 @@ describe('the lens registry', () => {
     expect(lensById('no-such-lens').id).toBe('natural');
   });
 
-  it('sets dependsOnDay iff colorAt actually varies with the day', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('sets dependsOnDay iff colorAt actually varies with the day', () => {
+    const tiles = seed42Tiles;
     for (const lens of LENSES) {
       const varies = Array.from({ length: tiles.width * tiles.height }, (_, i) => i).some(
         (i) => String(lens.colorAt(tiles, i, 0)) !== String(lens.colorAt(tiles, i, 100)),
@@ -125,8 +136,8 @@ describe('the topographic lens', () => {
 });
 
 describe('the plate lens', () => {
-  it('inks boundaries and never claims the ids mean anything', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('inks boundaries and never claims the ids mean anything', () => {
+    const tiles = seed42Tiles;
     expect(plateLens.caption).toMatch(/arbitrary label/i);
     const boundary = Array.from({ length: tiles.plate.length }, (_, i) => i).find((i) =>
       isBoundaryTile(tiles, i),
@@ -134,8 +145,8 @@ describe('the plate lens', () => {
     expect(plateLens.colorAt(tiles, boundary, 0)).toEqual(PLATE_BOUNDARY);
   });
 
-  it('draws neighbouring plates in different colors', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('draws neighbouring plates in different colors', () => {
+    const tiles = seed42Tiles;
     const colors = colorPlates(tiles);
     for (const [id, ns] of plateAdjacency(tiles)) {
       const mine = PLATE_SLOTS[colors.get(id)!];
@@ -143,8 +154,8 @@ describe('the plate lens', () => {
     }
   });
 
-  it('draws a plate interior in its slot color, not the boundary ink', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('draws a plate interior in its slot color, not the boundary ink', () => {
+    const tiles = seed42Tiles;
     const interior = Array.from({ length: tiles.plate.length }, (_, i) => i).find(
       (i) => !isBoundaryTile(tiles, i),
     )!;

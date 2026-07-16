@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { PLATE_SLOTS, colorPlates, isBoundaryTile, plateAdjacency } from './plateColoring';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import type { TilesScene } from '../sim/scene';
+
+// See lens.test.ts's beforeAll comment: loadSeed42Tiles(64) already memoizes
+// per-argument, so this hook just gives the one real wasm cost a single,
+// predictable home (a hook, with its own timeout) instead of paying it
+// inline in whichever test happens to run first.
+let seed42Tiles: TilesScene;
+beforeAll(async () => {
+  seed42Tiles = await loadSeed42Tiles(64);
+}, 45000);
 
 /** A 4×2 lattice, two plates split down the middle. Only the fields the
  * coloring reads matter; note col 3 borders col 0 through the wrap. */
@@ -25,15 +34,15 @@ describe('plateAdjacency', () => {
     expect(plateAdjacency(ring()).get(3)).toContain(0);
   });
 
-  it('never records a plate as its own neighbour', async () => {
-    const adj = plateAdjacency(await loadSeed42Tiles(64));
+  it('never records a plate as its own neighbour', () => {
+    const adj = plateAdjacency(seed42Tiles);
     for (const [id, ns] of adj) expect(ns.has(id), `plate ${id}`).toBe(false);
   });
 });
 
 describe('colorPlates', () => {
-  it('gives adjacent plates different slots — the whole point', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('gives adjacent plates different slots — the whole point', () => {
+    const tiles = seed42Tiles;
     const colors = colorPlates(tiles);
     for (const [id, neighbours] of plateAdjacency(tiles)) {
       for (const n of neighbours) {
@@ -42,21 +51,21 @@ describe('colorPlates', () => {
     }
   });
 
-  it('needs no more than the six slots (degeneracy bound on a planar map)', async () => {
-    const colors = colorPlates(await loadSeed42Tiles(64));
+  it('needs no more than the six slots (degeneracy bound on a planar map)', () => {
+    const colors = colorPlates(seed42Tiles);
     for (const slot of colors.values()) {
       expect(slot).toBeGreaterThanOrEqual(0);
       expect(slot).toBeLessThan(PLATE_SLOTS.length);
     }
   });
 
-  it('colors every plate present', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('colors every plate present', () => {
+    const tiles = seed42Tiles;
     expect(colorPlates(tiles).size).toBe(new Set(tiles.plate).size);
   });
 
-  it('is deterministic', async () => {
-    const tiles = await loadSeed42Tiles(64);
+  it('is deterministic', () => {
+    const tiles = seed42Tiles;
     expect([...colorPlates(tiles)]).toEqual([...colorPlates(tiles)]);
   });
 });

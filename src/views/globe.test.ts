@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { beforeAll, expect, test } from 'vitest';
 import * as THREE from 'three';
 import {
   GLOBE_RADIUS,
@@ -208,47 +208,57 @@ function faceColors(globe: ReturnType<typeof createGlobeView>): Float32Array {
   return Float32Array.from(mesh.geometry.getAttribute('color').array as ArrayLike<number>);
 }
 
-async function makeGlobe() {
-  return createGlobeView(await loadSeed42Tiles(64), await loadSeed42System());
+// `loadSeed42Tiles`/`loadSeed42System` memoize per-argument (wasmFixture.ts),
+// so every call below already shared one wasm instantiation each within this
+// file; `beforeAll` gives that one real cost (seconds, not vitest's 5s
+// default) a single predictable home in a hook with its own timeout, instead
+// of paying it inline in whichever test happens to run first. Every test
+// below now just reads the file-scoped fixtures, so none needs an elevated
+// per-test timeout.
+// This file needs two sequential loads (tiles + system), each independently
+// observed in the 15-30s range under full-suite contention — a 30s hook
+// timeout was measured to be too tight (it fired once), so this one gets
+// double the headroom of the single-load files below.
+let seed42Tiles: TilesScene;
+let seed42System: SystemScene;
+beforeAll(async () => {
+  seed42Tiles = await loadSeed42Tiles(64);
+  seed42System = await loadSeed42System();
+}, 60000);
+
+function makeGlobe() {
+  return createGlobeView(seed42Tiles, seed42System);
 }
 
-// These four tests each instantiate the vendored wasm binary twice
-// (tiles + system) via `makeGlobe`/`loadSeed42*`, roughly double any other
-// single-fixture test in this suite. In isolation that is comfortably under
-// vitest's 5s default, but under the full `npm test` run's file-level
-// parallelism it reliably tips past it — an explicit timeout, not a slower
-// or flakier test.
-const WASM_FIXTURE_TIMEOUT_MS = 20000;
-
-test('repaints when the lens changes', async () => {
-  const globe = await makeGlobe();
+test('repaints when the lens changes', () => {
+  const globe = makeGlobe();
   globe.update(0);
   const before = faceColors(globe);
   globe.setLens(temperatureLens);
   expect(faceColors(globe)).not.toEqual(before);
-}, WASM_FIXTURE_TIMEOUT_MS);
+});
 
-test('advances the living lens with the clock', async () => {
-  const globe = await makeGlobe();
+test('advances the living lens with the clock', () => {
+  const globe = makeGlobe();
   globe.setLens(temperatureLens);
   globe.update(0);
   const winter = faceColors(globe);
   globe.update(180); // roughly half a year on
   expect(faceColors(globe)).not.toEqual(winter);
-}, WASM_FIXTURE_TIMEOUT_MS);
+});
 
-test('leaves a static lens alone as the clock runs', async () => {
-  const globe = await makeGlobe();
+test('leaves a static lens alone as the clock runs', () => {
+  const globe = makeGlobe();
   globe.setLens(moistureLens);
   globe.update(0);
   const day0 = faceColors(globe);
   globe.update(180);
   expect(faceColors(globe)).toEqual(day0);
-}, WASM_FIXTURE_TIMEOUT_MS);
+});
 
-test('blends ice under natural and never under a data lens', async () => {
-  const tiles = await loadSeed42Tiles(64);
-  const globe = createGlobeView(tiles, await loadSeed42System());
+test('blends ice under natural and never under a data lens', () => {
+  const tiles = seed42Tiles;
+  const globe = createGlobeView(tiles, seed42System);
 
   // Under a data lens every vertex is exactly its lens color — no ice blend.
   globe.setLens(moistureLens);
@@ -278,7 +288,7 @@ test('blends ice under natural and never under a data lens', async () => {
   expect(icyVertex).toBeGreaterThanOrEqual(0);
   const rawColor = naturalLens.colorAt(tiles, tileIndexOfVertex(tiles, 0, icyVertex), 0);
   expect(natural[3 * icyVertex]).not.toBeCloseTo(rawColor[0] / 255, 5);
-}, WASM_FIXTURE_TIMEOUT_MS);
+});
 
 test('the globe carries an ocean layer that follows the relief toggle', () => {
   // markerTiles is all land — give the west half sea so the ocean mounts.
