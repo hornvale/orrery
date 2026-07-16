@@ -199,6 +199,10 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   // was left in.
   const trueScaleOn: Record<ZoomTarget, boolean> = { system: false, globe: false };
 
+  // The wind overlay is a single globe-wide toggle (not per-rung like
+  // true-scale): it starts hidden, matching `createWinds`'s built geometry.
+  let windsOn = false;
+
   function setCaptionFor(v: ZoomTarget): void {
     caption.textContent =
       v === 'system'
@@ -402,6 +406,11 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       globeView.setLens(lens);
       hud.setLens(lens, lens.legend(tiles));
     },
+    onWinds() {
+      windsOn = !windsOn;
+      globeView.setWinds(windsOn);
+      hud.setWindsActive(windsOn);
+    },
   };
 
   /** Repaints the calendar text for the current `day`. Every discrete day
@@ -426,6 +435,10 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   hud.setDay(day % system.world.yearDays);
   updateDateLine();
   hud.setLens(naturalLens, naturalLens.legend(tiles)); // the picker and the globe agree from the first frame
+  hud.setWindsAvailable(
+    tiles.circulationBands !== null,
+    'no circulation bands: this world is tidally locked',
+  );
 
   const infoCard = mountInfoCard(app);
   const raycaster = new THREE.Raycaster();

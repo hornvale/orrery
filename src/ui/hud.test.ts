@@ -3,7 +3,7 @@ import { buildHud, SPEED_STEPS } from './hud';
 import { LENSES, moistureLens } from '../views/lens';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -157,5 +157,38 @@ describe('buildHud interactions', () => {
     hud.setLens(moistureLens, moistureLens.legend(undefined as never));
     const active = [...root.querySelectorAll('.hud-lenses button.active')];
     expect(active.map((b) => b.textContent)).toEqual(['moisture']);
+  });
+
+  it('winds toggle fires onWinds when available', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onWinds: () => { calls++; } });
+    hud.setWindsAvailable(true);
+    const btn = root.querySelector('button[name="winds-toggle"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    expect(calls).toBe(1);
+  });
+
+  it('winds toggle is disabled with the reason on a locked world, not hidden', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onWinds: () => { calls++; } });
+    hud.setWindsAvailable(false, 'no circulation bands: this world is tidally locked');
+    const btn = root.querySelector('button[name="winds-toggle"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(root.textContent).toContain('no circulation bands: this world is tidally locked');
+    btn.click(); // a disabled button does not dispatch a click handler at all
+    expect(calls).toBe(0);
+  });
+
+  it('setWindsActive toggles the active class', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    const btn = root.querySelector('button[name="winds-toggle"]') as HTMLButtonElement;
+    hud.setWindsActive(true);
+    expect(btn.classList.contains('active')).toBe(true);
+    hud.setWindsActive(false);
+    expect(btn.classList.contains('active')).toBe(false);
   });
 });

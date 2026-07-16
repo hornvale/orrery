@@ -23,6 +23,10 @@ export interface HudCallbacks {
   onScrub(day: number): void;
   /** The viewer picked a lens (by `Lens.id`). */
   onLens(id: string): void;
+  /** The viewer toggled the prevailing-wind overlay. Never fires while the
+   * control is disabled (no circulation bands) — the browser's own
+   * `disabled` attribute blocks the click before this callback is reached. */
+  onWinds(): void;
 }
 
 export interface Hud {
@@ -41,6 +45,12 @@ export interface Hud {
   setDay(day: number): void;
   /** Show `lens` as active: mark its button, draw its legend, show its caption. */
   setLens(lens: Lens, legend: LegendEntry[]): void;
+  /** Enables or disables the winds toggle. When unavailable, `reason` names
+   * why (a tidally locked world has no circulation bands) — shown next to
+   * the disabled button rather than the control silently vanishing. */
+  setWindsAvailable(available: boolean, reason?: string): void;
+  /** Marks the winds toggle's on/off state (only meaningful while available). */
+  setWindsActive(on: boolean): void;
 }
 
 export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud {
@@ -134,8 +144,20 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   }
   const legendBox = el('div', 'hud-legend');
   const lensCaption = el('div', 'hud-caption');
+
+  // The prevailing-wind overlay: an overlay, not a lens (it composes with
+  // whichever lens is active), but the lens panel is the one HUD container
+  // that already carries the base `hud` positioning class — a loose element
+  // outside it repeats Task 7's invisible/unclickable regression.
+  const windsToggle = el('button', '', 'winds');
+  (windsToggle as HTMLButtonElement).name = 'winds-toggle';
+  windsToggle.addEventListener('click', () => cb.onWinds());
+  const windsReason = el('span', 'hud-winds-reason', '');
+  const windsRow = el('div', 'hud-winds-row');
+  windsRow.append(windsToggle, windsReason);
+
   const lensPanel = el('div', 'hud hud-lens-panel');
-  lensPanel.append(lensRow, legendBox, lensCaption);
+  lensPanel.append(lensRow, legendBox, lensCaption, windsRow);
 
   root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
@@ -176,6 +198,11 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       }
       lensCaption.textContent = lens.caption;
     },
+    setWindsAvailable: (available, reason) => {
+      (windsToggle as HTMLButtonElement).disabled = !available;
+      windsReason.textContent = available ? '' : (reason ?? '');
+    },
+    setWindsActive: (on) => { windsToggle.classList.toggle('active', on); },
   };
   hud.setActiveSpeed(1);
   return hud;

@@ -15,6 +15,7 @@ import type { Lens } from './lens';
 import { naturalLens } from './lens';
 import { TILE_QUADS, tileGrid } from './cubeSphere';
 import { createOcean } from './ocean';
+import { createWinds } from './winds';
 import { iceFraction } from './ice';
 
 const TAU = Math.PI * 2;
@@ -223,6 +224,9 @@ export interface GlobeView {
    * a lens change is never left showing the old colors. Ice keeps blending
    * under `natural` only — see `repaintInto`'s doc comment. */
   setLens(lens: Lens): void;
+  /** Show or hide the prevailing-wind overlay — a no-op on a tidally locked
+   * world, where `createWinds` built nothing to show. */
+  setWinds(on: boolean): void;
 }
 
 /** Build the globe view: a cube-sphere mesh displaced by real relief,
@@ -354,6 +358,16 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   // stays fixed to the world, not the camera.
   const ocean = createOcean(tiles, GLOBE_RADIUS, RELIEF_EXAGGERATION);
   spinGroup.add(ocean.object3d);
+
+  // The prevailing-wind overlay: build-once static geometry (windAt takes no
+  // day — see winds.ts's doc comment), riding the world's spin like the
+  // ocean above. `null` on a tidally locked world (no circulation bands) —
+  // there is simply nothing to mount or toggle.
+  const winds = createWinds(tiles, GLOBE_RADIUS);
+  if (winds) spinGroup.add(winds.object3d);
+  function setWinds(on: boolean): void {
+    winds?.setVisible(on);
+  }
   // True-relief geometry (1x, honest) is expensive to build and most
   // sessions never ask for it — construct lazily on first toggle, not here.
   let trueGeoms: THREE.BufferGeometry[] | null = null;
@@ -419,7 +433,7 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
 
   update(0);
 
-  return { object3d: root, update, setTrueRelief, setSelected, setLens };
+  return { object3d: root, update, setTrueRelief, setSelected, setLens, setWinds };
 }
 
 /** The tile index vertex `v` of face `face`'s level-0 geometry maps to — the
