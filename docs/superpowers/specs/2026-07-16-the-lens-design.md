@@ -130,9 +130,19 @@ Each of these follows from existing precedent, not taste:
    mm/yr calibration would be invented precision; the promotion path is
    registry row CLIM-precip-units and would arrive as a *new* field. A
    "rainfall" label would launder invented precision into the UI.
-2. **Ice gates to the natural lens.** It blends into base vertex colors, so
-   leaving it active would corrupt a data colormap — and a data mode should
-   not carry decorative ice regardless.
+2. **Ice and the ocean layer both gate to the natural lens.** Ice blends into
+   base vertex colors, so leaving it active would corrupt a data colormap.
+   The **water layer** gates for the second half of that same reason: a data
+   mode should not carry decorative presentation. Seed 42 is 73% sea, and
+   ocean tiles carry real data (sea temperature, moisture, the plate id
+   beneath the ocean, unrest at oceanic boundaries) — a translucent sea veils
+   three quarters of every data lens. `topographic` needs it off too: water
+   hides the bathymetry that lens exists to show.
+
+   *This was found by looking at the render, not by any test.* The original
+   spec gated only ice, because ice's mechanical reason (it corrupts base
+   vertex colors) does not apply to a separate mesh — so the presentational
+   reason, which applies to both, went unnoticed.
 3. **Every lens states what it exaggerates or invents** (orrery#3's caption
    discipline, following `ICE_CAPTION` / `GROUND_CAPTION` in `main.ts`).
    Colormaps are presentation-only under decision 0022, the same footing as
@@ -155,12 +165,19 @@ constraints shaped the results:
   are multiplied by the directional light, so a dark ramp goes black on the
   night side. Light bases keep headroom — which is why temperature takes the
   palette's **light** neutral midpoint rather than its dark-mode one.
+- **The light tints as well as dims** (learned at Task 9, from the render).
+  That multiply is by a *colored* light: seed 42's warm G-class star
+  (`starTint` ≈ `#ffd678`) turns the near-white midpoint `#f0efec` tan. A
+  palette validator cannot catch this — it checks a color against a
+  *background*, never against a *multiplier*. The mitigation is to keep few
+  tiles at the midpoint (see the extent below), not to abandon the light
+  midpoint, which is still what buys the terminator headroom above.
 
 | Lens | Job | Ramp |
 |---|---|---|
 | `natural` | — | unchanged (existing `elevationColor` / `biomeColorForName`) |
 | `topographic` | sequential | the existing `elevationColor` hypsometric ramp, applied to land and sea alike. A cartographic convention already shipped and shared with the atlas raster; replacing it with a generic one-hue ramp would regress it for no gain. |
-| `temperature` | diverging | `#2a78d6` ← `#f0efec` → `#e34948` over [−40, 0, +40] °C, clamped. The palette's exact diverging pair and neutral midpoint (never a hue at the midpoint). |
+| `temperature` | diverging | `#2a78d6` ← `#f0efec` → `#e34948` over **[−30, 0, +30] °C**, clamped. The palette's exact diverging pair and neutral midpoint (never a hue at the midpoint). **The ±30 extent was corrected from ±40 at Task 9** (Nathan's call): a habitable world's surface sits mostly within −20…+35 °C, so a ±40 clamp parked nearly every tile at the pale midpoint and — compounded by the star-tint above — rendered the whole map beige. The clamp exists to bound outliers, not to span the theoretical range. |
 | `moisture` | sequential | blue `#cde2fb` → `#0d366b` over [0, 1] — the default sequential hue. |
 | `unrest` | sequential | aqua `#d4f0e4` → `#0a4a33` over [0, 1]. A distinct hue from moisture so switching lenses is recognizable; the two are never concurrent, so the one-hue rule is not in tension. |
 | `plate` | categorical | six slots + boundary ink — see §7.1. |

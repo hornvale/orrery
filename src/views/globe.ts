@@ -351,6 +351,13 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     activeLens = lens;
     rebuildBase();
     repaint(lastDay ?? 0, true);
+    // Water is a `natural`-only decoration, same argument as the ice blend
+    // above: ocean tiles carry real data (sea temperature, moisture, the
+    // plate beneath them, boundary unrest), and seed 42 is ~73% sea — a data
+    // lens left veiled under translucent blue would be hiding most of its
+    // own field. `topographic` is included in the hiding: water conceals the
+    // bathymetry that lens exists to show.
+    ocean.object3d.visible = lens.id === naturalLens.id;
   }
 
   // The water layer: a smooth translucent sphere at sea level, over the
@@ -358,6 +365,10 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   // stays fixed to the world, not the camera.
   const ocean = createOcean(tiles, GLOBE_RADIUS, RELIEF_EXAGGERATION);
   spinGroup.add(ocean.object3d);
+  // The globe starts on `naturalLens` (see `activeLens` above), so water
+  // starts visible from the very first frame — explicit rather than relying
+  // on three.js's `Object3D.visible` default.
+  ocean.object3d.visible = activeLens.id === naturalLens.id;
 
   // The prevailing-wind overlay: build-once static geometry (windAt takes no
   // day — see winds.ts's doc comment), riding the world's spin like the

@@ -70,8 +70,8 @@ describe('the temperature lens', () => {
     const at = (mean: number) =>
       temperatureLens.colorAt(oneTile({ t_mean_c: [mean], t_swing_c: [0] }), 0, 0);
     expect(at(0)).toEqual(HEX('#f0efec'));      // the neutral midpoint
-    expect(at(-40)).toEqual(HEX('#2a78d6'));    // the cold pole
-    expect(at(40)).toEqual(HEX('#e34948'));     // the hot pole
+    expect(at(-30)).toEqual(HEX('#2a78d6'));    // the cold pole
+    expect(at(30)).toEqual(HEX('#e34948'));     // the hot pole
     expect(at(-999)).toEqual(HEX('#2a78d6'));   // clamped
     expect(at(999)).toEqual(HEX('#e34948'));    // clamped
   });

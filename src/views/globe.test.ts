@@ -284,3 +284,18 @@ test('the globe carries an ocean layer that follows the relief toggle', () => {
   view.setTrueRelief(false);
   expect(radiusOf()).toBeCloseTo(before, 6);
 });
+
+test('water is visible under natural only — hidden under every data lens', () => {
+  const tiles = markerTiles([]);
+  tiles.sea_level_m = -2500;
+  tiles.elevation_m = [-2600, -2600, -2000, -2000, -2600, -2600, -2000, -2000];
+  tiles.ocean = [true, true, false, false, true, true, false, false];
+  const view = createGlobeView(tiles, spinningSys());
+  const ocean = view.object3d.getObjectByName('ocean')!;
+  // The globe starts on `natural` — water visible from the first frame.
+  expect(ocean.visible).toBe(true);
+  view.setLens(moistureLens);
+  expect(ocean.visible).toBe(false);
+  view.setLens(naturalLens);
+  expect(ocean.visible).toBe(true);
+});

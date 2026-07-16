@@ -74,8 +74,18 @@ export const naturalLens: Lens = {
 const TEMP_COLD = HEX('#2a78d6');
 const TEMP_MID = HEX('#f0efec');
 const TEMP_HOT = HEX('#e34948');
-/** Temperature's clamp, °C. Beyond ±40 the poles saturate. */
-const TEMP_EXTENT = 40;
+/** Temperature's clamp, °C. Beyond ±30 the poles saturate.
+ *
+ * Was ±40 — a habitable world's surface sits mostly within −20…+35 °C, so a
+ * ±40 clamp parked nearly every tile near the pale midpoint `#f0efec`. Worse,
+ * the globe's directional light *multiplies* vertex colors (it tints as well
+ * as dims), so that near-white midpoint under seed 42's warm G-class star
+ * (`starTint` ≈ `#ffd678`) rendered tan — a globe that read as "no data" even
+ * though the field was live. The clamp exists to bound outliers, not to span
+ * the theoretical range, so ±30 is tighter to the values the field actually
+ * takes. The palette endpoints themselves (`TEMP_COLD`/`TEMP_MID`/`TEMP_HOT`)
+ * are unchanged — this is a rescale of the domain, not a repaint. */
+const TEMP_EXTENT = 30;
 const MOISTURE_RAMP: RGB[] = [HEX('#cde2fb'), HEX('#0d366b')];
 const UNREST_RAMP: RGB[] = [HEX('#d4f0e4'), HEX('#0a4a33')];
 
