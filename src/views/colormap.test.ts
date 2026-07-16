@@ -19,6 +19,9 @@ describe('sequential', () => {
   it('interpolates within a segment', () => expect(sequential(stops, 0.25)).toEqual([50, 50, 50]));
   it('clamps below 0', () => expect(sequential(stops, -5)).toEqual([0, 0, 0]));
   it('clamps above 1', () => expect(sequential(stops, 5)).toEqual([200, 200, 200]));
+  it('rejects a single-stop array instead of reading stops[-1]', () => {
+    expect(() => sequential([[10, 20, 30]], 0.5)).toThrow(/at least two stops/i);
+  });
 });
 
 describe('diverging', () => {
@@ -32,8 +35,24 @@ describe('diverging', () => {
     expect(diverging(cold, mid, hot, -999, 40)).toEqual(cold);
     expect(diverging(cold, mid, hot, 999, 40)).toEqual(hot);
   });
-  it('is symmetric about the midpoint', () => {
-    expect(diverging(cold, mid, hot, -20, 40)).toEqual([128, 128, 255]);
-    expect(diverging(cold, mid, hot, 20, 40)).toEqual([255, 128, 128]);
+  it('applies the same t against each arm\'s own pole, not the other arm', () => {
+    // A non-degenerate ramp: poles at different distances from a
+    // non-extreme midpoint, so each arm's arithmetic differs from the
+    // other's. cold=[0,0,0], mid=[100,100,100], hot=[200,200,200], extent=40.
+    // v=-20 -> t=0.5 -> halfway from mid(100) toward cold(0) -> 50.
+    // v=+20 -> t=0.5 -> halfway from mid(100) toward hot(200) -> 150.
+    const rampCold: [number, number, number] = [0, 0, 0];
+    const rampMid: [number, number, number] = [100, 100, 100];
+    const rampHot: [number, number, number] = [200, 200, 200];
+    expect(diverging(rampCold, rampMid, rampHot, -20, 40)).toEqual([50, 50, 50]);
+    expect(diverging(rampCold, rampMid, rampHot, 20, 40)).toEqual([150, 150, 150]);
+  });
+
+  it('arms are independent: changing hot does not affect a negative-v result', () => {
+    const rampCold: [number, number, number] = [0, 0, 0];
+    const rampMid: [number, number, number] = [100, 100, 100];
+    const negResult = diverging(rampCold, rampMid, [200, 200, 200], -20, 40);
+    const negResultOtherHot = diverging(rampCold, rampMid, [9, 9, 9], -20, 40);
+    expect(negResultOtherHot).toEqual(negResult);
   });
 });
