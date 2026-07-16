@@ -134,8 +134,10 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   }
   const legendBox = el('div', 'hud-legend');
   const lensCaption = el('div', 'hud-caption');
+  const lensPanel = el('div', 'hud hud-lens-panel');
+  lensPanel.append(lensRow, legendBox, lensCaption);
 
-  root.append(topLeft, topRight, bottom, scrubberRow, lensRow, legendBox, lensCaption);
+  root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
     setDate: (s) => { date.textContent = s; },
     setPaused: (p) => { play.textContent = p ? '▶' : '⏸'; },
