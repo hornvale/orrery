@@ -3,7 +3,8 @@ import { LENSES, lensById, naturalLens } from './lens';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import { HEX } from './colormap';
 import { elevationColor } from '../sim/palette';
-import { moistureLens, temperatureLens, topographicLens, unrestLens } from './lens';
+import { moistureLens, temperatureLens, topographicLens, unrestLens, plateLens } from './lens';
+import { PLATE_BOUNDARY, PLATE_SLOTS, colorPlates, isBoundaryTile, plateAdjacency } from './plateColoring';
 import type { TilesScene } from '../sim/scene';
 
 /** A 1-tile scene carrying only what the scalar lenses read. */
@@ -120,5 +121,33 @@ describe('the topographic lens', () => {
         elevationColor(e, 0),
       );
     }
+  });
+});
+
+describe('the plate lens', () => {
+  it('inks boundaries and never claims the ids mean anything', async () => {
+    const tiles = await loadSeed42Tiles(64);
+    expect(plateLens.caption).toMatch(/arbitrary label/i);
+    const boundary = Array.from({ length: tiles.plate.length }, (_, i) => i).find((i) =>
+      isBoundaryTile(tiles, i),
+    )!;
+    expect(plateLens.colorAt(tiles, boundary, 0)).toEqual(PLATE_BOUNDARY);
+  });
+
+  it('draws neighbouring plates in different colors', async () => {
+    const tiles = await loadSeed42Tiles(64);
+    const colors = colorPlates(tiles);
+    for (const [id, ns] of plateAdjacency(tiles)) {
+      const mine = PLATE_SLOTS[colors.get(id)!];
+      for (const n of ns) expect(PLATE_SLOTS[colors.get(n)!], `${id} vs ${n}`).not.toEqual(mine);
+    }
+  });
+
+  it('draws a plate interior in its slot color, not the boundary ink', async () => {
+    const tiles = await loadSeed42Tiles(64);
+    const interior = Array.from({ length: tiles.plate.length }, (_, i) => i).find(
+      (i) => !isBoundaryTile(tiles, i),
+    )!;
+    expect(plateLens.colorAt(tiles, interior, 0)).not.toEqual(PLATE_BOUNDARY);
   });
 });

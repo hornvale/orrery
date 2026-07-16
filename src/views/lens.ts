@@ -13,6 +13,7 @@ import { elevationColor } from '../sim/palette';
 import { biomeColorForName } from './biomePalette';
 import { HEX, sequential, diverging } from './colormap';
 import { temperatureAt } from '../sim/climate';
+import { PLATE_BOUNDARY, PLATE_SLOTS, colorPlates, isBoundaryTile } from './plateColoring';
 
 /** 0-255 RGB, matching `elevationColor`'s existing return shape. */
 export type RGB = [number, number, number];
@@ -147,6 +148,39 @@ export const unrestLens: Lens = {
   ],
 };
 
+const plateColorCache = new WeakMap<TilesScene, Map<number, number>>();
+function platesFor(tiles: TilesScene): Map<number, number> {
+  let c = plateColorCache.get(tiles);
+  if (!c) {
+    c = colorPlates(tiles);
+    plateColorCache.set(tiles, c);
+  }
+  return c;
+}
+
+/** Plates as a map coloring: adjacent plates always differ, boundaries inked.
+ * The colors carry separation, not identity — a plate's id is an arbitrary
+ * label, so "plate 7 is blue" means nothing across worlds. */
+export const plateLens: Lens = {
+  id: 'plate',
+  label: 'plates',
+  caption:
+    'tectonic plates, colored so neighbours differ — the colors are a map coloring, not identities: a plate’s id is an arbitrary label and carries no order or meaning across worlds.',
+  dependsOnDay: false,
+  colorAt: (tiles, i) => {
+    if (isBoundaryTile(tiles, i)) return PLATE_BOUNDARY;
+    const slot = platesFor(tiles).get(tiles.plate[i]!) ?? 0;
+    return PLATE_SLOTS[slot]!;
+  },
+  legend: (tiles) => {
+    const used = new Set(platesFor(tiles).values());
+    return [
+      ...[...used].sort((a, b) => a - b).map((slot) => ({ swatch: PLATE_SLOTS[slot]!, label: '' })),
+      { swatch: PLATE_BOUNDARY, label: 'plate boundary' },
+    ];
+  },
+};
+
 /** The registry. `natural` is first — it is the default, not a base case. */
 export const LENSES: readonly Lens[] = [
   naturalLens,
@@ -154,6 +188,7 @@ export const LENSES: readonly Lens[] = [
   temperatureLens,
   moistureLens,
   unrestLens,
+  plateLens,
 ];
 
 /** The lens for `id`, falling back to `natural` for anything unrecognized
