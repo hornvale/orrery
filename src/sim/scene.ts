@@ -82,11 +82,51 @@ export interface TilesScene {
   moisture: number[];
 }
 
+/** The fields of a `scene/tiles-region/v1` document — a regional tile
+ * lattice at higher on-tile sample density, addressed by a single quad-tree
+ * node (`face`/`level`/`ix`/`iy`) subdivided into `samples` x `samples`
+ * cells. Per-node arrays keep their wire snake_case names, same rationale
+ * as `TilesScene`; the two document-level catalog fields
+ * (`circulation_bands`/`biome_legend`) camelCase identically. */
+export interface RegionScene {
+  schema: string;
+  seed: number;
+  face: number;
+  level: number;
+  ix: number;
+  iy: number;
+  samples: number;
+  sea_level_m: number;
+  /** The length of one seasonal cycle, in standard days. */
+  season_period_days: number;
+  /** The world's count of atmospheric circulation bands; `null` when the world is tidally locked and has none. */
+  circulationBands: number | null;
+  /** The full biome catalog, in stable order; `biome`'s indices key into this by position. */
+  biomeLegend: string[];
+  /** Elevation per node, meters — length `(samples+1)^2`. */
+  elevation_m: number[];
+  /** Whether each node is ocean (sea level baked in) — length `(samples+1)^2`. */
+  ocean: boolean[];
+  /** Biome per node, as an index into `biomeLegend` — length `(samples+1)^2`. */
+  biome: number[];
+  /** Tectonic plate id per node — length `(samples+1)^2`. */
+  plate: number[];
+  /** Tectonic unrest per node — length `(samples+1)^2`. */
+  unrest: number[];
+  /** Mean temperature per node, degrees Celsius — length `(samples+1)^2`. */
+  t_mean_c: number[];
+  /** Seasonal temperature swing (peak-to-mean amplitude) per node, degrees Celsius — length `(samples+1)^2`. */
+  t_swing_c: number[];
+  /** Moisture per node, a dimensionless ratio — length `(samples+1)^2`. */
+  moisture: number[];
+}
+
 /** A scene document violated the contract; the message names how. */
 export class SceneFormatError extends Error {}
 
 const SYSTEM_SCHEMA = "scene/system/v1";
 const TILES_SCHEMA = "scene/tiles/v1";
+const REGION_SCHEMA = "scene/tiles-region/v1";
 
 function fail(message: string): never {
   throw new SceneFormatError(message);
@@ -261,5 +301,60 @@ export function parseTiles(text: string): TilesScene {
     season_period_days: seasonPeriodDays,
     circulationBands,
     moisture: numberArray(doc, "moisture", tiles),
+  };
+}
+
+/** Parse and validate a scene/tiles-region/v1 document; throw SceneFormatError naming any violation. */
+export function parseRegion(text: string): RegionScene {
+  const doc = parseDocument(text);
+  if (doc.schema !== REGION_SCHEMA) {
+    fail(`schema must be ${REGION_SCHEMA}, got ${String(doc.schema)}`);
+  }
+  const seed = requireNumber(doc, "seed");
+  const face = requireNumber(doc, "face");
+  const level = requireNumber(doc, "level");
+  const ix = requireNumber(doc, "ix");
+  const iy = requireNumber(doc, "iy");
+  const samples = doc.samples;
+  if (typeof samples !== "number" || !Number.isInteger(samples) || samples <= 0) {
+    fail("samples must be a positive integer");
+  }
+  const seaLevelM = requireNumber(doc, "sea_level_m");
+  const seasonPeriodDays = requireNumber(doc, "season_period_days");
+  if (seasonPeriodDays <= 0) fail("season_period_days must be positive");
+  const circulationBandsRaw = doc.circulation_bands;
+  let circulationBands: number | null;
+  if (circulationBandsRaw === undefined || circulationBandsRaw === null) {
+    circulationBands = null;
+  } else if (
+    typeof circulationBandsRaw !== "number" ||
+    !Number.isInteger(circulationBandsRaw) ||
+    circulationBandsRaw < 1
+  ) {
+    fail("circulation_bands must be an integer >= 1, or absent");
+  } else {
+    circulationBands = circulationBandsRaw;
+  }
+  const nodes = (samples + 1) * (samples + 1);
+  return {
+    schema: REGION_SCHEMA,
+    seed,
+    face,
+    level,
+    ix,
+    iy,
+    samples,
+    sea_level_m: seaLevelM,
+    season_period_days: seasonPeriodDays,
+    circulationBands,
+    biomeLegend: stringArray(doc, "biome_legend"),
+    elevation_m: numberArray(doc, "elevation_m", nodes),
+    ocean: booleanArray(doc, "ocean", nodes),
+    biome: numberArray(doc, "biome", nodes),
+    plate: numberArray(doc, "plate", nodes),
+    unrest: numberArray(doc, "unrest", nodes),
+    t_mean_c: numberArray(doc, "t_mean_c", nodes),
+    t_swing_c: numberArray(doc, "t_swing_c", nodes),
+    moisture: numberArray(doc, "moisture", nodes),
   };
 }

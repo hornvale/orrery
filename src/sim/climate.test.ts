@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { temperatureAt, windAt, coldestC } from "./climate";
-import { loadSeed42Tiles } from "../testHelpers/wasmFixture";
+import { loadSeed42Tiles, loadSeed42Region } from "../testHelpers/wasmFixture";
 import type { TilesScene } from "./scene";
 
 const triples = JSON.parse(readFileSync("testdata/climate-triples-seed-42.json", "utf8"));
@@ -19,6 +19,24 @@ test("temperatureAt reproduces the Rust producer's temperature_at triples", asyn
     // to absorb that noise but tight enough to catch any real evaluator
     // divergence, which would show up as whole degrees of drift.
     expect(Math.abs(temperatureAt(tiles, row.i, row.day) - row.t)).toBeLessThan(0.001);
+  }
+});
+
+test("temperatureAt reproduces the Rust producer's regional temperature triples", async () => {
+  const region = await loadSeed42Region(0, 3, 4, 4, 16);
+  const lines = readFileSync("testdata/region-temperature-golden.csv", "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "" && !line.startsWith("#"));
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) {
+    const [nodeStr, dayStr, tStr] = line.split(",");
+    const node = Number(nodeStr);
+    const day = Number(dayStr);
+    const t = Number(tStr);
+    // Same tolerance rationale as the global triples test above: the client
+    // reconstructs temperatureAt from the quantized regional t_mean_c/t_swing_c
+    // coefficients while the golden is the sim's full-precision value.
+    expect(Math.abs(temperatureAt(region, node, day) - t)).toBeLessThan(1e-3);
   }
 });
 

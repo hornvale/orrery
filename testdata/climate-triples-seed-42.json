@@ -1,31 +1,31 @@
 {
-  "provenance": "seed 42, width 64; Rust temperature_grid (windows/scene) quantized; regenerate: cargo run -p hornvale-scene --example temperature_triples",
-  "width": 64,
-  "rows": [
-    {
-      "i": 0,
-      "day": 0,
-      "t": -35.670066
-    },
-    {
-      "i": 100,
-      "day": 0,
-      "t": -61.020758
-    },
-    {
-      "i": 100,
-      "day": 91.3,
-      "t": -60.754304
-    },
-    {
-      "i": 100,
-      "day": 182.6,
-      "t": -61.014268
-    },
-    {
-      "i": 2000,
-      "day": 300,
-      "t": -35.616746
-    }
-  ]
+    "provenance": "seed 42, width 64; Rust temperature_grid (windows/scene) quantized; regenerate: cargo run -p hornvale-scene --example temperature_triples",
+    "width": 64,
+    "rows": [
+        {
+            "i": 0,
+            "day": 0,
+            "t": -35.670066
+        },
+        {
+            "i": 100,
+            "day": 0,
+            "t": -60.201906
+        },
+        {
+            "i": 100,
+            "day": 91.3,
+            "t": -59.935452
+        },
+        {
+            "i": 100,
+            "day": 182.6,
+            "t": -60.195416
+        },
+        {
+            "i": 2000,
+            "day": 300,
+            "t": -35.616746
+        }
+    ]
 }

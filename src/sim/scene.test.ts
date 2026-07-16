@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSystem, parseTiles, SceneFormatError } from './scene';
+import { parseSystem, parseTiles, parseRegion, SceneFormatError } from './scene';
 
 const DOC = JSON.stringify({
   schema: 'scene/system/v1',
@@ -200,5 +200,66 @@ describe('parseTiles', () => {
     const doc = validTiles();
     delete doc.unrest;
     expect(() => parseTiles(JSON.stringify(doc))).toThrow(SceneFormatError);
+  });
+});
+
+function validRegion(): Record<string, unknown> {
+  // samples: 1 -> (1+1)^2 = 4 nodes.
+  return {
+    schema: 'scene/tiles-region/v1',
+    seed: 42,
+    face: 0,
+    level: 3,
+    ix: 4,
+    iy: 4,
+    samples: 1,
+    sea_level_m: 100.0,
+    season_period_days: 365.25,
+    circulation_bands: 3,
+    biome_legend: ['temperate-forest'],
+    elevation_m: [10.0, 20.0, 30.0, 40.0],
+    ocean: [false, false, true, false],
+    biome: [0, 0, 0, 0],
+    plate: [1, 1, 2, 2],
+    unrest: [0.1, 0.2, 0.3, 0.4],
+    t_mean_c: [15.0, 14.0, 13.0, 12.0],
+    t_swing_c: [5.0, 5.0, 5.0, 5.0],
+    moisture: [0.5, 0.5, 0.5, 0.5],
+  };
+}
+
+describe('parseRegion', () => {
+  it('reads a valid document', () => {
+    const r = parseRegion(JSON.stringify(validRegion()));
+    expect(r.schema).toEqual('scene/tiles-region/v1');
+    expect(r.samples).toEqual(1);
+    expect(r.elevation_m.length).toEqual(4);
+    expect(r.t_mean_c.length).toEqual(4);
+    expect(r.circulationBands).toEqual(3);
+    expect(r.biomeLegend).toEqual(['temperate-forest']);
+  });
+
+  it('rejects the wrong schema', () => {
+    const doc = validRegion();
+    doc.schema = 'scene/tiles/v1';
+    expect(() => parseRegion(JSON.stringify(doc))).toThrow('schema');
+  });
+
+  it('rejects a mismatched array length', () => {
+    const doc = validRegion();
+    (doc.elevation_m as number[]).push(50.0);
+    expect(() => parseRegion(JSON.stringify(doc))).toThrow('elevation_m');
+  });
+
+  it('rejects samples: 0', () => {
+    const doc = validRegion();
+    doc.samples = 0;
+    expect(() => parseRegion(JSON.stringify(doc))).toThrow('samples');
+  });
+
+  it('treats an absent circulation_bands as null (locked world)', () => {
+    const doc = validRegion();
+    delete doc.circulation_bands;
+    expect(parseRegion(JSON.stringify(doc)).circulationBands).toBeNull();
   });
 });

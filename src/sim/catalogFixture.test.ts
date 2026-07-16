@@ -6,7 +6,7 @@
  * (a non-test module) so other tests can import it without double-running
  * these tests. */
 import { expect, test } from "vitest";
-import { loadSeed42Tiles, loadSeed42System } from "../testHelpers/wasmFixture";
+import { loadSeed42Tiles, loadSeed42System, loadSeed42Region } from "../testHelpers/wasmFixture";
 
 test("the vendored binary's tiles document parses strictly", async () => {
   const tiles = await loadSeed42Tiles(64);
@@ -28,4 +28,18 @@ test("the vendored binary carries the plate and unrest layers", async () => {
   expect(Math.max(...tiles.unrest)).toBeLessThanOrEqual(1);
   expect(Math.min(...tiles.unrest)).toBeGreaterThanOrEqual(0);
   expect(new Set(tiles.plate).size).toBe(16); // seed 42 breaks into 16 plates
+});
+
+test("the vendored binary's region document parses strictly", async () => {
+  const region = await loadSeed42Region(0, 3, 4, 4, 16);
+  expect(region.schema).toBe("scene/tiles-region/v1");
+  const nodes = (16 + 1) * (16 + 1);
+  expect(region.elevation_m).toHaveLength(nodes);
+  expect(region.ocean).toHaveLength(nodes);
+  expect(region.biome).toHaveLength(nodes);
+  expect(region.plate).toHaveLength(nodes);
+  expect(region.unrest).toHaveLength(nodes);
+  expect(region.t_mean_c).toHaveLength(nodes);
+  expect(region.t_swing_c).toHaveLength(nodes);
+  expect(region.moisture).toHaveLength(nodes);
 });
