@@ -17,6 +17,7 @@ import { clockToDay } from './time/clock';
 import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
 import { createSystemView } from './views/system';
 import { createGlobeView, RELIEF_EXAGGERATION } from './views/globe';
+import { lensById, naturalLens } from './views/lens';
 import { ZoomController, dollyLookAt, dollyPosition, wheelHandoff, type ZoomTarget } from './views/zoom';
 import { SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { SystemScene, TilesScene } from './sim/scene';
@@ -396,6 +397,11 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
       renderFrame();
       syncUrl(true);
     },
+    onLens(id) {
+      const lens = lensById(id);
+      globeView.setLens(lens);
+      hud.setLens(lens, lens.legend(tiles));
+    },
   };
 
   /** Repaints the calendar text for the current `day`. Every discrete day
@@ -419,6 +425,7 @@ function mountViews(system: SystemScene, tiles: TilesScene, state: AppState): vo
   hud.setActiveSpeed(speedMemory.restore(view));
   hud.setDay(day % system.world.yearDays);
   updateDateLine();
+  hud.setLens(naturalLens, naturalLens.legend(tiles)); // the picker and the globe agree from the first frame
 
   const infoCard = mountInfoCard(app);
   const raycaster = new THREE.Raycaster();

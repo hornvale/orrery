@@ -1,3 +1,5 @@
+import { LENSES, type Lens, type LegendEntry } from '../views/lens';
+
 export const SPEED_STEPS: Array<{ label: string; mult: number }> = [
   { label: '1×', mult: 1 },
   { label: '1 min/s', mult: 60 },
@@ -19,6 +21,8 @@ export interface HudCallbacks {
    * calendar date) — the caller repositions the view and rebases autoplay
    * from here. */
   onScrub(day: number): void;
+  /** The viewer picked a lens (by `Lens.id`). */
+  onLens(id: string): void;
 }
 
 export interface Hud {
@@ -35,6 +39,8 @@ export interface Hud {
   /** Moves the scrubber to `day` without firing onScrub — for autoplay
    * driving the slider, as opposed to the user dragging it. */
   setDay(day: number): void;
+  /** Show `lens` as active: mark its button, draw its legend, show its caption. */
+  setLens(lens: Lens, legend: LegendEntry[]): void;
 }
 
 export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud {
@@ -115,7 +121,21 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   });
   scrubberRow.append(scrub, dayLabel);
 
-  root.append(topLeft, topRight, bottom, scrubberRow);
+  // The lens picker: one button per registered lens (LENSES), generically —
+  // no per-lens branch. Adding a future lens costs one file and zero HUD
+  // edits.
+  const lensRow = el('div', 'hud-lenses');
+  const lensButtons = new Map<string, HTMLButtonElement>();
+  for (const lens of LENSES) {
+    const b = el('button', '', lens.label);
+    b.addEventListener('click', () => cb.onLens(lens.id));
+    lensButtons.set(lens.id, b);
+    lensRow.appendChild(b);
+  }
+  const legendBox = el('div', 'hud-legend');
+  const lensCaption = el('div', 'hud-caption');
+
+  root.append(topLeft, topRight, bottom, scrubberRow, lensRow, legendBox, lensCaption);
   const hud: Hud = {
     setDate: (s) => { date.textContent = s; },
     setPaused: (p) => { play.textContent = p ? '▶' : '⏸'; },
@@ -141,6 +161,18 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
     setDay: (day) => {
       scrub.value = String(day);
       dayLabel.textContent = `day ${day.toFixed(1)}`;
+    },
+    setLens(lens, legend) {
+      for (const [id, b] of lensButtons) b.classList.toggle('active', id === lens.id);
+      legendBox.replaceChildren();
+      for (const row of legend) {
+        const item = el('div', 'hud-legend-row');
+        const sw = el('span', 'hud-swatch');
+        sw.style.background = `rgb(${row.swatch[0]}, ${row.swatch[1]}, ${row.swatch[2]})`;
+        item.append(sw, el('span', 'hud-legend-label', row.label));
+        legendBox.appendChild(item);
+      }
+      lensCaption.textContent = lens.caption;
     },
   };
   hud.setActiveSpeed(1);

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildHud, SPEED_STEPS } from './hud';
+import { LENSES, moistureLens } from '../views/lens';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -121,5 +122,40 @@ describe('buildHud interactions', () => {
     expect(btn.textContent).toBe('⏚ stand here');
     btn.click();
     expect(toggles).toBe(1);
+  });
+
+  it('offers a button per registered lens, with no per-lens special-casing', () => {
+    const root = document.createElement('div');
+    buildHud(root, '42', noop);
+    for (const lens of LENSES) {
+      expect(root.textContent, lens.id).toContain(lens.label);
+    }
+  });
+
+  it('reports the chosen lens id', () => {
+    const root = document.createElement('div');
+    const chosen: string[] = [];
+    buildHud(root, '42', { ...noop, onLens: (id: string) => { chosen.push(id); } });
+    const btn = [...root.querySelectorAll('button')].find((b) => b.textContent === 'temperature')!;
+    btn.click();
+    expect(chosen).toEqual(['temperature']);
+  });
+
+  it('shows the active lens caption and legend', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    // moistureLens.legend ignores its argument (its rows are fixed endpoints),
+    // so no scene is needed here.
+    hud.setLens(moistureLens, moistureLens.legend(undefined as never));
+    expect(root.textContent).toContain('not rainfall');
+    expect(root.textContent).toContain('0 — dry');
+  });
+
+  it('marks only the active lens button', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    hud.setLens(moistureLens, moistureLens.legend(undefined as never));
+    const active = [...root.querySelectorAll('.hud-lenses button.active')];
+    expect(active.map((b) => b.textContent)).toEqual(['moisture']);
   });
 });
