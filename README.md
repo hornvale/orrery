@@ -48,4 +48,4 @@ npm run build
 build the catalog there first with `make wasm-world`.
 
 Release consumption: CI and the live Pages deploy pin the catalog to
-hornvale release `world-wasm-v3` (`npm run wasm:release`).
+hornvale release `world-wasm-v4` (`npm run wasm:release`).
