@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import type { Feature, SystemScene, TilesScene } from '../sim/scene';
 import { rotationPhase, worldPhase } from '../sim/ephemeris';
 import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
+import type { Lens } from './lens';
 import { naturalLens } from './lens';
 import { TILE_QUADS, tileGrid } from './cubeSphere';
 import { createOcean } from './ocean';
@@ -217,6 +218,11 @@ export interface GlobeView {
    * stacked name label shows (while on the near side) until deselected with
    * `null`. Labels are quiet by default; a click asks for a name. */
   setSelected(featureName: string | null): void;
+  /** Swap the active lens: rebuilds the static base colors from `lens` and
+   * repaints both geometry sets immediately (not just on the next frame) so
+   * a lens change is never left showing the old colors. Ice keeps blending
+   * under `natural` only — see `repaintInto`'s doc comment. */
+  setLens(lens: Lens): void;
 }
 
 /** Build the globe view: a cube-sphere mesh displaced by real relief,
@@ -232,9 +238,12 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   spinGroup.name = 'globe-spin';
   root.add(spinGroup);
 
-  // Task 6 replaces this constant with the selected lens; today the globe
-  // always renders `natural`, exactly as it did before this lens existed.
-  const colorAt = (i: number) => naturalLens.colorAt(tiles, i, 0);
+  // The active lens and the last day painted — declared before `colorAt`
+  // (below) closes over them, since a face built later (true relief) must
+  // start on whichever lens is active then, not hardcoded to `natural`.
+  let activeLens: Lens = naturalLens;
+  let lastDay: number | null = null;
+  const colorAt = (i: number) => activeLens.colorAt(tiles, i, lastDay ?? 0);
 
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
   const faceMeshes: THREE.Mesh[] = [];
@@ -252,49 +261,92 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   // or directional light draws every edge as a seam (worst at 60× relief).
   stitchNormals(schematicGeoms);
 
-  // Ice overlay precompute: `buildFaceGeometry` bakes each vertex's
-  // ocean/biome color once at build time, but ice must advance with the sim
-  // clock, so `update(day)` recolors every frame the day changes. Rather
-  // than re-derive lat/lon → tile per vertex per tick, snapshot each face's
-  // *unfrozen* base color once (colors are identical across schematic and
-  // true-relief geometry — only positions differ under relief) and its
-  // per-vertex tile index (same grid `buildFaceGeometry` used), and blend
-  // from that snapshot every recolor instead of accumulating drift.
+  // Per-vertex tile index precompute: `buildFaceGeometry` bakes each vertex's
+  // color once at build time, but a living lens (temperature) or ice must
+  // advance with the sim clock, so `update(day)` may recolor every frame the
+  // day changes. Rather than re-derive lat/lon → tile per vertex per tick,
+  // precompute each face's per-vertex tile index once (same grid
+  // `buildFaceGeometry` used — identical across schematic and true-relief
+  // geometry, since only positions differ under relief) and reuse it both
+  // for the active lens's repaint and for `iceFraction`.
   const tileGridN = TILE_QUADS + 1;
   const tileIdxByFace: Int32Array[] = [];
-  const baseColorByFace: Float32Array[] = [];
   for (let face = 0; face < 6; face++) {
     const grid = tileGrid({ face, level: 0, ix: 0, iy: 0 });
     const idx = new Int32Array(tileGridN * tileGridN);
     for (let i = 0; i < idx.length; i++) idx[i] = tileIndex(tiles, grid.lats[i]!, grid.lons[i]!);
     tileIdxByFace.push(idx);
-    baseColorByFace.push(Float32Array.from(schematicGeoms[face]!.getAttribute('color').array as ArrayLike<number>));
   }
-  // Recolors a geometry set's `color` attribute in place from the base-color
-  // snapshot, blended toward `ICE_COLOR` by that day's `iceFraction` — called
-  // on both schematic and true-relief geometry sets (whichever exist) so the
-  // relief toggle never shows stale ice.
-  function recolorIceInto(geoms: THREE.BufferGeometry[], day: number): void {
+
+  // The active lens's static colors per face, rebuilt on `setLens`. For a
+  // living lens this is the day-0 snapshot and is overwritten per repaint;
+  // for a static one it IS the final color (modulo the ice blend below).
+  const baseColorByFace: Float32Array[] = [];
+  function rebuildBase(): void {
+    baseColorByFace.length = 0;
+    for (let face = 0; face < 6; face++) {
+      const idx = tileIdxByFace[face]!;
+      const buf = new Float32Array(idx.length * 3);
+      for (let v = 0; v < idx.length; v++) {
+        const rgb = activeLens.colorAt(tiles, idx[v]!, lastDay ?? 0);
+        buf[3 * v] = rgb[0] / 255;
+        buf[3 * v + 1] = rgb[1] / 255;
+        buf[3 * v + 2] = rgb[2] / 255;
+      }
+      baseColorByFace.push(buf);
+    }
+  }
+  rebuildBase();
+
+  /** Paints `geoms` for `day`: the active lens's color per vertex, blended
+   * toward `ICE_COLOR` only under `natural` (a data lens must show its data,
+   * not decorative ice — the blend would corrupt its colormap). */
+  function repaintInto(geoms: THREE.BufferGeometry[], day: number): void {
+    const icy = activeLens.id === naturalLens.id;
     for (let face = 0; face < 6; face++) {
       const color = geoms[face]!.getAttribute('color') as THREE.BufferAttribute;
-      const base = baseColorByFace[face]!;
       const idx = tileIdxByFace[face]!;
+      const base = baseColorByFace[face]!;
       for (let v = 0; v < idx.length; v++) {
-        const frac = iceFraction(tiles, idx[v]!, day);
-        const r = base[3 * v]!;
-        const g = base[3 * v + 1]!;
-        const b = base[3 * v + 2]!;
-        color.setXYZ(v, r + (ICE_COLOR[0] - r) * frac, g + (ICE_COLOR[1] - g) * frac, b + (ICE_COLOR[2] - b) * frac);
+        let r: number, g: number, b: number;
+        if (activeLens.dependsOnDay) {
+          const rgb = activeLens.colorAt(tiles, idx[v]!, day);
+          r = rgb[0] / 255;
+          g = rgb[1] / 255;
+          b = rgb[2] / 255;
+        } else {
+          r = base[3 * v]!;
+          g = base[3 * v + 1]!;
+          b = base[3 * v + 2]!;
+        }
+        if (icy) {
+          const frac = iceFraction(tiles, idx[v]!, day);
+          r += (ICE_COLOR[0] - r) * frac;
+          g += (ICE_COLOR[1] - g) * frac;
+          b += (ICE_COLOR[2] - b) * frac;
+        }
+        color.setXYZ(v, r, g, b);
       }
       color.needsUpdate = true;
     }
   }
-  let lastIceDay: number | null = null;
-  function recolorIce(day: number): void {
-    if (day === lastIceDay) return;
-    lastIceDay = day;
-    recolorIceInto(schematicGeoms, day);
-    if (trueGeoms) recolorIceInto(trueGeoms, day);
+
+  /** Repaints only when the day actually moved, or when forced (a lens swap
+   * or freshly built true-relief geometry). A static, non-natural lens (no
+   * ice, no day dependency) repaints once and never again. */
+  function repaint(day: number, force = false): void {
+    const still = !activeLens.dependsOnDay && activeLens.id !== naturalLens.id;
+    if (!force && day === lastDay) return;
+    if (!force && still && lastDay !== null) return;
+    lastDay = day;
+    repaintInto(schematicGeoms, day);
+    if (trueGeoms) repaintInto(trueGeoms, day);
+  }
+
+  function setLens(lens: Lens): void {
+    activeLens = lens;
+    rebuildBase();
+    repaint(lastDay ?? 0, true);
   }
 
   // The water layer: a smooth translucent sphere at sea level, over the
@@ -309,10 +361,12 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     if (on && trueGeoms === null) {
       trueGeoms = Array.from({ length: 6 }, (_, f) => buildFaceGeometry(tiles, f, GLOBE_RADIUS, 1, colorAt));
       stitchNormals(trueGeoms);
-      // Freshly built geometry starts unfrozen; force the next update() to
-      // paint it for the day already in effect (the day-unchanged guard in
-      // recolorIce would otherwise skip it).
-      lastIceDay = null;
+      // Freshly built geometry starts on the active lens's day-0/static
+      // colors baked by `colorAt`, but never the ice blend (baked at build
+      // time via `colorAt`, which never blends ice) — force-paint it now
+      // for the day already in effect rather than waiting on the next
+      // update() to notice the day is "unchanged".
+      repaint(lastDay ?? 0, true);
     }
     faceMeshes.forEach((m, f) => { m.geometry = (on ? trueGeoms! : schematicGeoms)[f]!; });
     // The terrain the markers stand on just moved — reseat them on it.
@@ -349,10 +403,11 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = rotationPhase(sys, day) * TAU;
     ocean.update(day);
-    // Ice is blended into the base vertex color (before the material's
-    // lighting), so it inherits the honest terminator for free — no ambient
-    // light means the recolored night side still shades to dark.
-    recolorIce(day);
+    // The active lens (and ice, under natural) is blended into the base
+    // vertex color before the material's lighting, so it inherits the
+    // honest terminator for free — no ambient light means the recolored
+    // night side still shades to dark.
+    repaint(day);
     if (!camera) return;
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
@@ -364,5 +419,14 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
 
   update(0);
 
-  return { object3d: root, update, setTrueRelief, setSelected };
+  return { object3d: root, update, setTrueRelief, setSelected, setLens };
+}
+
+/** The tile index vertex `v` of face `face`'s level-0 geometry maps to — the
+ * same per-vertex lookup `createGlobeView` precomputes into `tileIdxByFace`,
+ * exposed so a test can predict a specific vertex's color without
+ * duplicating the grid math. */
+export function tileIndexOfVertex(tiles: TilesScene, face: number, v: number): number {
+  const grid = tileGrid({ face, level: 0, ix: 0, iy: 0 });
+  return tileIndex(tiles, grid.lats[v]!, grid.lons[v]!);
 }

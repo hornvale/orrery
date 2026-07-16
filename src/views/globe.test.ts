@@ -9,9 +9,12 @@ import {
   onNearSide,
   sampleTile,
   subsolarPoint,
+  tileIndexOfVertex,
 } from './globe';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import type { SystemScene, TilesScene } from '../sim/scene';
+import { loadSeed42Tiles, loadSeed42System } from '../testHelpers/wasmFixture';
+import { moistureLens, naturalLens, temperatureLens } from './lens';
 
 test('sampleTile maps lat/lon to the row-major equirect lattice', () => {
   // 4×2 lattice: row 0 is lat +90..0, col 0 is lon -180.
@@ -196,6 +199,70 @@ test('subsolar longitude is frozen for a tidally locked world', () => {
   expect(subsolarPoint(sys, 0).lon).toBe(0);
   expect(subsolarPoint(sys, 123).lon).toBe(0);
 });
+
+/** Face 0's color attribute, copied (the buffer is mutated in place). */
+function faceColors(globe: ReturnType<typeof createGlobeView>): Float32Array {
+  const mesh = globe.object3d.getObjectByName('globe-face-0') as THREE.Mesh;
+  return Float32Array.from(mesh.geometry.getAttribute('color').array as ArrayLike<number>);
+}
+
+async function makeGlobe() {
+  return createGlobeView(await loadSeed42Tiles(64), await loadSeed42System());
+}
+
+// These four tests each instantiate the vendored wasm binary twice
+// (tiles + system) via `makeGlobe`/`loadSeed42*`, roughly double any other
+// single-fixture test in this suite. In isolation that is comfortably under
+// vitest's 5s default, but under the full `npm test` run's file-level
+// parallelism it reliably tips past it — an explicit timeout, not a slower
+// or flakier test.
+const WASM_FIXTURE_TIMEOUT_MS = 20000;
+
+test('repaints when the lens changes', async () => {
+  const globe = await makeGlobe();
+  globe.update(0);
+  const before = faceColors(globe);
+  globe.setLens(temperatureLens);
+  expect(faceColors(globe)).not.toEqual(before);
+}, WASM_FIXTURE_TIMEOUT_MS);
+
+test('advances the living lens with the clock', async () => {
+  const globe = await makeGlobe();
+  globe.setLens(temperatureLens);
+  globe.update(0);
+  const winter = faceColors(globe);
+  globe.update(180); // roughly half a year on
+  expect(faceColors(globe)).not.toEqual(winter);
+}, WASM_FIXTURE_TIMEOUT_MS);
+
+test('leaves a static lens alone as the clock runs', async () => {
+  const globe = await makeGlobe();
+  globe.setLens(moistureLens);
+  globe.update(0);
+  const day0 = faceColors(globe);
+  globe.update(180);
+  expect(faceColors(globe)).toEqual(day0);
+}, WASM_FIXTURE_TIMEOUT_MS);
+
+test('blends ice under natural and never under a data lens', async () => {
+  const tiles = await loadSeed42Tiles(64);
+  const globe = createGlobeView(tiles, await loadSeed42System());
+
+  // Under a data lens every vertex is exactly its lens color — no ice blend.
+  globe.setLens(moistureLens);
+  globe.update(0);
+  const data = faceColors(globe);
+  const idx = /* the same tile index the recolor used */ 0;
+  const expected = moistureLens.colorAt(tiles, tileIndexOfVertex(tiles, 0, idx), 0);
+  expect(data[0]).toBeCloseTo(expected[0] / 255, 5);
+
+  // Under natural, at least one vertex differs from the raw natural color —
+  // that difference IS the ice blend. (Seed 42 has polar ice.)
+  globe.setLens(naturalLens);
+  globe.update(0);
+  const natural = faceColors(globe);
+  expect(natural).not.toEqual(data);
+}, WASM_FIXTURE_TIMEOUT_MS);
 
 test('the globe carries an ocean layer that follows the relief toggle', () => {
   // markerTiles is all land — give the west half sea so the ocean mounts.
