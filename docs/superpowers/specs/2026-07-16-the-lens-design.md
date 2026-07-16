@@ -137,22 +137,67 @@ Each of these follows from existing precedent, not taste:
    discipline, following `ICE_CAPTION` / `GROUND_CAPTION` in `main.ts`).
    Colormaps are presentation-only under decision 0022, the same footing as
    the ice overlay: the sim has no cryosphere and no palette.
-4. **`plate` is categorical, and its colors carry no magnitude.** Plate ids
-   are labels, not quantities; the palette must not imply ordering.
+4. **`plate` colors carry separation, not identity.** Plate ids are arbitrary
+   per-world labels (`Vec<u32>`, type-audit `bare-ok(index: plate)`) with no
+   cross-world meaning and no ordering. See §7.1 — the plate count makes even
+   categorical *identity* coloring untenable, and the resolution is the
+   cartographic one.
 
-## 7. Colormap selection
+## 7. Colormaps (validated — `dataviz` skill, computed not eyeballed)
 
-Palette choice is deferred to implementation, where the `dataviz` skill is
-loaded before the first color is chosen — sequential/diverging/categorical
-selection is precisely its remit. Binding constraints set here:
+Every palette below was validated with the skill's own validator against the
+orrery's actual background (`#05070f`), not chosen by eye. Two binding
+constraints shaped the results:
 
-- `temperature` is **diverging about 0 °C** — the freezing point is the
-  meaningful midpoint, and it is the one the ice overlay already keys on.
-- `moisture` and `unrest` are **sequential** (magnitude, one direction).
-- `plate` is **categorical** (§6.4).
-- Every lens must be legible in both the day-lit and terminator-shaded
-  hemispheres, since the globe's honest day/night lighting shades data
-  colors the same as natural ones.
+- `temperature` **diverges about 0 °C** — the freezing point is the
+  meaningful midpoint, and the one the ice overlay already keys on.
+- Every lens must survive the terminator. The globe is *lit*: vertex colors
+  are multiplied by the directional light, so a dark ramp goes black on the
+  night side. Light bases keep headroom — which is why temperature takes the
+  palette's **light** neutral midpoint rather than its dark-mode one.
+
+| Lens | Job | Ramp |
+|---|---|---|
+| `natural` | — | unchanged (existing `elevationColor` / `biomeColorForName`) |
+| `topographic` | sequential | the existing `elevationColor` hypsometric ramp, applied to land and sea alike. A cartographic convention already shipped and shared with the atlas raster; replacing it with a generic one-hue ramp would regress it for no gain. |
+| `temperature` | diverging | `#2a78d6` ← `#f0efec` → `#e34948` over [−40, 0, +40] °C, clamped. The palette's exact diverging pair and neutral midpoint (never a hue at the midpoint). |
+| `moisture` | sequential | blue `#cde2fb` → `#0d366b` over [0, 1] — the default sequential hue. |
+| `unrest` | sequential | aqua `#d4f0e4` → `#0a4a33` over [0, 1]. A distinct hue from moisture so switching lenses is recognizable; the two are never concurrent, so the one-hue rule is not in tension. |
+| `plate` | categorical | six slots + boundary ink — see §7.1. |
+
+### 7.1 The plate lens — why adjacency coloring
+
+Seed 42 has **16 plates**; the validated palette has 8 slots. Per-plate
+identity coloring is therefore impossible, and the skill forbids generating a
+9th hue or cycling. Cycling would also *lie*: two adjacent plates drawing the
+same color read as one plate.
+
+The resolution is the standard cartographic one. Plate ids are arbitrary
+labels; what is physical is **where the boundaries are**. So color's job here
+is separation, not identity:
+
+1. Build the plate adjacency graph from the tile lattice (4-neighbour, with
+   longitude wraparound).
+2. Greedy-color it in **degeneracy (smallest-last) order**, ties broken by
+   plate id for determinism. A planar graph has degeneracy ≤ 5, so this is
+   theorem-backed to need **≤ 6 colors** — no cycling fallback can arise.
+3. Ink plate-boundary tiles (any 4-neighbour with a different plate id).
+
+**The validator's decisive finding:** on a *map*, any two regions can share a
+border, so the correct test is the worst pair over **all** pairs — not the
+palette-order-adjacent pairs the validator checks by default. Computing all 28
+pairs of the dark column found **blue ↔ violet at ΔE 2.5** under protanopia
+(effectively identical) and aqua ↔ magenta at 4.7. Both are perfectly safe in
+the palette's canonical slot order and catastrophic on a choropleth.
+
+Excluding violet and magenta gives the six slots — blue `#3987e5`, aqua
+`#199e70`, yellow `#c98500`, green `#008300`, red `#e66767`, orange `#d95926`
+— whose worst pair is 9.7 (aqua ↔ red). That sits in the 8–12 floor band,
+which is legal **only** with secondary encoding; the boundary ink of step 3
+supplies it, and is the layer's real information regardless.
+
+(The all-pairs-≥12 maximum is exactly 4 colors — a pleasing echo of the
+four-color theorem, but too tight for a greedy coloring to guarantee.)
 
 ## 8. Testing
 
@@ -217,5 +262,3 @@ absorbs at its next stage boundary per the standing absorption rule.
 3. **The `natural` refactor touches shipped visuals.** §8's tile-for-tile
    regression over the seed-42 fixture is the guard; if it cannot be made to
    pass exactly, that is a finding worth surfacing rather than re-baselining.
-</content>
-</invoke>
