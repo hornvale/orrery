@@ -102,6 +102,15 @@ describe('the unrest lens', () => {
     expect(at(0)).toEqual(HEX('#d4f0e4'));
     expect(at(1)).toEqual(HEX('#0a4a33'));
   });
+
+  it('discloses that the field is an approximated static snapshot', () => {
+    // The producer's terrain model card declares unrest derived-and-
+    // approximated: classified from instantaneous plate motion, with no
+    // accumulated stress history. Rendering that as a bare fact is what the
+    // caption discipline exists to prevent.
+    expect(unrestLens.caption).toMatch(/snapshot/i);
+    expect(unrestLens.caption).toMatch(/not a simulation/i);
+  });
 });
 
 describe('the topographic lens', () => {

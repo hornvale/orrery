@@ -126,11 +126,19 @@ export const moistureLens: Lens = {
   ],
 };
 
-/** Tectonic unrest, dimensionless in [0,1]. */
+/** Tectonic unrest, dimensionless in [0,1].
+ *
+ * The producer's terrain model card declares this field *derived* (geometry
+ * and rule tables, not simulation) and *approximated*: a static present-day
+ * snapshot, classified from instantaneous plate motion rather than an
+ * accumulated stress history. The caption says so — a lens that renders an
+ * approximated field as a bare fact is exactly what the caption discipline
+ * exists to prevent. */
 export const unrestLens: Lens = {
   id: 'unrest',
   label: 'unrest',
-  caption: 'tectonic unrest, dimensionless (0-1) — highest along plate boundaries.',
+  caption:
+    'tectonic unrest, dimensionless (0-1) — highest along young convergent boundaries, near zero in old interiors. A static present-day snapshot read off plate geometry, not a simulation of seismicity: it is classified from instantaneous motion, with no accumulated stress history and no deep time.',
   dependsOnDay: false,
   colorAt: (tiles, i) => sequential(UNREST_RAMP, tiles.unrest[i]!),
   legend: () => [
