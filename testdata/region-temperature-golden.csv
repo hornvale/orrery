@@ -1,0 +1,31 @@
+# Producer-sourced golden for the scene/tiles-region/v1 evaluator-equivalence test.
+# Provenance: hornvale `temperature_grid_region` (interp of `temperature_at`) —
+#   world: seed 42, generated sky (`hornvale new --seed 42`);
+#   address: face=0 level=3 ix=4 iy=4 samples=16 (the campaign golden address).
+# These are the sim's ground-truth temperatures (full precision); the orrery's
+# TS evaluator reconstructs them from the QUANTIZED regional layers and must
+# agree to ~1e-6 relative (quantization precision, decision 0033). This golden
+# is producer-sourced, NEVER a client reconstruction of itself (The Isotherm rule).
+# Regenerate: a throwaway hornvale example calling temperature_grid_region at the
+#   address above over node indices {0,8,144,200,288} x days {0,91.3,200,366.5}.
+# columns: node_index,day,temperature_c
+0,0,24.17289881446885
+8,0,24.169249117456488
+144,0,23.262446790710893
+200,0,22.513939184552605
+288,0,20.83693794933438
+0,91.3,24.226189621502165
+8,91.3,24.192115498190944
+144,91.3,23.315737597744207
+200,91.3,22.567229991585915
+288,91.3,20.890228756367694
+0,200,24.158545568937743
+8,200,24.16309032956491
+144,200,23.248093545179785
+200,200,22.499585939021497
+288,200,20.822584703803273
+0,366.5,24.171485517230106
+8,366.5,24.168642690296704
+144,366.5,23.261033493472148
+200,366.5,22.51252588731386
+288,366.5,20.835524652095636
