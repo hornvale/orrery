@@ -23,8 +23,10 @@ const SYSTEM_JSON = JSON.stringify({
     year_phase_offset: 0.20941868,
   },
   moons: [
-    { sidereal_days: 15.993805, phase_offset: 0.85759808, distance_mm: 307.74439, size_rel: 1.6350803 },
-    { sidereal_days: 32.555, phase_offset: 0.25842259, distance_mm: 494.27358, size_rel: 0.69049995 },
+    { sidereal_days: 15.993805, phase_offset: 0.85759808, distance_mm: 307.74439, size_rel: 1.6350803,
+      inclination_deg: 3.5, node_longitude_deg: 40.0 },
+    { sidereal_days: 32.555, phase_offset: 0.25842259, distance_mm: 494.27358, size_rel: 0.69049995,
+      inclination_deg: 117.277, node_longitude_deg: 200.0 },
   ],
 });
 
@@ -53,9 +55,9 @@ describe('ephemeris', () => {
   });
 
   it('synodicDays computes P·Y/(Y−P) and is null when the moon never laps the sun', () => {
-    const fastMoon = { siderealDays: 10, phaseOffset: 0, distanceMm: 1, sizeRel: 1 };
-    const slowMoon = { siderealDays: 400, phaseOffset: 0, distanceMm: 1, sizeRel: 1 };
-    const equalMoon = { siderealDays: 100, phaseOffset: 0, distanceMm: 1, sizeRel: 1 };
+    const fastMoon = { siderealDays: 10, phaseOffset: 0, distanceMm: 1, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 };
+    const slowMoon = { siderealDays: 400, phaseOffset: 0, distanceMm: 1, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 };
+    const equalMoon = { siderealDays: 100, phaseOffset: 0, distanceMm: 1, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 };
     const withMoons = (moons: (typeof fastMoon)[]) => ({
       ...sys,
       world: { ...sys.world, yearDays: 100 },
@@ -68,7 +70,7 @@ describe('ephemeris', () => {
   });
 
   it("moonPhase is 0 when the moon's synodic period is null", () => {
-    const slowMoon = { siderealDays: 400, phaseOffset: 0.3, distanceMm: 1, sizeRel: 1 };
+    const slowMoon = { siderealDays: 400, phaseOffset: 0.3, distanceMm: 1, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 };
     const s = { ...sys, world: { ...sys.world, yearDays: 100 }, moons: [slowMoon] };
     expect(moonPhase(s, 0, 42)).toEqual(0);
   });

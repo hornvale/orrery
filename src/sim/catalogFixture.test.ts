@@ -6,7 +6,13 @@
  * (a non-test module) so other tests can import it without double-running
  * these tests. */
 import { expect, test } from "vitest";
-import { loadSeed42Tiles, loadSeed42System, loadSeed42Region, loadSeed42Moons } from "../testHelpers/wasmFixture";
+import {
+  loadSeed42Tiles,
+  loadSeed42System,
+  loadSeed42Region,
+  loadSeed42Moons,
+  loadSeed42Neighbors,
+} from "../testHelpers/wasmFixture";
 
 test("the vendored binary's tiles document parses strictly", async () => {
   const tiles = await loadSeed42Tiles(64);
@@ -19,6 +25,15 @@ test("the vendored binary's system document parses strictly", async () => {
   const sys = await loadSeed42System();
   expect(sys.schema).toBe("scene/system/v1");
   expect(sys.moons.length).toBeGreaterThan(0);
+});
+
+test("the vendored binary's system moons carry inclination and node", async () => {
+  const sys = await loadSeed42System();
+  expect(sys.moons.some((m) => m.inclinationDeg > 90)).toBe(true); // the retrograde capture
+  for (const m of sys.moons) {
+    expect(m.nodeLongitudeDeg).toBeGreaterThanOrEqual(0);
+    expect(m.nodeLongitudeDeg).toBeLessThan(360);
+  }
 });
 
 test("the vendored binary carries the plate and unrest layers", async () => {
@@ -42,7 +57,18 @@ test("the vendored binary's moons document parses strictly", async () => {
     expect(m.mariaFraction).toBeGreaterThanOrEqual(0);
     expect(m.mariaFraction).toBeLessThanOrEqual(1);
     expect(m.tint).toHaveLength(3);
+    expect(m.densityGCm3).toBeGreaterThan(0);
+    expect(["giant-impact", "capture"]).toContain(m.formation);
   }
+});
+
+test("the vendored binary's neighbors document parses strictly", async () => {
+  const sky = await loadSeed42Neighbors();
+  expect(sky.schema).toBe("scene/neighbors/v1");
+  expect(sky.neighbors.length).toBeGreaterThanOrEqual(2);
+  expect(sky.neighbors.length).toBeLessThanOrEqual(5);
+  expect(sky.stars.length).toBeGreaterThanOrEqual(100);
+  expect(sky.stars.length).toBeLessThanOrEqual(300);
 });
 
 test("the vendored binary's region document parses strictly", async () => {

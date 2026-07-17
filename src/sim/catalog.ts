@@ -27,6 +27,7 @@ interface HwExports {
   hw_new_pinned(seed: bigint, len: number): number;
   hw_scene_system(): number;
   hw_scene_moons(): number;
+  hw_scene_neighbors(): number;
   hw_scene_tiles(width: number): number;
   hw_in_ptr(): number;
   hw_out_ptr(): number;
@@ -66,6 +67,8 @@ export interface Catalog {
   sceneSystem(): string;
   /** The `scene/moons/v1` document as raw JSON text. */
   sceneMoons(): string;
+  /** The `scene/neighbors/v1` document as raw JSON text. */
+  sceneNeighbors(): string;
   /** The `scene/tiles/v1` document (at `width` columns) as raw JSON text. */
   sceneTiles(width: number): string;
 }
@@ -94,6 +97,10 @@ export async function loadCatalog(wasmUrl: string): Promise<Catalog> {
     },
     sceneMoons() {
       check(e.hw_scene_moons());
+      return readOut(e);
+    },
+    sceneNeighbors() {
+      check(e.hw_scene_neighbors());
       return readOut(e);
     },
     sceneTiles(width) {

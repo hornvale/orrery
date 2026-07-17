@@ -13,6 +13,8 @@ function surface(overrides: Partial<MoonSurface> = {}): MoonSurface {
     mariaFraction: 0.5,
     tint: [0.7, 0.7, 0.7],
     surfaceClass: 'maria-rich',
+    densityGCm3: 3.34,
+    formation: 'giant-impact',
     ...overrides,
   };
 }

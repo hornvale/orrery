@@ -18,8 +18,10 @@ const sys = parseSystem(JSON.stringify({
     year_phase_offset: 0.20941868,
   },
   moons: [
-    { sidereal_days: 15.993805, phase_offset: 0.85759808, distance_mm: 307.74439, size_rel: 1.6350803 },
-    { sidereal_days: 32.555, phase_offset: 0.25842259, distance_mm: 494.27358, size_rel: 0.69049995 },
+    { sidereal_days: 15.993805, phase_offset: 0.85759808, distance_mm: 307.74439, size_rel: 1.6350803,
+      inclination_deg: 3.5, node_longitude_deg: 40.0 },
+    { sidereal_days: 32.555, phase_offset: 0.25842259, distance_mm: 494.27358, size_rel: 0.69049995,
+      inclination_deg: 117.277, node_longitude_deg: 200.0 },
   ],
 }));
 
@@ -31,10 +33,10 @@ const moons = parseMoons(JSON.stringify({
   moons: [
     { index: 0, mass_rel: 0.31, radius_km: 903.2, surface_gravity_ms2: 1.42,
       albedo: 0.18, cratering: 0.3, maria_fraction: 0.5, tint: [0.7, 0.68, 0.72],
-      surface_class: 'maria-rich' },
+      surface_class: 'maria-rich', density_g_cm3: 3.34, formation: 'giant-impact' },
     { index: 1, mass_rel: 0.04, radius_km: 350.0, surface_gravity_ms2: 0.55,
       albedo: 0.32, cratering: 0.8, maria_fraction: 0.1, tint: [0.71, 0.7, 0.69],
-      surface_class: 'heavily-cratered' },
+      surface_class: 'heavily-cratered', density_g_cm3: 3.0, formation: 'capture' },
   ],
 }));
 

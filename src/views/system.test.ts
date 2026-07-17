@@ -12,7 +12,7 @@ const sys: SystemScene = {
   seed: 42,
   star: { className: 'yellow dwarf (G)', luminosityRel: 1, hzInnerAu: 0.95, hzOuterAu: 1.4 },
   world: { orbitAu: 1, yearDays: 360, dayLengthDays: 1, obliquityDeg: 20, yearPhaseOffset: 0.25 },
-  moons: [{ siderealDays: 30, phaseOffset: 0, distanceMm: 384, sizeRel: 1 }],
+  moons: [{ siderealDays: 30, phaseOffset: 0, distanceMm: 384, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 }],
 };
 
 test('orbitAngle honors the genesis phase offset', () => {
@@ -47,6 +47,7 @@ function oneMoonMoons(): MoonsScene {
         index: 0, massRel: 1, radiusKm: 1737.4, surfaceGravityMs2: 1.62,
         albedo: 0.14, cratering: 0.3, mariaFraction: 0.5,
         tint: [0.7, 0.7, 0.7], surfaceClass: 'maria-rich',
+        densityGCm3: 3.34, formation: 'giant-impact',
       },
     ],
   };
@@ -123,8 +124,8 @@ test('two moons at the same day sit on different rungs of the radial ladder', ()
   const twoMoonSys: SystemScene = {
     ...sys,
     moons: [
-      { siderealDays: 30, phaseOffset: 0, distanceMm: 384, sizeRel: 1 },
-      { siderealDays: 45, phaseOffset: 0, distanceMm: 900, sizeRel: 0.5 },
+      { siderealDays: 30, phaseOffset: 0, distanceMm: 384, sizeRel: 1, inclinationDeg: 0, nodeLongitudeDeg: 0 },
+      { siderealDays: 45, phaseOffset: 0, distanceMm: 900, sizeRel: 0.5, inclinationDeg: 0, nodeLongitudeDeg: 0 },
     ],
   };
   const m0 = moonLocalPosition(twoMoonSys, 0, 0);

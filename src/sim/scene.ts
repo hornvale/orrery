@@ -24,6 +24,11 @@ export interface MoonElem {
   phaseOffset: number;
   distanceMm: number;
   sizeRel: number;
+  /** Orbital inclination to the anchor's orbital plane, degrees; > 90 is
+   * retrograde (The Reckoning). */
+  inclinationDeg: number;
+  /** Ecliptic longitude of the ascending node at genesis, degrees. */
+  nodeLongitudeDeg: number;
 }
 
 /** One `scene/system/v1` document: the orrery's orbital elements. */
@@ -133,6 +138,12 @@ export interface MoonSurface {
   mariaFraction: number;
   tint: number[];
   surfaceClass: string;
+  /** Bulk density, g/cm³ (The Reckoning) — the moon's real drawn/derived
+   * density; the physical basis for `radiusKm`, `surfaceGravityMs2`, and
+   * `surfaceClass`'s bright-icy branch. */
+  densityGCm3: number;
+  /** How this moon formed (The Reckoning): `"giant-impact"` or `"capture"`. */
+  formation: string;
 }
 
 /** One `scene/moons/v1` document: per-moon surface descriptors. */
@@ -140,6 +151,36 @@ export interface MoonsScene {
   schema: string;
   seed: number;
   moons: MoonSurface[];
+}
+
+/** One notable neighbor star, from `scene/neighbors/v1` (`windows/scene`'s
+ * `NeighborElem`), generation order (brightest first). */
+export interface NeighborElem {
+  index: number;
+  className: string;
+  color: string;
+  distanceLy: number;
+  brightnessRel: number;
+  raDeg: number;
+  decDeg: number;
+}
+
+/** One anonymous background field star, from `scene/neighbors/v1`
+ * (`windows/scene`'s `FieldStarElem`). */
+export interface FieldStar {
+  raDeg: number;
+  decDeg: number;
+  magnitudeClass: number;
+}
+
+/** One `scene/neighbors/v1` document: the night sky's two populations. */
+export interface NeighborsScene {
+  schema: string;
+  seed: number;
+  /** The notable neighbors, generation order (brightest first). */
+  neighbors: NeighborElem[];
+  /** The background starfield, derivation order. */
+  stars: FieldStar[];
 }
 
 /** A scene document violated the contract; the message names how. */
@@ -150,6 +191,8 @@ const TILES_SCHEMA = "scene/tiles/v1";
 const REGION_SCHEMA = "scene/tiles-region/v1";
 /** The `scene/moons/v1` schema identifier. */
 export const MOONS_SCHEMA = "scene/moons/v1";
+/** The `scene/neighbors/v1` schema identifier. */
+export const NEIGHBORS_SCHEMA = "scene/neighbors/v1";
 
 function fail(message: string): never {
   throw new SceneFormatError(message);
@@ -177,6 +220,18 @@ function requireNumber(doc: Record<string, unknown>, key: string): number {
 function requireString(doc: Record<string, unknown>, key: string): string {
   const value = doc[key];
   if (typeof value !== "string") fail(`${key} must be a string`);
+  return value;
+}
+
+function requireRaDeg(doc: Record<string, unknown>, key: string): number {
+  const value = requireNumber(doc, key);
+  if (value < 0 || value >= 360) fail(`${key} must be in [0, 360)`);
+  return value;
+}
+
+function requireDecDeg(doc: Record<string, unknown>, key: string): number {
+  const value = requireNumber(doc, key);
+  if (value < -90 || value > 90) fail(`${key} must be in [-90, 90]`);
   return value;
 }
 
@@ -215,6 +270,8 @@ function parseMoon(doc: unknown): MoonElem {
     phaseOffset: requireNumber(moon, "phase_offset"),
     distanceMm: requireNumber(moon, "distance_mm"),
     sizeRel: requireNumber(moon, "size_rel"),
+    inclinationDeg: requireNumber(moon, "inclination_deg"),
+    nodeLongitudeDeg: requireNumber(moon, "node_longitude_deg"),
   };
 }
 
@@ -251,6 +308,8 @@ function parseMoonSurface(doc: unknown): MoonSurface {
     mariaFraction: requireNumber(m, "maria_fraction"),
     tint: numberArray(m, "tint", 3),
     surfaceClass: requireString(m, "surface_class"),
+    densityGCm3: requireNumber(m, "density_g_cm3"),
+    formation: requireString(m, "formation"),
   };
 }
 
@@ -264,6 +323,57 @@ export function parseMoons(text: string): MoonsScene {
   const moons = doc.moons;
   if (!Array.isArray(moons)) fail("moons must be an array");
   return { schema: MOONS_SCHEMA, seed, moons: moons.map(parseMoonSurface) };
+}
+
+function parseNeighbor(doc: unknown): NeighborElem {
+  const n = doc as Record<string, unknown>;
+  if (typeof n !== "object" || n === null) fail("a neighbor must be an object");
+  const distanceLy = requireNumber(n, "distance_ly");
+  if (distanceLy <= 0) fail("distance_ly must be positive");
+  const brightnessRel = requireNumber(n, "brightness_rel");
+  if (brightnessRel <= 0) fail("brightness_rel must be positive");
+  return {
+    index: requireNumber(n, "index"),
+    className: requireString(n, "class_name"),
+    color: requireString(n, "color"),
+    distanceLy,
+    brightnessRel,
+    raDeg: requireRaDeg(n, "ra_deg"),
+    decDeg: requireDecDeg(n, "dec_deg"),
+  };
+}
+
+function parseFieldStar(doc: unknown): FieldStar {
+  const s = doc as Record<string, unknown>;
+  if (typeof s !== "object" || s === null) fail("a star must be an object");
+  const magnitudeClass = requireNumber(s, "magnitude_class");
+  if (!Number.isInteger(magnitudeClass) || magnitudeClass < 1 || magnitudeClass > 5) {
+    fail("magnitude_class must be an integer in 1..=5");
+  }
+  return {
+    raDeg: requireRaDeg(s, "ra_deg"),
+    decDeg: requireDecDeg(s, "dec_deg"),
+    magnitudeClass,
+  };
+}
+
+/** Parse and validate a scene/neighbors/v1 document; throw SceneFormatError naming any violation. */
+export function parseNeighbors(text: string): NeighborsScene {
+  const doc = parseDocument(text);
+  if (doc.schema !== NEIGHBORS_SCHEMA) {
+    fail(`schema must be ${NEIGHBORS_SCHEMA}, got ${String(doc.schema)}`);
+  }
+  const seed = requireNumber(doc, "seed");
+  const neighbors = doc.neighbors;
+  if (!Array.isArray(neighbors)) fail("neighbors must be an array");
+  const stars = doc.stars;
+  if (!Array.isArray(stars)) fail("stars must be an array");
+  return {
+    schema: NEIGHBORS_SCHEMA,
+    seed,
+    neighbors: neighbors.map(parseNeighbor),
+    stars: stars.map(parseFieldStar),
+  };
 }
 
 function numberArray(doc: Record<string, unknown>, key: string, length: number): number[] {
