@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSystem } from '../sim/scene';
+import { parseMoons, parseSystem } from '../sim/scene';
 import type { TilesScene } from '../sim/scene';
 import { moonPhase } from '../sim/ephemeris';
 import { daysToNextFull, moonInfo, namedTarget, settlementInfo, siteInfo, starInfo, worldInfo } from './inspect';
@@ -20,6 +20,21 @@ const sys = parseSystem(JSON.stringify({
   moons: [
     { sidereal_days: 15.993805, phase_offset: 0.85759808, distance_mm: 307.74439, size_rel: 1.6350803 },
     { sidereal_days: 32.555, phase_offset: 0.25842259, distance_mm: 494.27358, size_rel: 0.69049995 },
+  ],
+}));
+
+// A scene/moons/v1 fixture matching sys's two moons — the physical
+// descriptors moonInfo surfaces alongside the orbital elements above.
+const moons = parseMoons(JSON.stringify({
+  schema: 'scene/moons/v1',
+  seed: 42,
+  moons: [
+    { index: 0, mass_rel: 0.31, radius_km: 903.2, surface_gravity_ms2: 1.42,
+      albedo: 0.18, cratering: 0.3, maria_fraction: 0.5, tint: [0.7, 0.68, 0.72],
+      surface_class: 'maria-rich' },
+    { index: 1, mass_rel: 0.04, radius_km: 350.0, surface_gravity_ms2: 0.55,
+      albedo: 0.32, cratering: 0.8, maria_fraction: 0.1, tint: [0.71, 0.7, 0.69],
+      surface_class: 'heavily-cratered' },
   ],
 }));
 
@@ -83,6 +98,24 @@ describe('inspector content', () => {
     const dt = daysToNextFull(sys, 0, 10);
     expect(dt).not.toBeNull();
     expect(Math.abs(moonPhase(sys, 0, 10 + dt!) - 0.5)).toBeLessThan(1e-9);
+  });
+  it('the moon card wears its surface_class as flavor', () => {
+    expect(moonInfo(sys, moons, 0, 10).kindLine).toBe('maria-rich moon');
+    expect(moonInfo(sys, moons, 1, 10).kindLine).toBe('heavily-cratered moon');
+  });
+  it('the moon card surfaces mass and radius from scene/moons/v1', () => {
+    const card = moonInfo(sys, moons, 0, 10);
+    expect(card.lines.some((l) => l.includes('mass ×0.31 luna'))).toBe(true);
+    expect(card.lines.some((l) => l.includes('radius 903 km'))).toBe(true);
+  });
+  it('the moon card surfaces gravity with an Earth-g anchor', () => {
+    // 1.42 / 9.81 ≈ 0.14
+    const card = moonInfo(sys, moons, 0, 10);
+    expect(card.lines.some((l) => l.includes('1.42 m/s') && l.includes('×0.14 Earth g'))).toBe(true);
+  });
+  it('the moon card surfaces albedo', () => {
+    const card = moonInfo(sys, moons, 0, 10);
+    expect(card.lines.some((l) => l.includes('albedo 0.18'))).toBe(true);
   });
   it('star and world cards carry the document numbers', () => {
     expect(starInfo(sys).title.includes(sys.star.className)).toBe(true);

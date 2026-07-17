@@ -2,7 +2,7 @@
  * plus the already-golden derivations (ephemeris phases, tile sampling) —
  * surfacing the latent numbers behind the pixels, never computing new
  * physics (ORRERY-ephemeris-inspector). */
-import type { Feature, SystemScene, TilesScene } from '../sim/scene';
+import type { Feature, MoonsScene, SystemScene, TilesScene } from '../sim/scene';
 import { moonPhase, synodicDays } from '../sim/ephemeris';
 import { illuminatedFraction } from '../sim/moon';
 import { sampleTile } from '../views/worldMesh';
@@ -31,6 +31,10 @@ export function namedTarget(name: string): Target | null {
 
 const fmtLat = (lat: number) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}`;
 const fmtLon = (lon: number) => `${Math.abs(lon).toFixed(1)}°${lon >= 0 ? 'E' : 'W'}`;
+
+/** Standard Earth surface gravity, m/s² — the intuition anchor for a
+ * moon's `surfaceGravityMs2` (`scene/moons/v1`), not a simulated quantity. */
+const EARTH_G_MS2 = 9.81;
 
 /** Days until moon `i` next reaches full (phase 0.5); null if it never
  * laps the sun (synodicDays' own null case). */
@@ -78,17 +82,23 @@ export function siteInfo(tiles: TilesScene, features: Feature[]): InfoCard {
   };
 }
 
-/** Moon `i` now: elements plus instantaneous illumination. */
-export function moonInfo(sys: SystemScene, i: number, day: number): InfoCard {
+/** Moon `i` now: orbital elements, instantaneous illumination, and its
+ * `scene/moons/v1` physical surface descriptors (mass, radius, gravity,
+ * albedo, surface class). */
+export function moonInfo(sys: SystemScene, moons: MoonsScene, i: number, day: number): InfoCard {
   const m = sys.moons[i]!;
+  const surface = moons.moons[i]!;
   const lit = illuminatedFraction(moonPhase(sys, i, day));
   const full = daysToNextFull(sys, i, day);
   return {
     title: `moon ${i + 1} of ${sys.moons.length}`,
-    kindLine: 'moon',
+    kindLine: `${surface.surfaceClass} moon`,
     lines: [
       `sidereal period ${m.siderealDays.toFixed(2)} d`,
       `distance ${m.distanceMm.toFixed(0)} Mm · size ×${m.sizeRel.toFixed(2)}`,
+      `mass ×${surface.massRel.toFixed(2)} luna · radius ${surface.radiusKm.toFixed(0)} km`,
+      `surface gravity ${surface.surfaceGravityMs2.toFixed(2)} m/s² (×${(surface.surfaceGravityMs2 / EARTH_G_MS2).toFixed(2)} Earth g)`,
+      `albedo ${surface.albedo.toFixed(2)}`,
       `illuminated ${(lit * 100).toFixed(0)} %`,
       full === null ? 'never laps the sun (no synodic month)' : `full in ${full.toFixed(1)} d`,
     ],

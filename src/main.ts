@@ -467,7 +467,7 @@ function mountViews(system: SystemScene, moons: MoonsScene, tiles: TilesScene, s
         if (target.kind !== 'feature') globeView.setSelected(null);
         if (target.kind === 'star') return infoCard.show(starInfo(system));
         if (target.kind === 'world') return infoCard.show(worldInfo(system, day));
-        if (target.kind === 'moon') return infoCard.show(moonInfo(system, target.index, day));
+        if (target.kind === 'moon') return infoCard.show(moonInfo(system, moons, target.index, day));
         const f = tiles.features.find((x) => x.name === target.name);
         if (f) {
           // The whole site shares the card: every feature on these exact
