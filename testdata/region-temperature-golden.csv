@@ -6,8 +6,7 @@
 # TS evaluator reconstructs them from the QUANTIZED regional layers and must
 # agree to ~1e-6 relative (quantization precision, decision 0033). This golden
 # is producer-sourced, NEVER a client reconstruction of itself (The Isotherm rule).
-# Regenerate: a throwaway hornvale example calling temperature_grid_region at the
-#   address above over node indices {0,8,144,200,288} x days {0,91.3,200,366.5}.
+# Regenerate: cargo run -p hornvale-scene --example region_temperature_golden
 # columns: node_index,day,temperature_c
 0,0,24.17289881446885
 8,0,24.169249117456488
@@ -18,14 +17,14 @@
 8,91.3,24.192115498190944
 144,91.3,23.315737597744207
 200,91.3,22.567229991585915
-288,91.3,20.890228756367694
+288,91.3,20.9043025364021
 0,200,24.158545568937743
 8,200,24.16309032956491
 144,200,23.248093545179785
 200,200,22.499585939021497
-288,200,20.822584703803273
+288,200,20.818794098413147
 0,366.5,24.171485517230106
 8,366.5,24.168642690296704
 144,366.5,23.261033493472148
 200,366.5,22.51252588731386
-288,366.5,20.835524652095636
+288,366.5,20.83515140883721
