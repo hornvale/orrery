@@ -90,15 +90,20 @@ export function moonInfo(sys: SystemScene, moons: MoonsScene, i: number, day: nu
   const surface = moons.moons[i]!;
   const lit = illuminatedFraction(moonPhase(sys, i, day));
   const full = daysToNextFull(sys, i, day);
+  // An inclination past 90° sweeps the retrograde way once projected onto
+  // the orbit plane (`moonLocalPosition`, ./views/system.ts) — the same
+  // threshold flags it here.
+  const retrograde = m.inclinationDeg > 90;
   return {
     title: `moon ${i + 1} of ${sys.moons.length}`,
-    kindLine: `${surface.surfaceClass} moon`,
+    kindLine: `${retrograde ? 'retrograde ' : ''}${surface.surfaceClass} moon`,
     lines: [
       `sidereal period ${m.siderealDays.toFixed(2)} d`,
       `distance ${m.distanceMm.toFixed(0)} Mm · size ×${m.sizeRel.toFixed(2)}`,
       `mass ×${surface.massRel.toFixed(2)} luna · radius ${surface.radiusKm.toFixed(0)} km`,
       `surface gravity ${surface.surfaceGravityMs2.toFixed(2)} m/s² (×${(surface.surfaceGravityMs2 / EARTH_G_MS2).toFixed(2)} Earth g)`,
       `albedo ${surface.albedo.toFixed(2)}`,
+      `formed by ${surface.formation} · density ${surface.densityGCm3.toFixed(2)} g/cm³`,
       `illuminated ${(lit * 100).toFixed(0)} %`,
       full === null ? 'never laps the sun (no synodic month)' : `full in ${full.toFixed(1)} d`,
     ],

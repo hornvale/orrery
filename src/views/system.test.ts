@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import * as THREE from 'three';
 import { createSystemView, orbitAngle, moonLocalPosition } from './system';
 import { rotationPhase } from '../sim/ephemeris';
+import { moonOrbitRadiusUnits } from './scale';
 import type { MoonsScene, NeighborsScene, SystemScene, TilesScene } from '../sim/scene';
 
 // Names adapted to the parsed (camelCase) SystemScene shape — the brief's
@@ -125,6 +126,56 @@ test('the pole stands out of the orbit plane, leaning by the obliquity, without 
   expect(pole.y).toBeCloseTo(Math.cos((20 * Math.PI) / 180), 6);
   const later = poleAt(123.4);
   expect(later.distanceTo(pole)).toBeLessThan(1e-6);
+});
+
+test('inclination 0 reproduces the pre-tilt circular position exactly', () => {
+  // Pinned numeric case: siderealDays 30, phaseOffset 0, day 7.5 → quarter
+  // turn, so (x, z) = (0, r) for some radius r — inclination/node 0 must
+  // leave this untouched (the tilt is a no-op at inclination 0 by
+  // construction: applyAxisAngle by 0 radians is the identity).
+  const v = moonLocalPosition(sys, 0, 7.5);
+  const r = moonOrbitRadiusUnits(0, sys.moons[0]!.distanceMm, false);
+  expect(v.x).toBeCloseTo(0, 8);
+  expect(v.y).toBeCloseTo(0, 8);
+  expect(v.z).toBeCloseTo(r, 8);
+});
+
+test('inclination 90 lifts the moon out of the orbit plane', () => {
+  const tilted: SystemScene = {
+    ...sys,
+    moons: [{ ...sys.moons[0]!, inclinationDeg: 90 }],
+  };
+  const radius = moonOrbitRadiusUnits(0, sys.moons[0]!.distanceMm, false);
+  const sampledDays = [0, 3, 7.5, 15, 22.5, 29];
+  const liftedSomeday = sampledDays.some((day) => {
+    const v = moonLocalPosition(tilted, 0, day);
+    return Math.abs(v.y) > 0.01 * radius;
+  });
+  expect(liftedSomeday).toBe(true);
+});
+
+test('inclination 180 reverses the projected sweep direction versus inclination 0', () => {
+  const prograde: SystemScene = { ...sys, moons: [{ ...sys.moons[0]!, inclinationDeg: 0 }] };
+  const retrograde: SystemScene = { ...sys, moons: [{ ...sys.moons[0]!, inclinationDeg: 180 }] };
+  const dayA = 1;
+  const dayB = 1.1;
+  const angleAt = (s: SystemScene) => {
+    const a = moonLocalPosition(s, 0, dayA);
+    const b = moonLocalPosition(s, 0, dayB);
+    return Math.atan2(b.z, b.x) - Math.atan2(a.z, a.x);
+  };
+  const deltaPrograde = angleAt(prograde);
+  const deltaRetrograde = angleAt(retrograde);
+  expect(Math.sign(deltaPrograde)).not.toBe(0);
+  expect(Math.sign(deltaRetrograde)).toBe(-Math.sign(deltaPrograde));
+});
+
+test('node longitude changes the tilted position at the same inclination', () => {
+  const node0: SystemScene = { ...sys, moons: [{ ...sys.moons[0]!, inclinationDeg: 45, nodeLongitudeDeg: 0 }] };
+  const node90: SystemScene = { ...sys, moons: [{ ...sys.moons[0]!, inclinationDeg: 45, nodeLongitudeDeg: 90 }] };
+  const a = moonLocalPosition(node0, 0, 5);
+  const b = moonLocalPosition(node90, 0, 5);
+  expect(a.distanceTo(b)).toBeGreaterThan(1e-6);
 });
 
 test('two moons at the same day sit on different rungs of the radial ladder', () => {

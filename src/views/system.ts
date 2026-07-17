@@ -23,6 +23,7 @@ import { moonTexture } from './moonTexture';
 import { buildRealStarfield } from './starfield';
 
 const TAU = Math.PI * 2;
+const DEG = Math.PI / 180;
 
 /** Schematic world units per AU — governs the star's orbit line, the
  * world's orbit radius, and the HZ annulus. Must match `./scale.ts`'s
@@ -69,16 +70,25 @@ function moonOrbitalPhase(sys: SystemScene, i: number, day: number): number {
 
 /** Moon `i`'s position (world units, in the world's local frame) at `day`,
  * on the schematic radial ladder, or (if `trueScale`) at its true
- * `distanceMm` through the same AU scale as the world's orbit. */
+ * `distanceMm` through the same AU scale as the world's orbit. The flat
+ * circular position is tilted about the ascending-node axis by
+ * `inclinationDeg` — 0 reproduces the untilted circle exactly (an
+ * axis-angle rotation by 0 radians is the identity), while inclinations
+ * past 90° (e.g. a captured retrograde moon) sweep the opposite way once
+ * projected back onto the xz plane. */
 export function moonLocalPosition(
   sys: SystemScene,
   i: number,
   day: number,
   trueScale = false,
 ): THREE.Vector3 {
+  const m = sys.moons[i]!;
   const angle = moonOrbitalPhase(sys, i, day) * TAU;
-  const radius = moonOrbitRadiusUnits(i, sys.moons[i]!.distanceMm, trueScale);
-  return new THREE.Vector3(radius * Math.cos(angle), 0, radius * Math.sin(angle));
+  const radius = moonOrbitRadiusUnits(i, m.distanceMm, trueScale);
+  const v = new THREE.Vector3(radius * Math.cos(angle), 0, radius * Math.sin(angle));
+  const node = m.nodeLongitudeDeg * DEG;
+  const nodeAxis = new THREE.Vector3(Math.cos(node), 0, Math.sin(node));
+  return v.applyAxisAngle(nodeAxis, m.inclinationDeg * DEG);
 }
 
 /** The system view's public surface: a mountable object graph plus the two

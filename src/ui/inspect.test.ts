@@ -103,7 +103,8 @@ describe('inspector content', () => {
   });
   it('the moon card wears its surface_class as flavor', () => {
     expect(moonInfo(sys, moons, 0, 10).kindLine).toBe('maria-rich moon');
-    expect(moonInfo(sys, moons, 1, 10).kindLine).toBe('heavily-cratered moon');
+    // Moon 1's inclination is 117.277° (> 90°) — retrograde-tagged below.
+    expect(moonInfo(sys, moons, 1, 10).kindLine).toBe('retrograde heavily-cratered moon');
   });
   it('the moon card surfaces mass and radius from scene/moons/v1', () => {
     const card = moonInfo(sys, moons, 0, 10);
@@ -118,6 +119,18 @@ describe('inspector content', () => {
   it('the moon card surfaces albedo', () => {
     const card = moonInfo(sys, moons, 0, 10);
     expect(card.lines.some((l) => l.includes('albedo 0.18'))).toBe(true);
+  });
+  it('the moon card surfaces formation and density from scene/moons/v1', () => {
+    const card = moonInfo(sys, moons, 0, 10);
+    expect(card.lines.some((l) => l.includes('formed by giant-impact · density 3.34 g/cm³'))).toBe(true);
+    const other = moonInfo(sys, moons, 1, 10);
+    expect(other.lines.some((l) => l.includes('formed by capture · density 3.00 g/cm³'))).toBe(true);
+  });
+  it('a prograde moon (inclination 3.5°) carries no retrograde tag', () => {
+    expect(moonInfo(sys, moons, 0, 10).kindLine).toBe('maria-rich moon');
+  });
+  it('a retrograde moon (inclination 117.277° > 90°) is tagged on the kind line', () => {
+    expect(moonInfo(sys, moons, 1, 10).kindLine).toBe('retrograde heavily-cratered moon');
   });
   it('star and world cards carry the document numbers', () => {
     expect(starInfo(sys).title.includes(sys.star.className)).toBe(true);
