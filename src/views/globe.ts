@@ -8,7 +8,7 @@
  * the three.js scene graph builder (`createGlobeView`) that consumes it.
  */
 import * as THREE from 'three';
-import type { Feature, SystemScene, TilesScene } from '../sim/scene';
+import type { EclipseEvent, Feature, SystemScene, TilesScene } from '../sim/scene';
 import { rotationPhase, worldPhase } from '../sim/ephemeris';
 import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
 import type { Lens } from './lens';
@@ -18,6 +18,7 @@ import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { iceFraction } from './ice';
 import { systemSeasonalContext } from '../sim/lockedClimate';
+import { MARGIN as ECLIPSE_MARGIN, bandVisibleAt, buildEclipseBand } from './eclipseBand';
 
 const TAU = Math.PI * 2;
 
@@ -82,8 +83,10 @@ export function seasonalSpinZ(sys: SystemScene, day: number, hold: boolean): num
 }
 
 /** Unit vector for a (lat, lon) in degrees — the inverse of `cubeSphere.ts`'s
- * `unitLatLon` (lat = asin(z), lon = atan2(y, x)). */
-function latLonToUnit(latDeg: number, lonDeg: number): THREE.Vector3 {
+ * `unitLatLon` (lat = asin(z), lon = atan2(y, x)). Exported so `./eclipseBand`
+ * builds its shadow-band geometry from the same one true convention rather
+ * than a second copy. */
+export function latLonToUnit(latDeg: number, lonDeg: number): THREE.Vector3 {
   const lat = (latDeg * Math.PI) / 180;
   const lon = (lonDeg * Math.PI) / 180;
   return new THREE.Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat));
@@ -253,8 +256,15 @@ export interface GlobeView {
  * colored by ocean depth or biome, carrying settlement markers, and lit by a
  * fixed-direction "sun" whose latitude tracks the season while the mesh
  * itself spins by `rotationPhase` — together reproducing `subsolarPoint`'s
- * lat/lon on the rotating surface without moving the light twice. */
-export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView {
+ * lat/lon on the rotating surface without moving the light twice. `eclipses`
+ * (default `[]`, so existing callers still compile) are this world's dated
+ * eclipse events; each solar one's shadow band (`./eclipseBand.ts`) is drawn
+ * on the globe while `update`'s day is within `bandVisibleAt`'s margin. */
+export function createGlobeView(
+  tiles: TilesScene,
+  sys: SystemScene,
+  eclipses: EclipseEvent[] = [],
+): GlobeView {
   const root = new THREE.Object3D();
   root.name = 'globe-root';
 
@@ -430,6 +440,16 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     spinGroup.add(marker.group);
   }
 
+  // Eclipse shadow bands (Task 8): glued to geographic surface coords like
+  // the markers above, so this group mounts on `spinGroup`, not `root` — a
+  // band on `root` would sit still while the planet turns beneath it. Built
+  // lazily per solar event and cached, mirroring `setTrueRelief`'s lazy
+  // true-geometry build above; lunar events (`track === null`) are skipped.
+  const eclipseGroup = new THREE.Object3D();
+  eclipseGroup.name = 'globe-eclipse-bands';
+  spinGroup.add(eclipseGroup);
+  const bandMeshes: (THREE.Mesh | null)[] = eclipses.map(() => null);
+
   // No ambient light here: the night side is meant to fall to shader
   // darkness (spec §4½) — the system view's ambient wash belongs to that
   // view's always-lit spheres, not this one's honest terminator.
@@ -468,6 +488,20 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
     // honest terminator for free — no ambient light means the recolored
     // night side still shades to dark.
     repaint(day);
+    // Show whichever solar events' bands are due, hide the rest; build a
+    // band's geometry only the first time it becomes visible.
+    for (let i = 0; i < eclipses.length; i++) {
+      const event = eclipses[i]!;
+      if (event.track === null) continue;
+      const visible = bandVisibleAt(event, day, ECLIPSE_MARGIN);
+      if (visible && bandMeshes[i] === null) {
+        const mesh = buildEclipseBand(event.track, GLOBE_RADIUS);
+        eclipseGroup.add(mesh);
+        bandMeshes[i] = mesh;
+      }
+      const mesh = bandMeshes[i];
+      if (mesh) mesh.visible = visible;
+    }
     if (!camera) return;
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);

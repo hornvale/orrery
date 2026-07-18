@@ -178,7 +178,7 @@ function mountViews(
   // side, not just during the ~1.5s transition.
   const globeScene = new THREE.Scene();
   globeScene.background = new THREE.Color(0x000000);
-  const globeView = createGlobeView(tiles, system);
+  const globeView = createGlobeView(tiles, system, eclipses.events);
   globeScene.add(globeView.object3d);
   const globeReach = 6;
   const globeCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, globeReach * 20);
