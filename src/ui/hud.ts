@@ -27,10 +27,18 @@ export interface HudCallbacks {
    * control is disabled (no circulation bands) — the browser's own
    * `disabled` attribute blocks the click before this callback is reached. */
   onWinds(): void;
+  /** The viewer toggled the spin freeze: hold the globe's daily rotation so a
+   * year's seasons and ice are watchable at speed, decoupled from the clock
+   * rate. Overrides the automatic hold-at-fast-rates behavior. */
+  onFreezeSpin(): void;
   /** The viewer toggled the ocean's drifting wave pattern. */
   onWaves(): void;
   /** The viewer toggled the ocean's sun-glint (specular highlight). */
   onGlint(): void;
+  /** The viewer toggled the night-side fill: brighten the unlit hemisphere so
+   * the far side (its terrain, its temperature) is readable through the
+   * night, instead of the default honest dark terminator. */
+  onNightFill(): void;
 }
 
 export interface Hud {
@@ -55,10 +63,14 @@ export interface Hud {
   setWindsAvailable(available: boolean, reason?: string): void;
   /** Marks the winds toggle's on/off state (only meaningful while available). */
   setWindsActive(on: boolean): void;
+  /** Marks the freeze-spin toggle's on/off state. */
+  setFreezeSpinActive(on: boolean): void;
   /** Marks the ocean wave-pattern toggle's on/off state. */
   setWavesActive(on: boolean): void;
   /** Marks the ocean sun-glint toggle's on/off state. */
   setGlintActive(on: boolean): void;
+  /** Marks the night-side fill toggle's on/off state. */
+  setNightFillActive(on: boolean): void;
 }
 
 export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud {
@@ -118,6 +130,15 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
     speedButtons.push(b);
     bottom.append(b);
   }
+  // Decouple the globe's daily spin from the clock: freeze the rotation so a
+  // year's seasons/ice sweep past on a still globe (the terminator keeps
+  // tracking the season). Forces the hold on at any speed, overriding the
+  // automatic hold-at-fast-rates.
+  const freezeSpin = el('button', '', 'freeze spin');
+  (freezeSpin as HTMLButtonElement).name = 'freeze-spin';
+  freezeSpin.title = 'Hold the daily spin so seasons and ice are watchable at any speed';
+  freezeSpin.addEventListener('click', () => cb.onFreezeSpin());
+  bottom.append(freezeSpin);
 
   // The orrery's day scrubber — a distinct control from the calendar
   // play/speed row above: it drags a raw ephemeris `day` (the system view's
@@ -173,8 +194,14 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   const glintToggle = el('button', '', 'glint');
   (glintToggle as HTMLButtonElement).name = 'glint-toggle';
   glintToggle.addEventListener('click', () => cb.onGlint());
+  // Night-side fill: a globe-lighting toggle grouped with the surface effects
+  // (off by default — the honest dark terminator).
+  const nightFillToggle = el('button', '', 'night fill');
+  (nightFillToggle as HTMLButtonElement).name = 'night-fill-toggle';
+  nightFillToggle.title = 'Brighten the unlit far side so its terrain and temperature stay readable';
+  nightFillToggle.addEventListener('click', () => cb.onNightFill());
   const oceanRow = el('div', 'hud-winds-row');
-  oceanRow.append(wavesToggle, glintToggle);
+  oceanRow.append(wavesToggle, glintToggle, nightFillToggle);
 
   const lensPanel = el('div', 'hud hud-lens-panel');
   lensPanel.append(lensRow, legendBox, lensCaption, windsRow, oceanRow);
@@ -223,8 +250,10 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       windsReason.textContent = available ? '' : (reason ?? '');
     },
     setWindsActive: (on) => { windsToggle.classList.toggle('active', on); },
+    setFreezeSpinActive: (on) => { freezeSpin.classList.toggle('active', on); },
     setWavesActive: (on) => { wavesToggle.classList.toggle('active', on); },
     setGlintActive: (on) => { glintToggle.classList.toggle('active', on); },
+    setNightFillActive: (on) => { nightFillToggle.classList.toggle('active', on); },
   };
   hud.setActiveSpeed(1);
   hud.setWavesActive(true);

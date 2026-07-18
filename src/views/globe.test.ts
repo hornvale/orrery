@@ -167,6 +167,22 @@ test('co-located features build one marker group, named for the flagship', () =>
   expect(groups[0]!.name).toBe('feature-Home');
 });
 
+test('setNightFill raises an ambient fill, off by default (honest dark terminator)', () => {
+  const tiles = markerTiles([{ name: 'Alpha', kind: 'settlement', latitude: 0, longitude: 0 }]);
+  const view = createGlobeView(tiles, spinningSys());
+  let ambient: THREE.AmbientLight | null = null;
+  view.object3d.traverse((o) => {
+    if ((o as THREE.AmbientLight).isAmbientLight) ambient = o as THREE.AmbientLight;
+  });
+  const amb = ambient as THREE.AmbientLight | null;
+  expect(amb).not.toBeNull();
+  expect(amb!.intensity).toBe(0); // default: night side falls to dark
+  view.setNightFill(true);
+  expect(amb!.intensity).toBeGreaterThan(0);
+  view.setNightFill(false);
+  expect(amb!.intensity).toBe(0);
+});
+
 test('onNearSide admits markers up to the limb and rejects the far side', () => {
   const cam = new THREE.Vector3(0, 0, 6); // r/d = 1/3 → horizon ≈ 70.5°
   const at = (thetaDeg: number) => {

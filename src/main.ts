@@ -227,11 +227,17 @@ function mountViews(
   // HUD reflects that initial state in buildHud.
   let wavesOn = true;
   let glintOn = true;
+  // Night-side fill starts off — the default honest dark terminator.
+  let nightFillOn = false;
 
   // Task 9's seasonal hold: a single flag (not per-rung — it tracks the
   // active clock mult, which is shared) reflecting whether the globe's
   // diurnal spin is currently frozen.
   let seasonalHoldOn = false;
+  // The user's spin-freeze override: when set, the globe's daily rotation is
+  // held at ANY speed (not just above SEASONAL_HOLD_MULT), so seasons/ice are
+  // watchable at the middle rates too. Decouples the spin from the clock.
+  let spinFrozenByUser = false;
 
   function setCaptionFor(v: ZoomTarget): void {
     if (v === 'system') {
@@ -246,7 +252,7 @@ function mountViews(
    * active clock mult and refreshes the caption — called wherever the mult
    * changes (boot, rung switch, and a direct speed pick). */
   function applySeasonalHold(mult: number): void {
-    seasonalHoldOn = mult > SEASONAL_HOLD_MULT;
+    seasonalHoldOn = spinFrozenByUser || mult > SEASONAL_HOLD_MULT;
     globeView.setSeasonalHold(seasonalHoldOn);
     setCaptionFor(view);
   }
@@ -422,6 +428,13 @@ function mountViews(
       hud.setActiveSpeed(clamped); // corrects the button if the click was over-cap
       applySeasonalHold(clamped);
     },
+    onFreezeSpin() {
+      spinFrozenByUser = !spinFrozenByUser;
+      // Re-evaluate the hold against the current clock rate (daysPerSecond is
+      // the live mult / 86400) so the freeze takes effect immediately.
+      applySeasonalHold(daysPerSecond * 86400);
+      hud.setFreezeSpinActive(spinFrozenByUser);
+    },
     onTrueScale() {
       trueScaleOn[view] = !trueScaleOn[view];
       applyTrueScale();
@@ -477,6 +490,11 @@ function mountViews(
       glintOn = !glintOn;
       globeView.setGlint(glintOn);
       hud.setGlintActive(glintOn);
+    },
+    onNightFill() {
+      nightFillOn = !nightFillOn;
+      globeView.setNightFill(nightFillOn);
+      hud.setNightFillActive(nightFillOn);
     },
   };
 
