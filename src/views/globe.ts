@@ -240,6 +240,12 @@ export interface GlobeView {
   /** Show or hide the prevailing-wind overlay — a no-op on a tidally locked
    * world, where `createWinds` built nothing to show. */
   setWinds(on: boolean): void;
+  /** Show or hide the ocean's drifting wave pattern (the normal map). Off
+   * leaves a smooth, still sea; the depth grading stays. */
+  setWaves(on: boolean): void;
+  /** Turn the ocean's sun-glint (specular highlight) on or off. Independent
+   * of the waves toggle. */
+  setGlint(on: boolean): void;
   /** Toggle the seasonal hold (Task 9): freezes the mesh's diurnal spin
    * (`spinGroup.rotation.z`, via `seasonalSpinZ`) while the terminator light
    * keeps tracking the sub-solar latitude, so a year's seasons are watchable
@@ -404,6 +410,12 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
   function setWinds(on: boolean): void {
     winds?.setVisible(on);
   }
+  function setWaves(on: boolean): void {
+    ocean.setWaves(on);
+  }
+  function setGlint(on: boolean): void {
+    ocean.setGlint(on);
+  }
   // True-relief geometry (1x, honest) is expensive to build and most
   // sessions never ask for it — construct lazily on first toggle, not here.
   let trueGeoms: THREE.BufferGeometry[] | null = null;
@@ -479,7 +491,17 @@ export function createGlobeView(tiles: TilesScene, sys: SystemScene): GlobeView 
 
   update(0);
 
-  return { object3d: root, update, setTrueRelief, setSelected, setLens, setWinds, setSeasonalHold };
+  return {
+    object3d: root,
+    update,
+    setTrueRelief,
+    setSelected,
+    setLens,
+    setWinds,
+    setWaves,
+    setGlint,
+    setSeasonalHold,
+  };
 }
 
 /** The tile index vertex `v` of face `face`'s level-0 geometry maps to — the

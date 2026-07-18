@@ -140,6 +140,27 @@ describe('createOcean', () => {
     ocean.setTrueRelief(false);
     expect(radiusOf(mesh)).toBeCloseTo(seaLevelRadius(tiles, 2, 60), 6);
   });
+  it('setGlint flips the ocean between glossy (glint on) and matte (off)', () => {
+    const ocean = createOcean(oceanTiles(), 2, 60);
+    const mat = (ocean.object3d.children.find((c): c is THREE.Mesh => (c as THREE.Mesh).isMesh)!)
+      .material as THREE.MeshStandardMaterial;
+    expect(mat.roughness).toBeLessThan(0.5); // glint on by default
+    ocean.setGlint(false);
+    expect(mat.roughness).toBeGreaterThan(0.5); // matte, no specular highlight
+    ocean.setGlint(true);
+    expect(mat.roughness).toBeLessThan(0.5); // back to glossy
+  });
+  it('setWaves drops the wave normal map and leaves the glint untouched', () => {
+    const ocean = createOcean(oceanTiles(), 2, 60);
+    const mat = (ocean.object3d.children.find((c): c is THREE.Mesh => (c as THREE.Mesh).isMesh)!)
+      .material as THREE.MeshStandardMaterial;
+    const roughnessBefore = mat.roughness;
+    ocean.setWaves(false);
+    expect(mat.normalMap).toBeNull();
+    expect(mat.roughness).toBe(roughnessBefore); // independent of the glint toggle
+    ocean.setWaves(true); // safe even headless (the built map is null there)
+    expect(mat.roughness).toBe(roughnessBefore);
+  });
 });
 
 describe('wave drift', () => {

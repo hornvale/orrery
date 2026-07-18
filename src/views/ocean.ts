@@ -131,6 +131,13 @@ const WAVE_NORMAL_SCALE = 0.15;
 /** Repeats of the (tileable) wave texture around the sphere. */
 const WAVE_REPEAT = 6;
 
+/** Ocean material roughness with the sun-glint on: low enough for a sharp
+ * specular highlight where the star reflects. */
+const GLINT_ROUGHNESS = 0.2;
+/** Ocean material roughness with the glint off: near-matte, so the sea reads
+ * as flat depth-graded water with no moving highlight. */
+const MATTE_ROUGHNESS = 0.95;
+
 const frac = (v: number) => v - Math.floor(v);
 
 /** The wave normal map's UV offset at `day` — pure and wrapped to [0,1), so
@@ -195,6 +202,12 @@ export interface OceanView {
   /** Swap to 1× (true) or schematic (false) sea-level radius — mirrors the
    * terrain's lazily-built second geometry set. */
   setTrueRelief(on: boolean): void;
+  /** Show or hide the drifting wave pattern (the normal map). Off leaves a
+   * smooth, still sea surface — the depth grading stays. */
+  setWaves(on: boolean): void;
+  /** Turn the sun-glint (specular highlight) on or off. Off makes the sea
+   * near-matte. Independent of the waves toggle. */
+  setGlint(on: boolean): void;
   /** Per-frame driver. Stage 1: reserved (no-op). Stage 2 drifts the wave
    * normal map deterministically from the sim day. */
   update(day: number): void;
@@ -213,7 +226,7 @@ export function createOcean(
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     transparent: true,
-    roughness: 0.2,
+    roughness: GLINT_ROUGHNESS,
     metalness: 0,
     depthWrite: false,
   });
@@ -247,10 +260,19 @@ export function createOcean(
       mesh.geometry = (on ? trueGeoms! : schematicGeoms).get(f)!;
     }
   }
+  function setWaves(on: boolean): void {
+    // Adding/removing a map changes the shader, so flag a recompile. `waves`
+    // is null in a headless DOM — then this is a no-op either way.
+    material.normalMap = on ? waves : null;
+    material.needsUpdate = true;
+  }
+  function setGlint(on: boolean): void {
+    material.roughness = on ? GLINT_ROUGHNESS : MATTE_ROUGHNESS;
+  }
   function update(day: number): void {
-    if (!material.normalMap) return; // headless DOM: no waves to drift
+    if (!material.normalMap) return; // headless DOM (or waves off): nothing to drift
     const { x, y } = waveOffset(day);
     material.normalMap.offset.set(x, y);
   }
-  return { object3d: root, setTrueRelief, update };
+  return { object3d: root, setTrueRelief, setWaves, setGlint, update };
 }

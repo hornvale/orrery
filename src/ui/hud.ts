@@ -27,6 +27,10 @@ export interface HudCallbacks {
    * control is disabled (no circulation bands) — the browser's own
    * `disabled` attribute blocks the click before this callback is reached. */
   onWinds(): void;
+  /** The viewer toggled the ocean's drifting wave pattern. */
+  onWaves(): void;
+  /** The viewer toggled the ocean's sun-glint (specular highlight). */
+  onGlint(): void;
 }
 
 export interface Hud {
@@ -51,6 +55,10 @@ export interface Hud {
   setWindsAvailable(available: boolean, reason?: string): void;
   /** Marks the winds toggle's on/off state (only meaningful while available). */
   setWindsActive(on: boolean): void;
+  /** Marks the ocean wave-pattern toggle's on/off state. */
+  setWavesActive(on: boolean): void;
+  /** Marks the ocean sun-glint toggle's on/off state. */
+  setGlintActive(on: boolean): void;
 }
 
 export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud {
@@ -156,8 +164,20 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   const windsRow = el('div', 'hud-winds-row');
   windsRow.append(windsToggle, windsReason);
 
+  // Ocean-surface effect toggles: the drifting wave pattern and the sun-glint
+  // (both material properties of the ocean; only visible under the natural
+  // lens, but always togglable). Default on, matching the material defaults.
+  const wavesToggle = el('button', '', 'waves');
+  (wavesToggle as HTMLButtonElement).name = 'waves-toggle';
+  wavesToggle.addEventListener('click', () => cb.onWaves());
+  const glintToggle = el('button', '', 'glint');
+  (glintToggle as HTMLButtonElement).name = 'glint-toggle';
+  glintToggle.addEventListener('click', () => cb.onGlint());
+  const oceanRow = el('div', 'hud-winds-row');
+  oceanRow.append(wavesToggle, glintToggle);
+
   const lensPanel = el('div', 'hud hud-lens-panel');
-  lensPanel.append(lensRow, legendBox, lensCaption, windsRow);
+  lensPanel.append(lensRow, legendBox, lensCaption, windsRow, oceanRow);
 
   root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
@@ -203,8 +223,12 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       windsReason.textContent = available ? '' : (reason ?? '');
     },
     setWindsActive: (on) => { windsToggle.classList.toggle('active', on); },
+    setWavesActive: (on) => { wavesToggle.classList.toggle('active', on); },
+    setGlintActive: (on) => { glintToggle.classList.toggle('active', on); },
   };
   hud.setActiveSpeed(1);
+  hud.setWavesActive(true);
+  hud.setGlintActive(true);
   return hud;
 }
 

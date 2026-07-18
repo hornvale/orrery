@@ -3,7 +3,7 @@ import { buildHud, SPEED_STEPS } from './hud';
 import { LENSES, moistureLens } from '../views/lens';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {}, onWaves() {}, onGlint() {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -190,5 +190,33 @@ describe('buildHud interactions', () => {
     expect(btn.classList.contains('active')).toBe(true);
     hud.setWindsActive(false);
     expect(btn.classList.contains('active')).toBe(false);
+  });
+
+  it('ocean toggles fire their callbacks and start active', () => {
+    const root = document.createElement('div');
+    let waves = 0;
+    let glint = 0;
+    buildHud(root, '42', { ...noop, onWaves: () => { waves++; }, onGlint: () => { glint++; } });
+    const wavesBtn = root.querySelector('button[name="waves-toggle"]') as HTMLButtonElement;
+    const glintBtn = root.querySelector('button[name="glint-toggle"]') as HTMLButtonElement;
+    // Both default to on (the ocean material defaults), reflected in the class.
+    expect(wavesBtn.classList.contains('active')).toBe(true);
+    expect(glintBtn.classList.contains('active')).toBe(true);
+    wavesBtn.click();
+    glintBtn.click();
+    expect(waves).toBe(1);
+    expect(glint).toBe(1);
+  });
+
+  it('setWavesActive / setGlintActive toggle their active class independently', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    const wavesBtn = root.querySelector('button[name="waves-toggle"]') as HTMLButtonElement;
+    const glintBtn = root.querySelector('button[name="glint-toggle"]') as HTMLButtonElement;
+    hud.setWavesActive(false);
+    expect(wavesBtn.classList.contains('active')).toBe(false);
+    expect(glintBtn.classList.contains('active')).toBe(true); // untouched
+    hud.setGlintActive(false);
+    expect(glintBtn.classList.contains('active')).toBe(false);
   });
 });

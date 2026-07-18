@@ -216,6 +216,10 @@ function mountViews(
   // The wind overlay is a single globe-wide toggle (not per-rung like
   // true-scale): it starts hidden, matching `createWinds`'s built geometry.
   let windsOn = false;
+  // Ocean-surface effects start on, matching the ocean material defaults; the
+  // HUD reflects that initial state in buildHud.
+  let wavesOn = true;
+  let glintOn = true;
 
   // Task 9's seasonal hold: a single flag (not per-rung — it tracks the
   // active clock mult, which is shared) reflecting whether the globe's
@@ -441,6 +445,16 @@ function mountViews(
       windsOn = !windsOn;
       globeView.setWinds(windsOn);
       hud.setWindsActive(windsOn);
+    },
+    onWaves() {
+      wavesOn = !wavesOn;
+      globeView.setWaves(wavesOn);
+      hud.setWavesActive(wavesOn);
+    },
+    onGlint() {
+      glintOn = !glintOn;
+      globeView.setGlint(glintOn);
+      hud.setGlintActive(glintOn);
     },
   };
 
