@@ -9,6 +9,7 @@
 // rerolled), which deliberately reloads the page: genesis is a fresh boot.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ArcballControls } from 'three/addons/controls/ArcballControls.js';
 import './styles.css';
 import { buildHud, type HudCallbacks } from './ui/hud';
 import { mountInfoCard } from './ui/infoCard';
@@ -194,8 +195,14 @@ function mountViews(
   systemControls.enableDamping = true;
   systemControls.minDistance = WORLD_CLOSE_DISTANCE;
   systemControls.maxDistance = systemReach * 2;
-  const globeControls = new OrbitControls(globeCamera, globeCanvas);
-  globeControls.enableDamping = true;
+  // The globe camera is a free arcball: rotate on all three axes (roll
+  // included, unlike OrbitControls' locked up-vector — that lock is why the
+  // lit hemisphere used to require twisting the poles horizontal) plus dolly.
+  // Pan stays off so the world holds the frame's centre (target at the
+  // origin), so orbiting never lets the planet drift out of view. No `scene`
+  // is passed, so the arcball gizmo rings are not drawn — a clean globe.
+  const globeControls = new ArcballControls(globeCamera, globeCanvas);
+  globeControls.enablePan = false;
   globeControls.minDistance = globeReach * 0.38; // just above the 60x relief
   globeControls.maxDistance = globeReach * 2;
 
@@ -291,19 +298,34 @@ function mountViews(
 
   // Wheel-through: wheeling into a rung's dolly limit is a request to cross
   // the altitude ladder rather than just a zoom (src/views/zoom.ts).
-  function maybeHandoff(deltaY: number, controls: OrbitControls): void {
+  // `distance` is passed in rather than read off the controls, so this works
+  // for both control types (OrbitControls has getDistance(); ArcballControls
+  // does not — its distance is the camera-to-target span).
+  function maybeHandoff(
+    deltaY: number,
+    controls: { enabled: boolean; minDistance: number; maxDistance: number },
+    distance: number,
+  ): void {
     // Only a rung at rest may hand off: during the 1.5 s transition the
     // inactive rung's controls are disabled and its camera pose is frozen
     // wherever it was parked — evaluating that stale distance would let a
     // continued scroll whipsaw the transition back mid-flight.
     if (!controls.enabled) return;
-    const intent = wheelHandoff(view, deltaY, controls.getDistance(), controls.minDistance, controls.maxDistance);
+    const intent = wheelHandoff(view, deltaY, distance, controls.minDistance, controls.maxDistance);
     if (intent) {
       toggleView();
     }
   }
-  systemCanvas.addEventListener('wheel', (e) => maybeHandoff(e.deltaY, systemControls), { passive: true });
-  globeCanvas.addEventListener('wheel', (e) => maybeHandoff(e.deltaY, globeControls), { passive: true });
+  systemCanvas.addEventListener(
+    'wheel',
+    (e) => maybeHandoff(e.deltaY, systemControls, systemControls.getDistance()),
+    { passive: true },
+  );
+  globeCanvas.addEventListener(
+    'wheel',
+    (e) => maybeHandoff(e.deltaY, globeControls, globeCamera.position.distanceTo(globeControls.target)),
+    { passive: true },
+  );
 
   const hudRoot = document.createElement('div');
   app.append(hudRoot);
