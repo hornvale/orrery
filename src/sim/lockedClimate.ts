@@ -8,6 +8,7 @@
  * rule — never a client reconstruction of itself). */
 import type { SystemScene, TilesScene } from "./scene";
 import { temperatureAt } from "./climate";
+import { diurnalWaveform } from "./diurnal";
 
 const TAU = Math.PI * 2;
 const frac = (x: number) => x - Math.floor(x);
@@ -85,26 +86,66 @@ export interface SeasonalContext {
   yearPhaseOffset: number;
   obliquityDeg: number;
   insolation: number;
+  /** The world's day length, in standard days — `null` for a tidally locked
+   * world (no rotation to swing a diurnal cycle over, so `lensTemperatureAt`
+   * never reads it in that branch). Threaded from `WorldElem.dayLengthDays`
+   * (`../sim/scene`) via `systemSeasonalContext`. */
+  dayLengthStd: number | null;
+  /** Task 6's "watch a day": when set, overrides `day` for the *season*
+   * component only (the year-phase term both `seasonalTemperatureAt` and
+   * `lensTemperatureAt`'s declination compute) — the diurnal pulse's own
+   * `dayFraction` keeps reading the live `day` unconditionally, so the
+   * seasonal baseline holds still while the diurnal cycle keeps running.
+   * `undefined` in the ordinary case: the season tracks the live clock day
+   * like everything else. Mutated in place by `../views/globe.ts`'s
+   * `setDayHold`, never read back out. */
+  seasonDayOverride?: number;
 }
 
 /** Dispatching seasonal-temperature evaluator: locked worlds read the
  * librating-substellar reconstruction (`lockedTemperatureAt`); spinning
  * worlds read the mean+swing sinusoid (`temperatureAt`, ./climate) —
  * `temperatureAt` itself stays spinning-only so its signature never
- * entangles with locked worlds' world-level params. */
+ * entangles with locked worlds' world-level params. Honors
+ * `ctx.seasonDayOverride` in place of `day` (Task 6's "watch a day" hold) —
+ * see `SeasonalContext`'s doc comment. */
 export function seasonalTemperatureAt(tiles: TilesScene, i: number, day: number, ctx: SeasonalContext): number {
+  const seasonDay = ctx.seasonDayOverride ?? day;
   if (tiles.locked) {
     return lockedTemperatureAt(
       tiles,
       i,
-      day,
+      seasonDay,
       tiles.season_period_days,
       ctx.obliquityDeg,
       ctx.yearPhaseOffset,
       ctx.insolation,
     );
   }
-  return temperatureAt(tiles, i, day, ctx.yearPhaseOffset);
+  return temperatureAt(tiles, i, seasonDay, ctx.yearPhaseOffset);
+}
+
+/** The temperature lens' per-tile evaluator (`../views/lens.ts`):
+ * `seasonalTemperatureAt`'s mean+seasonal baseline plus the diurnal (day/
+ * night) pulse — `tDiurnalAmpC[i] * diurnalWaveform(lat_i, obliquityDeg,
+ * yearPhase, dayFraction, dayLengthStd)` — for spinning worlds only.
+ * Mirrors the producer's `RotationRegime::Spinning` branch of
+ * `temperature_at` (`domains/climate/src/temperature.rs`), which computes
+ * `year_phase` and `day_fraction` from the same absolute `day` the seasonal
+ * term uses (no per-tile longitude term — the producer's diurnal model is a
+ * planet-synchronized pulse, gated per tile only by latitude/declination).
+ * Locked worlds (and any world with no day length) get no diurnal term at
+ * all — the producer's `Locked` branch never reads `diurnal_amp`. Extracted
+ * as its own pure function so the lens' afternoon-hotter-than-dawn behavior
+ * is unit-testable without WebGL. */
+export function lensTemperatureAt(tiles: TilesScene, i: number, day: number, ctx: SeasonalContext): number {
+  const base = seasonalTemperatureAt(tiles, i, day, ctx);
+  if (tiles.locked || ctx.dayLengthStd == null || tiles.season_period_days <= 0) return base;
+  const seasonDay = ctx.seasonDayOverride ?? day;
+  const yearPhase = frac(seasonDay / tiles.season_period_days + ctx.yearPhaseOffset);
+  const dayFraction = frac(day);
+  const { lat } = tileLatLon(tiles.width, tiles.height, i);
+  return base + tiles.tDiurnalAmpC[i]! * diurnalWaveform(lat, ctx.obliquityDeg, yearPhase, dayFraction, ctx.dayLengthStd);
 }
 
 /** Derives `SeasonalContext` from a parsed `scene/system/v1` document — the
@@ -119,5 +160,6 @@ export function systemSeasonalContext(sys: SystemScene): SeasonalContext {
     yearPhaseOffset: sys.world.yearPhaseOffset,
     obliquityDeg: sys.world.obliquityDeg,
     insolation: sys.star.luminosityRel / (sys.world.orbitAu * sys.world.orbitAu),
+    dayLengthStd: sys.world.dayLengthDays,
   };
 }

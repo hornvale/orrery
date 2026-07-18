@@ -263,6 +263,27 @@ test('setSeasonalHold(false) (the default) leaves the spin advancing with day, a
   expect(rotAt10).not.toBeCloseTo(rotAt200, 3);
 });
 
+test('setDayHold(true) pins the temperature lens season while the day advances', () => {
+  const view = createGlobeView(markerTiles([]), spinningSys());
+  view.setLens(temperatureLens);
+  view.update(10.5); // paint day 10.5 — this is the day setDayHold will pin
+  view.setDayHold(true);
+  const held1 = faceColors(view);
+  // Same day_fraction (.5), far apart integer days: with the season pinned
+  // at 10.5, the diurnal pulse's declination and the seasonal baseline are
+  // identical to the first paint, so the color must match exactly.
+  view.update(200.5);
+  const held2 = faceColors(view);
+  expect(held2).toEqual(held1);
+
+  view.setDayHold(false);
+  view.update(10.5); // day 10.5 again differs from held2's lastDay (200.5) — repaints normally
+  const free1 = faceColors(view);
+  view.update(200.5);
+  const free2 = faceColors(view);
+  expect(free2).not.toEqual(free1); // season now free to advance again
+});
+
 test('subsolar longitude is frozen for a tidally locked world', () => {
   const sys: SystemScene = {
     schema: 'scene/system/v1',

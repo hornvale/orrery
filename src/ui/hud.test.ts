@@ -4,7 +4,7 @@ import { LENSES, moistureLens } from '../views/lens';
 import type { EclipseEvent } from '../sim/scene';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onDayHold() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -247,6 +247,20 @@ describe('buildHud interactions', () => {
     hud.setFreezeSpinActive(true);
     expect(btn.classList.contains('active')).toBe(true);
     hud.setFreezeSpinActive(false);
+    expect(btn.classList.contains('active')).toBe(false);
+  });
+
+  it('day-hold toggle fires onDayHold and reflects its active state', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onDayHold: () => { calls++; } });
+    const btn = root.querySelector('button[name="day-hold"]') as HTMLButtonElement;
+    expect(btn.classList.contains('active')).toBe(false); // season un-pinned by default
+    btn.click();
+    expect(calls).toBe(1);
+    hud.setDayHoldActive(true);
+    expect(btn.classList.contains('active')).toBe(true);
+    hud.setDayHoldActive(false);
     expect(btn.classList.contains('active')).toBe(false);
   });
 

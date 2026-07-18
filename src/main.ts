@@ -39,6 +39,7 @@ const TRUE_SPACE_CAPTION =
 const TRUE_GROUND_CAPTION = `relief at true scale (1×): the mountains are down there — the sphere just doesn’t show them at this size. That’s the honest render. ${ICE_CAPTION}`;
 const SEASONAL_HOLD_CAPTION =
   'holding the daily spin — watching the year: the sub-solar latitude and ice line keep advancing with the season while the globe holds a face.';
+const DAY_HOLD_CAPTION = 'holding the season — watch a day';
 
 /** The pre-Task-8 globe speed cap (`SPEED_POLICY`'s old `maxMult`, still the
  * threshold above which the daily spin is a blur, not the current one —
@@ -265,6 +266,11 @@ function mountViews(
   // held at ANY speed (not just above SEASONAL_HOLD_MULT), so seasons/ice are
   // watchable at the middle rates too. Decouples the spin from the clock.
   let spinFrozenByUser = false;
+  // Task 6's "watch a day": pins the temperature lens' season so the diurnal
+  // day/night pulse is watchable on its own. Orthogonal to seasonalHoldOn
+  // above (that one freezes the mesh's visual spin; this one freezes the
+  // season) — both may be on at once without conflict.
+  let dayHoldOn = false;
 
   function setCaptionFor(v: ZoomTarget): void {
     if (v === 'system') {
@@ -272,7 +278,9 @@ function mountViews(
       return;
     }
     const base = trueScaleOn.globe ? TRUE_GROUND_CAPTION : GROUND_CAPTION;
-    caption.textContent = seasonalHoldOn ? `${base} ${SEASONAL_HOLD_CAPTION}` : base;
+    const seasonSuffix = seasonalHoldOn ? ` ${SEASONAL_HOLD_CAPTION}` : '';
+    const daySuffix = dayHoldOn ? ` ${DAY_HOLD_CAPTION}` : '';
+    caption.textContent = `${base}${seasonSuffix}${daySuffix}`;
   }
 
   /** Engages/disengages the globe's seasonal hold (Task 9) for the given
@@ -461,6 +469,31 @@ function mountViews(
       // the live mult / 86400) so the freeze takes effect immediately.
       applySeasonalHold(daysPerSecond * 86400);
       hud.setFreezeSpinActive(spinFrozenByUser);
+    },
+    onDayHold() {
+      dayHoldOn = !dayHoldOn;
+      globeView.setDayHold(dayHoldOn);
+      if (dayHoldOn) {
+        // "Ensure a spinning (non-seasonal-hold) rate": the diurnal pulse is
+        // a once-per-day cycle, so at the fast rates that auto-engage the
+        // seasonal hold (Task 9) a whole day races by between frames and the
+        // pulse reads as noise, not a watchable cycle. Drop to the rung's
+        // default watchable pace in that case. `spinFrozenByUser` (the
+        // user's own explicit freeze-spin choice) is untouched — this holds
+        // the season, not the spin, so it composes rather than overriding.
+        const mult = daysPerSecond * 86400;
+        if (mult > SEASONAL_HOLD_MULT) {
+          const clamped = clampMult(view, SPEED_POLICY[view].defaultMult);
+          speedMemory.remember(view, clamped);
+          daysPerSecond = clamped / 86400;
+          playStartMs = performance.now();
+          dayAtPlayStart = day;
+          hud.setActiveSpeed(clamped);
+          applySeasonalHold(clamped);
+        }
+      }
+      hud.setDayHoldActive(dayHoldOn);
+      setCaptionFor(view);
     },
     onTrueScale() {
       trueScaleOn[view] = !trueScaleOn[view];

@@ -13,14 +13,14 @@ import { elevationColor } from '../sim/palette';
 import { biomeColorForName } from './biomePalette';
 import { HEX, sequential, diverging } from './colormap';
 import type { SeasonalContext } from '../sim/lockedClimate';
-import { seasonalTemperatureAt } from '../sim/lockedClimate';
+import { lensTemperatureAt } from '../sim/lockedClimate';
 import { PLATE_BOUNDARY, PLATE_SLOTS, colorPlates, isBoundaryTile } from './plateColoring';
 
 /** Default seasonal context for callers with no system scene in hand
  * (legend previews, tests) — a spinning-equivalent no-op (`temperatureAt`
  * ignores `obliquityDeg`/`insolation` entirely; only a locked tiles document
  * would read them, and none of those callers pass one). */
-const NO_SYSTEM_CONTEXT: SeasonalContext = { yearPhaseOffset: 0, obliquityDeg: 0, insolation: 1 };
+const NO_SYSTEM_CONTEXT: SeasonalContext = { yearPhaseOffset: 0, obliquityDeg: 0, insolation: 1, dayLengthStd: null };
 
 /** 0-255 RGB, matching `elevationColor`'s existing return shape. */
 export type RGB = [number, number, number];
@@ -122,10 +122,10 @@ export const topographicLens: Lens = {
 export const temperatureLens: Lens = {
   id: 'temperature',
   label: 'temperature',
-  caption: `surface temperature on the shown day, diverging about freezing and clamped at ±${TEMP_EXTENT} °C; the seasonal curve is the producer’s own evaluator, not a client invention.`,
+  caption: `surface temperature on the shown day, diverging about freezing and clamped at ±${TEMP_EXTENT} °C; the seasonal curve is the producer’s own evaluator, not a client invention. Spinning worlds also carry a diurnal (day/night) pulse — a planet-synchronized swing, gated by latitude, not a per-longitude local time.`,
   dependsOnDay: true,
   colorAt: (tiles, i, day, ctx = NO_SYSTEM_CONTEXT) =>
-    diverging(TEMP_COLD, TEMP_MID, TEMP_HOT, seasonalTemperatureAt(tiles, i, day, ctx), TEMP_EXTENT),
+    diverging(TEMP_COLD, TEMP_MID, TEMP_HOT, lensTemperatureAt(tiles, i, day, ctx), TEMP_EXTENT),
   legend: () => [
     { swatch: TEMP_COLD, label: `≤ −${TEMP_EXTENT} °C` },
     { swatch: TEMP_MID, label: '0 °C' },

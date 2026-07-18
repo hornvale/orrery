@@ -8,7 +8,7 @@ import { seasonalTemperatureAt } from '../sim/lockedClimate';
 /** Default seasonal context for callers with no system scene in hand — see
  * `../views/lens.ts`'s `NO_SYSTEM_CONTEXT` (same rationale: a spinning tiles
  * document ignores `obliquityDeg`/`insolation` entirely). */
-const NO_SYSTEM_CONTEXT: SeasonalContext = { yearPhaseOffset: 0, obliquityDeg: 0, insolation: 1 };
+const NO_SYSTEM_CONTEXT: SeasonalContext = { yearPhaseOffset: 0, obliquityDeg: 0, insolation: 1, dayLengthStd: null };
 
 /** Frozen fraction [0,1] at tile `i` on `day`: 1 below freeze, 0 above, a
  * soft 2°C ramp so the ice edge isn't a hard line. Client derivation

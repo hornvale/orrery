@@ -35,6 +35,11 @@ export interface HudCallbacks {
    * year's seasons and ice are watchable at speed, decoupled from the clock
    * rate. Overrides the automatic hold-at-fast-rates behavior. */
   onFreezeSpin(): void;
+  /** The viewer toggled Task 6's "watch a day" hold: pin the temperature
+   * lens' season so the diurnal (day/night) pulse is watchable on its own,
+   * without the seasonal baseline also drifting underneath it. Composes
+   * with `onFreezeSpin` — an orthogonal hold, not a replacement for it. */
+  onDayHold(): void;
   /** The viewer toggled the ocean's drifting wave pattern. */
   onWaves(): void;
   /** The viewer toggled the ocean's sun-glint (specular highlight). */
@@ -72,6 +77,8 @@ export interface Hud {
   setEclipses(events: EclipseEvent[], maxDay: number): void;
   /** Marks the freeze-spin toggle's on/off state. */
   setFreezeSpinActive(on: boolean): void;
+  /** Marks the day-hold ("watch a day") toggle's on/off state. */
+  setDayHoldActive(on: boolean): void;
   /** Marks the ocean wave-pattern toggle's on/off state. */
   setWavesActive(on: boolean): void;
   /** Marks the ocean sun-glint toggle's on/off state. */
@@ -146,6 +153,16 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   freezeSpin.title = 'Hold the daily spin so seasons and ice are watchable at any speed';
   freezeSpin.addEventListener('click', () => cb.onFreezeSpin());
   bottom.append(freezeSpin);
+
+  // Task 6's "watch a day": pin the temperature lens' season so the diurnal
+  // day/night pulse is watchable on its own — composes with freeze-spin
+  // above rather than replacing it (one freezes the mesh's visual spin,
+  // this one freezes the season).
+  const dayHold = el('button', '', 'watch a day');
+  (dayHold as HTMLButtonElement).name = 'day-hold';
+  dayHold.title = 'Hold the season so the day/night temperature pulse is watchable on its own';
+  dayHold.addEventListener('click', () => cb.onDayHold());
+  bottom.append(dayHold);
 
   // The orrery's day scrubber — a distinct control from the calendar
   // play/speed row above: it drags a raw ephemeris `day` (the system view's
@@ -274,6 +291,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       }
     },
     setFreezeSpinActive: (on) => { freezeSpin.classList.toggle('active', on); },
+    setDayHoldActive: (on) => { dayHold.classList.toggle('active', on); },
     setWavesActive: (on) => { wavesToggle.classList.toggle('active', on); },
     setGlintActive: (on) => { glintToggle.classList.toggle('active', on); },
     setNightFillActive: (on) => { nightFillToggle.classList.toggle('active', on); },

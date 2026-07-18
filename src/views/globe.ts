@@ -283,6 +283,14 @@ export interface GlobeView {
    * `main.ts` engages it once the active clock mult crosses the old
    * (pre-Task-8) globe cap. Off by default, matching today's spin. */
   setSeasonalHold(on: boolean): void;
+  /** Toggle Task 6's "watch a day" hold: pins the temperature lens' season
+   * (the year-phase term, and thus the mean+swing baseline and the diurnal
+   * pulse's declination) at the day last painted, while the diurnal pulse's
+   * own day fraction keeps tracking the live clock — composes with
+   * `setSeasonalHold` rather than fighting it (that one freezes the mesh's
+   * visual spin only; this one freezes the season only, orthogonal state).
+   * Off by default, matching today's un-pinned season. */
+  setDayHold(on: boolean): void;
 }
 
 /** Build the globe view: a cube-sphere mesh displaced by real relief,
@@ -624,6 +632,17 @@ export function createGlobeView(
     seasonalHold = on;
   }
 
+  // Task 6's "watch a day": pins `seasonalCtx.seasonDayOverride` at the day
+  // last painted so the temperature lens' season (and the diurnal pulse's
+  // declination) holds still, while `repaint`'s live `day` keeps driving the
+  // diurnal pulse's own day fraction — see `SeasonalContext`'s doc comment
+  // (`../sim/lockedClimate`) for why one shared `day` argument can freeze
+  // only the season half. Mutated in place: `seasonalCtx` is the same object
+  // every `colorAt`/`iceFraction` call already closes over.
+  function setDayHold(on: boolean): void {
+    seasonalCtx.seasonDayOverride = on ? (lastDay ?? 0) : undefined;
+  }
+
   const upWorld = new THREE.Vector3(); // update()'s scratch — no per-frame allocation
   const zAxis = new THREE.Vector3(0, 0, 1);
   function update(day: number, camera?: THREE.Camera): void {
@@ -678,6 +697,7 @@ export function createGlobeView(
     setGlint,
     setNightFill,
     setSeasonalHold,
+    setDayHold,
     onRegion,
   };
 }
