@@ -26,9 +26,13 @@ test('the helm: true scale, inspector, and the capped globe clock', async ({ pag
   await page.goto('#seed=42&view=globe');
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
 
-  // Per-rung clock: at the globe the blur rates are disabled.
-  await expect(page.getByRole('button', { name: '~1 mo/s' })).toBeDisabled();
+  // Per-rung clock: the globe defaults to 1 hr/s, and since The Wandering Sun
+  // the fast rates are offered there — picking one freezes the diurnal spin so
+  // a year can be watched (the caption says so) rather than blurring the planet.
   await expect(page.getByRole('button', { name: '1 hr/s' })).toHaveClass(/active/);
+  await expect(page.getByRole('button', { name: '~1 mo/s' })).toBeEnabled();
+  await page.getByRole('button', { name: '~1 mo/s' }).click();
+  await expect(page.locator('.scale-caption')).toContainText('holding the daily spin');
 
   // True scale flips the caption to the honest variant, and the label back.
   await page.getByRole('button', { name: 'true scale' }).click();
