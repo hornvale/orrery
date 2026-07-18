@@ -4,7 +4,7 @@
 /** The pinned world-wasm release this client is built against (spec §5);
  * named in fetch-failure errors so a stale deploy or wrong URL is
  * unambiguous, and matches the tag the README documents. */
-export const CATALOG_VERSION = "world-wasm-v5";
+export const CATALOG_VERSION = "world-wasm-v6";
 
 /** A genesis or scene call refused; `code` is the raw hw_* status. */
 export class CatalogError extends Error {

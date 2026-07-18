@@ -8,6 +8,12 @@ import type { TilesScene } from "./scene";
 
 const triples = JSON.parse(readFileSync("testdata/climate-triples-seed-42.json", "utf8"));
 
+// Seed 42's genesis year-phase offset (`scene/system/v1`'s `year_phase_offset`),
+// the value the v6 producer phases its seasonal temperature on. The goldens
+// below were regenerated against that producer (The Wandering Sun), so the
+// client reconstruction is exercised at the real offset, not 0.
+const SEED42_YEAR_PHASE_OFFSET = 0.20941868;
+
 test("temperatureAt reproduces the Rust producer's temperature_at triples", async () => {
   const tiles = await loadSeed42Tiles(triples.width);
   for (const row of triples.rows) {
@@ -18,13 +24,9 @@ test("temperatureAt reproduces the Rust producer's temperature_at triples", asyn
     // to quantization precision (~1e-5 degC here). 0.001 degC is loose enough
     // to absorb that noise but tight enough to catch any real evaluator
     // divergence, which would show up as whole degrees of drift.
-    //
-    // yearPhaseOffset: 0 — this golden predates The Wandering Sun's producer
-    // phase fix (it was captured against the pre-offset `temperature_at`),
-    // so 0 reproduces the exact formula it was pinned against. The offset
-    // itself is covered by the hand-built fixture test below, which mirrors
-    // the Rust producer's own `spinning_seasonal_peak_tracks_the_year_phase_offset`.
-    expect(Math.abs(temperatureAt(tiles, row.i, row.day, 0) - row.t)).toBeLessThan(0.001);
+    expect(
+      Math.abs(temperatureAt(tiles, row.i, row.day, SEED42_YEAR_PHASE_OFFSET) - row.t),
+    ).toBeLessThan(0.001);
   }
 });
 
@@ -41,9 +43,9 @@ test("temperatureAt reproduces the Rust producer's regional temperature triples"
     const t = Number(tStr);
     // Same tolerance rationale as the global triples test above: the client
     // reconstructs temperatureAt from the quantized regional t_mean_c/t_swing_c
-    // coefficients while the golden is the sim's full-precision value.
-    // yearPhaseOffset: 0 — same pre-offset golden rationale as above.
-    expect(Math.abs(temperatureAt(region, node, day, 0) - t)).toBeLessThan(1e-3);
+    // coefficients while the golden is the sim's full-precision value, both at
+    // seed 42's real year-phase offset (v6 producer).
+    expect(Math.abs(temperatureAt(region, node, day, SEED42_YEAR_PHASE_OFFSET) - t)).toBeLessThan(1e-3);
   }
 });
 
