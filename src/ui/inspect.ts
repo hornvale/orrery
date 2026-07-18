@@ -22,7 +22,14 @@ export type Target =
  * ancestors through this until something answers. */
 export function namedTarget(name: string): Target | null {
   if (name === 'star') return { kind: 'star' };
-  if (name === 'world' || name === 'world-spin' || name.startsWith('globe-face-')) return { kind: 'world' };
+  if (
+    name === 'world' ||
+    name === 'world-spin' ||
+    name.startsWith('globe-face-') ||
+    name.startsWith('globe-tile-')
+  ) {
+    return { kind: 'world' };
+  }
   const moon = /^moon-(\d+)$/.exec(name);
   if (moon) return { kind: 'moon', index: Number(moon[1]) };
   if (name.startsWith('feature-')) return { kind: 'feature', name: name.slice('feature-'.length) };

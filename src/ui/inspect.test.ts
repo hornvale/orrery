@@ -175,6 +175,7 @@ describe('inspector content', () => {
     expect(namedTarget('moon-2')).toEqual({ kind: 'moon', index: 2 });
     expect(namedTarget('feature-Daoqao')).toEqual({ kind: 'feature', name: 'Daoqao' });
     expect(namedTarget('globe-face-3')).toEqual({ kind: 'world' });
+    expect(namedTarget('globe-tile-3:1:0:1')).toEqual({ kind: 'world' }); // LOD tile names
     expect(namedTarget('world-spin')).toEqual({ kind: 'world' });
     expect(namedTarget('starfield-or-whatever')).toBeNull();
   });

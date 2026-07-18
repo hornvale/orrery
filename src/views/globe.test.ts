@@ -275,10 +275,16 @@ test('subsolar longitude is frozen for a tidally locked world', () => {
   expect(subsolarPoint(sys, 123).lon).toBe(0);
 });
 
-/** Face 0's color attribute, copied (the buffer is mutated in place). */
+/** The first globe surface tile's color attribute, copied (the buffer is
+ * mutated in place). LOD renders the surface as `globe-tile-*` meshes. */
 function faceColors(globe: ReturnType<typeof createGlobeView>): Float32Array {
-  const mesh = globe.object3d.getObjectByName('globe-face-0') as THREE.Mesh;
-  return Float32Array.from(mesh.geometry.getAttribute('color').array as ArrayLike<number>);
+  let mesh: THREE.Mesh | null = null;
+  globe.object3d.traverse((o) => {
+    if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
+  });
+  return Float32Array.from(
+    (mesh as unknown as THREE.Mesh).geometry.getAttribute('color').array as ArrayLike<number>,
+  );
 }
 
 // `loadSeed42Tiles`/`loadSeed42System` memoize per-argument (wasmFixture.ts),

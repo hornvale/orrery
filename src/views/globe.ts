@@ -10,10 +10,10 @@
 import * as THREE from 'three';
 import type { EclipseEvent, Feature, SystemScene, TilesScene } from '../sim/scene';
 import { rotationPhase, worldPhase } from '../sim/ephemeris';
-import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
+import { REFERENCE_RADIUS_M, buildTileGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
 import type { Lens } from './lens';
 import { naturalLens } from './lens';
-import { TILE_QUADS, tileGrid } from './cubeSphere';
+import { LOD_MIN_LEVEL, TILE_QUADS, globeLodLevel, tileGrid, tileKey, type TileId } from './cubeSphere';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { iceFraction } from './ice';
@@ -299,46 +299,43 @@ export function createGlobeView(
   const colorAt = (i: number) => activeLens.colorAt(tiles, i, lastDay ?? 0, seasonalCtx);
 
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
-  const faceMeshes: THREE.Mesh[] = [];
-  for (let face = 0; face < 6; face++) {
-    const mesh = new THREE.Mesh(
-      buildFaceGeometry(tiles, face, GLOBE_RADIUS, RELIEF_EXAGGERATION, colorAt),
-      material,
-    );
-    mesh.name = `globe-face-${face}`;
-    spinGroup.add(mesh);
-    faceMeshes.push(mesh);
-  }
-  const schematicGeoms = faceMeshes.map((m) => m.geometry);
-  // Each face computes its normals alone; reconcile them across cube edges
-  // or directional light draws every edge as a seam (worst at 60× relief).
-  stitchNormals(schematicGeoms);
-
-  // Per-vertex tile index precompute: `buildFaceGeometry` bakes each vertex's
-  // color once at build time, but a living lens (temperature) or ice must
-  // advance with the sim clock, so `update(day)` may recolor every frame the
-  // day changes. Rather than re-derive lat/lon → tile per vertex per tick,
-  // precompute each face's per-vertex tile index once (same grid
-  // `buildFaceGeometry` used — identical across schematic and true-relief
-  // geometry, since only positions differ under relief) and reuse it both
-  // for the active lens's repaint and for `iceFraction`.
   const tileGridN = TILE_QUADS + 1;
-  const tileIdxByFace: Int32Array[] = [];
-  for (let face = 0; face < 6; face++) {
-    const grid = tileGrid({ face, level: 0, ix: 0, iy: 0 });
-    const idx = new Int32Array(tileGridN * tileGridN);
-    for (let i = 0; i < idx.length; i++) idx[i] = tileIndex(tiles, grid.lats[i]!, grid.lons[i]!);
-    tileIdxByFace.push(idx);
+
+  // The globe's surface is a uniform set of cube-sphere tiles at `renderLevel`
+  // (adaptive LOD): level 0 is a whole face, each deeper level a 2×2
+  // subdivision, so a closer camera can rebuild at a higher level for smoother
+  // relief. Everything downstream is keyed by tile SLOT, not face — the
+  // per-vertex tile-index cache, the base colours, the repaint, the
+  // true-relief rebuild — so `buildTiles()` at any level Just Works.
+  let renderLevel = LOD_MIN_LEVEL;
+  let reliefOn = false; // true-relief (1×) vs schematic (RELIEF_EXAGGERATION×)
+  const reliefScale = (): number => (reliefOn ? 1 : RELIEF_EXAGGERATION);
+
+  let tileMeshes: THREE.Mesh[] = [];
+  let tileGeoms: THREE.BufferGeometry[] = [];
+  // Per-vertex tile-index cache, one Int32Array per tile: a living lens
+  // (temperature) or ice recolours per frame, so `repaint` reuses this rather
+  // than re-deriving lat/lon → tile per vertex per tick.
+  let tileIdxByTile: Int32Array[] = [];
+  // The active lens's static colours per tile, rebuilt on `setLens`/`buildTiles`.
+  // For a living lens this is the day-0 snapshot, overwritten per repaint; for
+  // a static one it IS the final colour (modulo the ice blend).
+  let baseColorByTile: Float32Array[] = [];
+
+  /** The 6·4^level tiles of a uniform level, row-major per face. */
+  function tilesAtLevel(level: number): TileId[] {
+    const span = 1 << level;
+    const out: TileId[] = [];
+    for (let face = 0; face < 6; face++) {
+      for (let iy = 0; iy < span; iy++) {
+        for (let ix = 0; ix < span; ix++) out.push({ face, level, ix, iy });
+      }
+    }
+    return out;
   }
 
-  // The active lens's static colors per face, rebuilt on `setLens`. For a
-  // living lens this is the day-0 snapshot and is overwritten per repaint;
-  // for a static one it IS the final color (modulo the ice blend below).
-  const baseColorByFace: Float32Array[] = [];
   function rebuildBase(): void {
-    baseColorByFace.length = 0;
-    for (let face = 0; face < 6; face++) {
-      const idx = tileIdxByFace[face]!;
+    baseColorByTile = tileIdxByTile.map((idx) => {
       const buf = new Float32Array(idx.length * 3);
       for (let v = 0; v < idx.length; v++) {
         const rgb = activeLens.colorAt(tiles, idx[v]!, lastDay ?? 0, seasonalCtx);
@@ -346,20 +343,60 @@ export function createGlobeView(
         buf[3 * v + 1] = rgb[1] / 255;
         buf[3 * v + 2] = rgb[2] / 255;
       }
-      baseColorByFace.push(buf);
-    }
+      return buf;
+    });
   }
-  rebuildBase();
 
-  /** Paints `geoms` for `day`: the active lens's color per vertex, blended
-   * toward `ICE_COLOR` only under `natural` (a data lens must show its data,
-   * not decorative ice — the blend would corrupt its colormap). */
-  function repaintInto(geoms: THREE.BufferGeometry[], day: number): void {
+  /** (Re)build the whole tile set at `renderLevel` and the current relief
+   * scale: swap the meshes into `spinGroup`, recompute the per-vertex
+   * tile-index cache and base colours, stitch the cube-edge seams, and repaint
+   * for the current day. Cheap enough to run on a level change (a few times
+   * across a zoom), not per frame. */
+  function buildTiles(): void {
+    for (const m of tileMeshes) {
+      spinGroup.remove(m);
+      m.geometry.dispose();
+    }
+    tileMeshes = [];
+    tileGeoms = [];
+    tileIdxByTile = [];
+    const scale = reliefScale();
+    for (const t of tilesAtLevel(renderLevel)) {
+      const geom = buildTileGeometry(tiles, t, GLOBE_RADIUS, scale, colorAt);
+      const mesh = new THREE.Mesh(geom, material);
+      mesh.name = `globe-tile-${tileKey(t)}`;
+      spinGroup.add(mesh);
+      tileMeshes.push(mesh);
+      tileGeoms.push(geom);
+      const grid = tileGrid(t);
+      const idx = new Int32Array(tileGridN * tileGridN);
+      for (let i = 0; i < idx.length; i++) idx[i] = tileIndex(tiles, grid.lats[i]!, grid.lons[i]!);
+      tileIdxByTile.push(idx);
+    }
+    // Each tile computes its normals alone; reconcile them across shared edges
+    // or the directional light draws every seam (worst at 60× relief).
+    stitchNormals(tileGeoms);
+    rebuildBase();
+    repaint(lastDay ?? 0, true);
+  }
+  buildTiles();
+
+  /** Repaints the current tile set for `day`: the active lens's colour per
+   * vertex, blended toward `ICE_COLOR` only under `natural` (a data lens must
+   * show its data, not decorative ice — the blend would corrupt its colormap).
+   * Repaints only when the day actually moved, or when forced (a lens swap or
+   * a fresh tile rebuild). A static, non-natural lens (no ice, no day
+   * dependency) repaints once and never again. */
+  function repaint(day: number, force = false): void {
+    const still = !activeLens.dependsOnDay && activeLens.id !== naturalLens.id;
+    if (!force && day === lastDay) return;
+    if (!force && still && lastDay !== null) return;
+    lastDay = day;
     const icy = activeLens.id === naturalLens.id;
-    for (let face = 0; face < 6; face++) {
-      const color = geoms[face]!.getAttribute('color') as THREE.BufferAttribute;
-      const idx = tileIdxByFace[face]!;
-      const base = baseColorByFace[face]!;
+    for (let ti = 0; ti < tileGeoms.length; ti++) {
+      const color = tileGeoms[ti]!.getAttribute('color') as THREE.BufferAttribute;
+      const idx = tileIdxByTile[ti]!;
+      const base = baseColorByTile[ti]!;
       for (let v = 0; v < idx.length; v++) {
         let r: number, g: number, b: number;
         if (activeLens.dependsOnDay) {
@@ -382,18 +419,6 @@ export function createGlobeView(
       }
       color.needsUpdate = true;
     }
-  }
-
-  /** Repaints only when the day actually moved, or when forced (a lens swap
-   * or freshly built true-relief geometry). A static, non-natural lens (no
-   * ice, no day dependency) repaints once and never again. */
-  function repaint(day: number, force = false): void {
-    const still = !activeLens.dependsOnDay && activeLens.id !== naturalLens.id;
-    if (!force && day === lastDay) return;
-    if (!force && still && lastDay !== null) return;
-    lastDay = day;
-    repaintInto(schematicGeoms, day);
-    if (trueGeoms) repaintInto(trueGeoms, day);
   }
 
   function setLens(lens: Lens): void {
@@ -434,24 +459,28 @@ export function createGlobeView(
   function setGlint(on: boolean): void {
     ocean.setGlint(on);
   }
-  // True-relief geometry (1x, honest) is expensive to build and most
-  // sessions never ask for it — construct lazily on first toggle, not here.
-  let trueGeoms: THREE.BufferGeometry[] | null = null;
+  /** Toggle true-relief (1×, honest) vs the exaggerated schematic. With the
+   * tile set rebuildable, this just rebuilds it at the new relief scale (a
+   * user action, rare — no need to keep a second geometry set warm) and
+   * reseats the markers on the moved terrain. */
   function setTrueRelief(on: boolean): void {
-    if (on && trueGeoms === null) {
-      trueGeoms = Array.from({ length: 6 }, (_, f) => buildFaceGeometry(tiles, f, GLOBE_RADIUS, 1, colorAt));
-      stitchNormals(trueGeoms);
-      // Freshly built geometry starts on the active lens's day-0/static
-      // colors baked by `colorAt`, but never the ice blend (baked at build
-      // time via `colorAt`, which never blends ice) — force-paint it now
-      // for the day already in effect rather than waiting on the next
-      // update() to notice the day is "unchanged".
-      repaint(lastDay ?? 0, true);
-    }
-    faceMeshes.forEach((m, f) => { m.geometry = (on ? trueGeoms! : schematicGeoms)[f]!; });
+    if (on === reliefOn) return;
+    reliefOn = on;
+    buildTiles();
     // The terrain the markers stand on just moved — reseat them on it.
-    for (const marker of markers) placeMarker(marker, on ? 1 : RELIEF_EXAGGERATION);
+    for (const marker of markers) placeMarker(marker, reliefScale());
     ocean.setTrueRelief(on);
+  }
+
+  /** Adaptive LOD: pick the level for the camera's distance to the globe
+   * centre and rebuild the tile set if it changed (monotonic in closeness, so
+   * this fires only a few times across a zoom, not per frame). */
+  function setLodForDistance(distance: number): void {
+    const level = globeLodLevel(distance, GLOBE_RADIUS);
+    if (level !== renderLevel) {
+      renderLevel = level;
+      buildTiles();
+    }
   }
 
   const markers = clusterFeatures(tiles.features).map((site) => buildSiteMarker(tiles, site));
@@ -532,6 +561,10 @@ export function createGlobeView(
       if (mesh) mesh.visible = visible;
     }
     if (!camera) return;
+    // Adaptive LOD: the globe centre is the origin of this view, so the
+    // camera's distance from it drives the tile level. Rebuilds only on a
+    // level change.
+    setLodForDistance(camera.position.length());
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
       const near = onNearSide(upWorld, camera.position, GLOBE_RADIUS);
