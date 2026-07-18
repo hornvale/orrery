@@ -102,12 +102,23 @@ one.
   mesh spin while the terminator keeps tracking the season (`seasonalSpinZ`,
   `setSeasonalHold`). The `freeze spin` toggle forces it on at any rate.
 
-## LOD status (the current frontier)
+## LOD status
 
-The globe meshes at a **fixed level 0** — six `TILE_QUADS`×`TILE_QUADS` cube
-faces, no runtime subdivision. `cubeSphere.ts` has the quadtree
-(`childrenOf`/`parentOf`/`deepestLevel`) and skirts, but the CDLOD adaptive
-selection + geomorphing it exists for is **not wired up** ("needs later"), and
-`regionPatch.ts` (higher-res `scene/tiles-region/v1`, which the producer *does*
-emit) is not consumed by the globe. That's the open LOD work — client-side and
-unblocked; the region data is available when true detail is wanted.
+The globe uses **per-tile CDLOD**: `selectTiles(cameraPos, …)` (cubeSphere.ts)
+does a quadtree descent from the six faces, subdividing a tile only while the
+camera is within `LOD_SPLIT_FACTOR × edgeLength` of it — so tiles the camera
+faces go fine (to `LOD_CDLOD_MAX_LEVEL`) while the far side/back stay at the
+`LOD_MIN_LEVEL` base. `globe.ts`'s `reselect(camera)` transforms the camera
+into the globe's spinning local frame, selects, and rebuilds only when the
+leaf-set signature changes (a still or freeze-spin-held view never rebuilds).
+Mixed-level boundaries are crack-filled by **skirts** — `buildTileGeometry`'s
+`skirtDepth` apron, double-winded and edge-normal-lit, hidden below the surface
+when neighbours match. The whole geometry pipeline is keyed by tile slot, so a
+rebuild at any mix of levels is mechanical.
+
+**Still open (unblocked, client-side):** deeper levels currently *interpolate*
+the 512-wide tile data (smoother silhouette, no new detail). For TRUE higher-res
+terrain, consume the producer's `scene/tiles-region/v1` patches (`regionPatch.ts`
+parses them; the producer emits them) in the near tiles. Also: a rebuild
+throttle if an unfrozen diurnal spin while zoomed-in ever churns rebuilds (the
+freeze-spin toggle is the current answer).
