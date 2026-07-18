@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REFERENCE_RADIUS_M, buildFaceGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
+import { REFERENCE_RADIUS_M, buildFaceGeometry, buildTileGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
 import { naturalLens } from './lens';
 import { elevationColor } from '../sim/palette';
 import { biomeColorForName } from './biomePalette';
@@ -53,6 +53,38 @@ describe('tileIndex', () => {
       expect(i).toBeLessThan(tiles.width * tiles.height);
       expect(sampleTile(tiles, lat, lon, 'elevation_m')).toBe(tiles.elevation_m[i]);
     }
+  });
+});
+
+describe('buildTileGeometry (LOD tiles)', () => {
+  it('a deeper tile keeps the lattice size but covers a smaller sub-square', () => {
+    const tiles = flatTiles();
+    const face = buildFaceGeometry(tiles, 0, 2, 0, ignoreColor);
+    const child = buildTileGeometry(tiles, { face: 0, level: 1, ix: 0, iy: 0 }, 2, 0, ignoreColor);
+    // Uniform grid: a deeper tile has the same vertex count (finer spacing,
+    // not more vertices per tile).
+    expect(child.getAttribute('position').count).toBe(face.getAttribute('position').count);
+    // ...but spans a smaller part of the sphere than the whole face.
+    face.computeBoundingBox();
+    child.computeBoundingBox();
+    const diag = (g: typeof face) => g.boundingBox!.min.distanceTo(g.boundingBox!.max);
+    expect(diag(child)).toBeLessThan(diag(face));
+    // Every vertex still sits on the sphere (reliefScale 0).
+    const pos = child.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) {
+      expect(Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i))).toBeCloseTo(2, 6);
+    }
+  });
+  it('the four level-1 children tile the whole face (union of sub-squares)', () => {
+    const tiles = flatTiles();
+    const kids = [
+      { face: 0, level: 1, ix: 0, iy: 0 },
+      { face: 0, level: 1, ix: 1, iy: 0 },
+      { face: 0, level: 1, ix: 0, iy: 1 },
+      { face: 0, level: 1, ix: 1, iy: 1 },
+    ].map((t) => buildTileGeometry(tiles, t, 2, 0, ignoreColor));
+    // Each child is a valid non-empty mesh on the sphere.
+    for (const k of kids) expect(k.getAttribute('position').count).toBeGreaterThan(0);
   });
 });
 

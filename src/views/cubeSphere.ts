@@ -102,6 +102,28 @@ export function tileGrid(t: TileId): TileGrid {
   return { lats, lons, units };
 }
 
+/** Base LOD level: matches the 512-wide tile data at the whole-globe view (a
+ * level-0 face under-samples it ~2×). */
+export const LOD_MIN_LEVEL = 1;
+/** Deepest uniform LOD level: past this, a finer lattice only interpolates
+ * the same data (smoother silhouette, no new detail) at a steep triangle
+ * cost, so the uniform scheme stops here. Per-tile CDLOD (only near tiles go
+ * deeper) is where higher levels earn their cost — the next stage. */
+export const LOD_MAX_LEVEL = 3;
+
+/** The uniform LOD level for the globe, chosen from how close the camera is.
+ * `distance` is camera-to-globe-centre, `radius` the undisplaced globe radius.
+ * Far away → `LOD_MIN_LEVEL`; each halving of the camera's altitude above the
+ * surface adds one level, clamped to `[LOD_MIN_LEVEL, LOD_MAX_LEVEL]`.
+ * Monotonic in closeness, so a caller rebuilds only when the returned level
+ * changes (a few times across a zoom, not per frame). Uniform across the
+ * globe — no cross-level T-junctions to skirt. */
+export function globeLodLevel(distance: number, radius: number): number {
+  const altitude = Math.max(distance - radius, radius * 0.01); // never divide by ~0 at the surface
+  const steps = Math.floor(Math.log2(radius / altitude));
+  return Math.min(LOD_MAX_LEVEL, Math.max(LOD_MIN_LEVEL, LOD_MIN_LEVEL + Math.max(0, steps)));
+}
+
 /** Tile at `level` whose face-square contains unit vector u: pick the face
  * by dominant axis, then locate (a, b) by central projection onto it. */
 export function containingTile(u: V3, level: number): TileId {

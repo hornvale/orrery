@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import type { TilesScene } from '../sim/scene';
 import type { RGB } from './lens';
-import { TILE_QUADS, tileGrid } from './cubeSphere';
+import { TILE_QUADS, tileGrid, type TileId } from './cubeSphere';
 
 /** Reference body radius (Earth's, meters) used only to turn raw elevation
  * meters into a *fraction* of a rendered radius before exaggerating — not a
@@ -48,19 +48,22 @@ export function sampleTile<K extends TileArrayKey>(
   return layer[tileIndex(tiles, lat, lon)] as never;
 }
 
-/** Build one cube face's displaced, vertex-colored geometry (level-0 tile —
- * the whole face at TILE_QUADS×TILE_QUADS resolution; Task 10's zoom is
- * where adaptive depth joins). `radius` is the rendered sphere's undisplaced
- * radius (world units); `reliefScale` is the exaggeration multiple applied
- * to elevation before it displaces the surface — 0 gives a smooth sphere. */
-export function buildFaceGeometry(
+/** Build one cube-sphere *tile*'s displaced, vertex-colored geometry, at
+ * whatever `level`/`ix`/`iy` the `TileId` names (a level-0 tile is the whole
+ * face; deeper tiles are the adaptive-LOD quadtree's finer squares). Each
+ * tile is a uniform `TILE_QUADS`×`TILE_QUADS` grid, so a deeper level samples
+ * the same data on a finer lattice — smoother relief where the camera is
+ * close. `radius` is the rendered sphere's undisplaced radius (world units);
+ * `reliefScale` is the exaggeration multiple applied to elevation before it
+ * displaces the surface — 0 gives a smooth sphere. */
+export function buildTileGeometry(
   tiles: TilesScene,
-  face: number,
+  tile: TileId,
   radius: number,
   reliefScale: number,
   colorAt: (i: number) => RGB,
 ): THREE.BufferGeometry {
-  const grid = tileGrid({ face, level: 0, ix: 0, iy: 0 });
+  const grid = tileGrid(tile);
   const n = TILE_QUADS + 1;
   const positions = new Float32Array(n * n * 3);
   const colors = new Float32Array(n * n * 3);
@@ -97,6 +100,18 @@ export function buildFaceGeometry(
   geom.setIndex(indices);
   geom.computeVertexNormals();
   return geom;
+}
+
+/** Build a whole cube face (the level-0 tile) — the pre-LOD convenience form.
+ * Equivalent to `buildTileGeometry` on `{ face, level: 0, ix: 0, iy: 0 }`. */
+export function buildFaceGeometry(
+  tiles: TilesScene,
+  face: number,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+): THREE.BufferGeometry {
+  return buildTileGeometry(tiles, { face, level: 0, ix: 0, iy: 0 }, radius, reliefScale, colorAt);
 }
 
 /** Average vertex normals across geometries wherever positions coincide.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  TILE_QUADS, children, containingTile, faceUnit, maxLevel, parent,
+  LOD_MAX_LEVEL, LOD_MIN_LEVEL, TILE_QUADS, children, containingTile, faceUnit,
+  globeLodLevel, maxLevel, parent,
   tileCenterUnit, tileEdgeLenM, tileGrid, tileKey, unitLatLon, type TileId,
 } from './cubeSphere';
 
@@ -83,5 +84,27 @@ describe('cubeSphere addressing', () => {
     const t: TileId = { face: 2, level: 6, ix: 17, iy: 40 };
     const c = tileCenterUnit(t);
     expect(containingTile(c, 6)).toEqual(t);
+  });
+});
+
+describe('globeLodLevel', () => {
+  const r = 2;
+  it('is the base level far away and never leaves [MIN, MAX]', () => {
+    expect(globeLodLevel(10 * r, r)).toBe(LOD_MIN_LEVEL);
+    expect(globeLodLevel(4 * r, r)).toBe(LOD_MIN_LEVEL);
+    for (const d of [10 * r, 2 * r, 1.5 * r, 1.1 * r, 1.001 * r]) {
+      const lvl = globeLodLevel(d, r);
+      expect(lvl).toBeGreaterThanOrEqual(LOD_MIN_LEVEL);
+      expect(lvl).toBeLessThanOrEqual(LOD_MAX_LEVEL);
+    }
+  });
+  it('rises monotonically as the camera nears the surface, capping at MAX', () => {
+    let prev = 0;
+    for (const d of [4 * r, 2 * r, 1.5 * r, 1.25 * r, 1.1 * r, 1.01 * r]) {
+      const lvl = globeLodLevel(d, r);
+      expect(lvl).toBeGreaterThanOrEqual(prev);
+      prev = lvl;
+    }
+    expect(globeLodLevel(1.0001 * r, r)).toBe(LOD_MAX_LEVEL);
   });
 });
