@@ -13,7 +13,16 @@ import { rotationPhase, worldPhase } from '../sim/ephemeris';
 import { REFERENCE_RADIUS_M, buildTileGeometry, sampleTile, stitchNormals, tileIndex } from './worldMesh';
 import type { Lens } from './lens';
 import { naturalLens } from './lens';
-import { LOD_MIN_LEVEL, TILE_QUADS, globeLodLevel, tileGrid, tileKey, type TileId } from './cubeSphere';
+import {
+  LOD_CDLOD_MAX_LEVEL,
+  LOD_MIN_LEVEL,
+  LOD_SPLIT_FACTOR,
+  TILE_QUADS,
+  selectTiles,
+  tileGrid,
+  tileKey,
+  type TileId,
+} from './cubeSphere';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { iceFraction } from './ice';
@@ -301,13 +310,13 @@ export function createGlobeView(
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
   const tileGridN = TILE_QUADS + 1;
 
-  // The globe's surface is a uniform set of cube-sphere tiles at `renderLevel`
-  // (adaptive LOD): level 0 is a whole face, each deeper level a 2×2
-  // subdivision, so a closer camera can rebuild at a higher level for smoother
-  // relief. Everything downstream is keyed by tile SLOT, not face — the
-  // per-vertex tile-index cache, the base colours, the repaint, the
-  // true-relief rebuild — so `buildTiles()` at any level Just Works.
-  let renderLevel = LOD_MIN_LEVEL;
+  // The globe's surface is a per-tile-CDLOD set of cube-sphere tiles at varying
+  // levels (fine near the camera, coarse far away — `selectTiles`). Level 0 is
+  // a whole face, each deeper level a 2×2 subdivision. Everything downstream is
+  // keyed by tile SLOT, not face — the per-vertex tile-index cache, the base
+  // colours, the repaint, the relief rebuild — so a rebuild at any mix of
+  // levels Just Works; skirts fill the cracks at mixed-level boundaries.
+  let currentSelected: TileId[] = [];
   let reliefOn = false; // true-relief (1×) vs schematic (RELIEF_EXAGGERATION×)
   const reliefScale = (): number => (reliefOn ? 1 : RELIEF_EXAGGERATION);
 
@@ -347,12 +356,22 @@ export function createGlobeView(
     });
   }
 
-  /** (Re)build the whole tile set at `renderLevel` and the current relief
-   * scale: swap the meshes into `spinGroup`, recompute the per-vertex
-   * tile-index cache and base colours, stitch the cube-edge seams, and repaint
-   * for the current day. Cheap enough to run on a level change (a few times
-   * across a zoom), not per frame. */
-  function buildTiles(): void {
+  // A skirt deep enough to cover the worst crack at a mixed-LOD boundary: the
+  // crack can be as tall as the relief displacement, which is bounded by
+  // radius·scale·(maxElevation / referenceRadius); this is a generous multiple
+  // of that (the skirt hides below the surface, so over-deep costs nothing).
+  const skirtDepthFor = (scale: number): number => GLOBE_RADIUS * scale * 0.0025;
+
+  /** A stable signature of a leaf-tile set, for cheap change detection. */
+  const signatureOf = (set: TileId[]): string => set.map(tileKey).join('|');
+  let currentSignature = '';
+
+  /** (Re)build the surface as the given leaf tiles (varying CDLOD levels):
+   * swap the meshes into `spinGroup`, recompute the per-vertex tile-index cache
+   * and base colours, stitch the same-level seams, and repaint. Each tile gets
+   * a skirt so a coarser neighbour's crack is filled. Runs only when the set
+   * changes (a few times across a zoom), not per frame. */
+  function buildTiles(selected: TileId[]): void {
     for (const m of tileMeshes) {
       spinGroup.remove(m);
       m.geometry.dispose();
@@ -361,25 +380,49 @@ export function createGlobeView(
     tileGeoms = [];
     tileIdxByTile = [];
     const scale = reliefScale();
-    for (const t of tilesAtLevel(renderLevel)) {
-      const geom = buildTileGeometry(tiles, t, GLOBE_RADIUS, scale, colorAt);
+    const skirt = skirtDepthFor(scale);
+    for (const t of selected) {
+      const geom = buildTileGeometry(tiles, t, GLOBE_RADIUS, scale, colorAt, skirt);
       const mesh = new THREE.Mesh(geom, material);
       mesh.name = `globe-tile-${tileKey(t)}`;
       spinGroup.add(mesh);
       tileMeshes.push(mesh);
       tileGeoms.push(geom);
       const grid = tileGrid(t);
+      // Only the surface vertices (n×n) are lens-recoloured; the skirt copies
+      // its edge vertex's colour at build time and is never a data surface.
       const idx = new Int32Array(tileGridN * tileGridN);
       for (let i = 0; i < idx.length; i++) idx[i] = tileIndex(tiles, grid.lats[i]!, grid.lons[i]!);
       tileIdxByTile.push(idx);
     }
-    // Each tile computes its normals alone; reconcile them across shared edges
-    // or the directional light draws every seam (worst at 60× relief).
+    // Same-level neighbours share exact edge vertices; reconcile their normals
+    // or the directional light draws every seam (worst at 60× relief). Skirts
+    // cover the *positional* cracks at mixed-level boundaries.
     stitchNormals(tileGeoms);
     rebuildBase();
     repaint(lastDay ?? 0, true);
+    currentSelected = selected;
+    currentSignature = signatureOf(selected);
   }
-  buildTiles();
+  // Initial coarse set (the data-matching base level); the camera refines it.
+  buildTiles(tilesAtLevel(LOD_MIN_LEVEL));
+
+  const localCam = new THREE.Vector3(); // reselect scratch — no per-frame alloc
+  const spinZAxis = new THREE.Vector3(0, 0, 1);
+  /** Per-tile CDLOD: transform the camera into the spinning globe's local
+   * frame (the tiles live under `spinGroup`, rotated by rotation.z), select the
+   * leaf-tile set for that closeness, and rebuild only if it changed. */
+  function reselect(camera: THREE.Camera): void {
+    localCam.copy(camera.position).applyAxisAngle(spinZAxis, -spinGroup.rotation.z);
+    const selected = selectTiles(
+      [localCam.x, localCam.y, localCam.z],
+      GLOBE_RADIUS,
+      LOD_SPLIT_FACTOR,
+      LOD_CDLOD_MAX_LEVEL,
+      LOD_MIN_LEVEL,
+    );
+    if (signatureOf(selected) !== currentSignature) buildTiles(selected);
+  }
 
   /** Repaints the current tile set for `day`: the active lens's colour per
    * vertex, blended toward `ICE_COLOR` only under `natural` (a data lens must
@@ -466,21 +509,10 @@ export function createGlobeView(
   function setTrueRelief(on: boolean): void {
     if (on === reliefOn) return;
     reliefOn = on;
-    buildTiles();
+    buildTiles(currentSelected); // same tiles, rebuilt at the new relief scale
     // The terrain the markers stand on just moved — reseat them on it.
     for (const marker of markers) placeMarker(marker, reliefScale());
     ocean.setTrueRelief(on);
-  }
-
-  /** Adaptive LOD: pick the level for the camera's distance to the globe
-   * centre and rebuild the tile set if it changed (monotonic in closeness, so
-   * this fires only a few times across a zoom, not per frame). */
-  function setLodForDistance(distance: number): void {
-    const level = globeLodLevel(distance, GLOBE_RADIUS);
-    if (level !== renderLevel) {
-      renderLevel = level;
-      buildTiles();
-    }
   }
 
   const markers = clusterFeatures(tiles.features).map((site) => buildSiteMarker(tiles, site));
@@ -561,10 +593,7 @@ export function createGlobeView(
       if (mesh) mesh.visible = visible;
     }
     if (!camera) return;
-    // Adaptive LOD: the globe centre is the origin of this view, so the
-    // camera's distance from it drives the tile level. Rebuilds only on a
-    // level change.
-    setLodForDistance(camera.position.length());
+    reselect(camera); // per-tile CDLOD; rebuilds only when the leaf set changes
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
       const near = onNearSide(upWorld, camera.position, GLOBE_RADIUS);

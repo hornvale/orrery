@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LOD_MAX_LEVEL, LOD_MIN_LEVEL, TILE_QUADS, children, containingTile, faceUnit,
-  globeLodLevel, maxLevel, parent,
+  globeLodLevel, maxLevel, parent, selectTiles,
   tileCenterUnit, tileEdgeLenM, tileGrid, tileKey, unitLatLon, type TileId,
 } from './cubeSphere';
 
@@ -106,5 +106,25 @@ describe('globeLodLevel', () => {
       prev = lvl;
     }
     expect(globeLodLevel(1.0001 * r, r)).toBe(LOD_MAX_LEVEL);
+  });
+});
+
+describe('selectTiles (CDLOD)', () => {
+  const r = 2;
+  it('a far camera leaves the six coarse level-0 faces', () => {
+    const far = selectTiles([100, 0, 0], r);
+    expect(far.length).toBe(6);
+    expect(far.every((t) => t.level === 0)).toBe(true);
+  });
+  it('a close camera deepens the tiles it faces, leaving the far side coarser', () => {
+    // Just above the +X face (face 0's normal is +X); face 1 is the far side.
+    const near = selectTiles([r * 1.05, 0, 0], r);
+    expect(near.length).toBeGreaterThan(6);
+    const levelOn = (face: number) => Math.max(...near.filter((t) => t.face === face).map((t) => t.level));
+    expect(levelOn(0)).toBeGreaterThan(levelOn(1)); // camera-facing side is finer
+  });
+  it('never exceeds maxLevel', () => {
+    const t = selectTiles([r * 1.001, 0, 0], r, 3, 2);
+    expect(Math.max(...t.map((x) => x.level))).toBeLessThanOrEqual(2);
   });
 });

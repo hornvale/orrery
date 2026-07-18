@@ -124,6 +124,60 @@ export function globeLodLevel(distance: number, radius: number): number {
   return Math.min(LOD_MAX_LEVEL, Math.max(LOD_MIN_LEVEL, LOD_MIN_LEVEL + Math.max(0, steps)));
 }
 
+/** How aggressively CDLOD subdivides: a tile splits into its four children
+ * while the camera is within this multiple of the tile's world edge length of
+ * its centre. Higher → finer (tiles split from farther out). Kept modest so
+ * the default whole-globe view stays at the base level (a stable set under the
+ * diurnal spin — no rebuild churn); zooming in past it engages the finer
+ * levels, where the freeze-spin toggle holds the set still to inspect. */
+export const LOD_SPLIT_FACTOR = 1.5;
+/** Deepest CDLOD level — only tiles right under the camera reach it, so it can
+ * sit deeper than the uniform cap without a whole-globe triangle blow-up. */
+export const LOD_CDLOD_MAX_LEVEL = 4;
+
+/** Select the leaf tiles for a camera at `cameraPos` (world units; globe
+ * centred at the origin, undisplaced radius `radius`): a quadtree descent from
+ * the six level-0 faces that subdivides a tile only while the camera is within
+ * `splitFactor × edgeLength(level)` of the tile's centre and its level is
+ * below `maxLevel`. Near the camera → fine tiles; the far side stays coarse
+ * (level 0), so the detail is paid only where it is seen. Deterministic; call
+ * it against the spin-corrected camera and rebuild when the returned set
+ * changes. */
+export function selectTiles(
+  cameraPos: V3,
+  radius: number,
+  splitFactor = LOD_SPLIT_FACTOR,
+  maxLevel = LOD_CDLOD_MAX_LEVEL,
+  minLevel = 0,
+): TileId[] {
+  const out: TileId[] = [];
+  const [cx, cy, cz] = cameraPos;
+  const visit = (t: TileId): void => {
+    if (t.level >= maxLevel) {
+      out.push(t);
+      return;
+    }
+    if (t.level < minLevel) {
+      // Below the floor: always subdivide, so even the far side never renders
+      // coarser than the data-matching base level.
+      for (const child of children(t)) visit(child);
+      return;
+    }
+    const c = tileCenterUnit(t);
+    const dx = cx - c[0] * radius;
+    const dy = cy - c[1] * radius;
+    const dz = cz - c[2] * radius;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < splitFactor * tileEdgeLenM(t.level, radius)) {
+      for (const child of children(t)) visit(child);
+    } else {
+      out.push(t);
+    }
+  };
+  for (let face = 0; face < 6; face++) visit({ face, level: 0, ix: 0, iy: 0 });
+  return out;
+}
+
 /** Tile at `level` whose face-square contains unit vector u: pick the face
  * by dominant axis, then locate (a, b) by central projection onto it. */
 export function containingTile(u: V3, level: number): TileId {

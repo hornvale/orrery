@@ -75,6 +75,21 @@ describe('buildTileGeometry (LOD tiles)', () => {
       expect(Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i))).toBeCloseTo(2, 6);
     }
   });
+  it('a skirt appends a below-surface apron for crack filling', () => {
+    const tile = { face: 0, level: 1, ix: 0, iy: 0 };
+    const bare = buildTileGeometry(flatTiles(), tile, 2, 60, ignoreColor, 0);
+    const skirted = buildTileGeometry(flatTiles(), tile, 2, 60, ignoreColor, 0.2);
+    const n = 65; // TILE_QUADS + 1; four edges each add n skirt vertices
+    const bareCount = bare.getAttribute('position').count;
+    expect(skirted.getAttribute('position').count).toBe(bareCount + 4 * n);
+    expect(skirted.getIndex()!.count).toBeGreaterThan(bare.getIndex()!.count);
+    // Every appended skirt vertex sits below the (uniform, flat) surface radius.
+    const pos = skirted.getAttribute('position');
+    const surfaceR = Math.hypot(pos.getX(0), pos.getY(0), pos.getZ(0));
+    for (let i = bareCount; i < pos.count; i++) {
+      expect(Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i))).toBeLessThan(surfaceR);
+    }
+  });
   it('the four level-1 children tile the whole face (union of sub-squares)', () => {
     const tiles = flatTiles();
     const kids = [

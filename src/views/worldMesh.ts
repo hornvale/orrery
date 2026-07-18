@@ -62,43 +62,89 @@ export function buildTileGeometry(
   radius: number,
   reliefScale: number,
   colorAt: (i: number) => RGB,
+  skirtDepth = 0,
 ): THREE.BufferGeometry {
   const grid = tileGrid(tile);
   const n = TILE_QUADS + 1;
-  const positions = new Float32Array(n * n * 3);
-  const colors = new Float32Array(n * n * 3);
+  // Growable arrays (the skirt appends past the n×n surface grid).
+  const pos: number[] = [];
+  const col: number[] = [];
   for (let i = 0; i < n * n; i++) {
     const lat = grid.lats[i]!;
     const lon = grid.lons[i]!;
     const elevation = sampleTile(tiles, lat, lon, 'elevation_m');
     const radiusAt = radius * (1 + (reliefScale * elevation) / REFERENCE_RADIUS_M);
-    positions[3 * i] = grid.units[3 * i]! * radiusAt;
-    positions[3 * i + 1] = grid.units[3 * i + 1]! * radiusAt;
-    positions[3 * i + 2] = grid.units[3 * i + 2]! * radiusAt;
-
+    pos.push(grid.units[3 * i]! * radiusAt, grid.units[3 * i + 1]! * radiusAt, grid.units[3 * i + 2]! * radiusAt);
     const rgb = colorAt(tileIndex(tiles, lat, lon));
-    colors[3 * i] = rgb[0] / 255;
-    colors[3 * i + 1] = rgb[1] / 255;
-    colors[3 * i + 2] = rgb[2] / 255;
+    col.push(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
   }
   const indices: number[] = [];
   for (let row = 0; row < TILE_QUADS; row++) {
-    for (let col = 0; col < TILE_QUADS; col++) {
-      const i00 = row * n + col;
-      const i10 = row * n + col + 1;
-      const i01 = (row + 1) * n + col;
-      const i11 = (row + 1) * n + col + 1;
+    for (let c = 0; c < TILE_QUADS; c++) {
+      const i00 = row * n + c;
+      const i10 = row * n + c + 1;
+      const i01 = (row + 1) * n + c;
+      const i11 = (row + 1) * n + c + 1;
       // CCW in the face's (a, b) plane, whose u×v = n by construction
       // (verified for all six faces) — this winding is outward-facing on
       // every face without a per-face special case.
       indices.push(i00, i10, i11, i00, i11, i01);
     }
   }
+
+  // Skirts: a vertical apron dropped `skirtDepth` (world units) inward from
+  // each of the four tile edges, filling any crack a coarser neighbour leaves
+  // at a mixed-level (CDLOD) boundary. Emitted double-winded so it shows
+  // through a crack from either side; each skirt vertex takes its source edge
+  // vertex's normal (copied after `computeVertexNormals`) so it's lit like the
+  // surface, not a black sliver. Harmless when neighbours are the same level
+  // (it stays hidden below the surface). skirtDepth 0 → no skirt (the ocean
+  // and other callers).
+  const skirtToEdge: Array<[number, number]> = [];
+  if (skirtDepth > 0) {
+    const edge = (make: (i: number) => number) => Array.from({ length: n }, (_, i) => make(i));
+    const edges = [
+      edge((c) => c), // top row (row 0)
+      edge((c) => (n - 1) * n + c), // bottom row
+      edge((r) => r * n), // left col
+      edge((r) => r * n + (n - 1)), // right col
+    ];
+    for (const e of edges) {
+      const start = pos.length / 3; // index of this edge's first skirt vertex
+      for (const v of e) {
+        const gx = grid.units[3 * v]!;
+        const gy = grid.units[3 * v + 1]!;
+        const gz = grid.units[3 * v + 2]!;
+        pos.push(pos[3 * v]! - gx * skirtDepth, pos[3 * v + 1]! - gy * skirtDepth, pos[3 * v + 2]! - gz * skirtDepth);
+        col.push(col[3 * v]!, col[3 * v + 1]!, col[3 * v + 2]!);
+      }
+      for (let k = 0; k < e.length; k++) skirtToEdge.push([start + k, e[k]!]);
+      for (let k = 0; k < e.length - 1; k++) {
+        const e0 = e[k]!;
+        const e1 = e[k + 1]!;
+        const s0 = start + k;
+        const s1 = start + k + 1;
+        // Two triangles for the quad, then both reversed — view-independent.
+        indices.push(e0, e1, s1, e0, s1, s0);
+        indices.push(e0, s1, e1, e0, s0, s1);
+      }
+    }
+  }
+
+  const positions = new Float32Array(pos);
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
   geom.setIndex(indices);
   geom.computeVertexNormals();
+  if (skirtToEdge.length > 0) {
+    // Give each skirt vertex its edge vertex's (outward) normal, so the double
+    // winding doesn't leave the skirt with a cancelled ~0 normal (which would
+    // render black under the directional-only light).
+    const nrm = geom.getAttribute('normal') as THREE.BufferAttribute;
+    for (const [s, e] of skirtToEdge) nrm.setXYZ(s, nrm.getX(e), nrm.getY(e), nrm.getZ(e));
+    nrm.needsUpdate = true;
+  }
   return geom;
 }
 
