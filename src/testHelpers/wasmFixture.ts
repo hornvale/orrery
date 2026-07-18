@@ -21,7 +21,7 @@
  * once for the whole run — exactly the win needed under file-level
  * parallelism. */
 import { readFileSync } from "node:fs";
-import { parseTiles, parseSystem, parseRegion, parseMoons, parseNeighbors } from "../sim/scene";
+import { parseTiles, parseSystem, parseRegion, parseMoons, parseNeighbors, parseEclipses } from "../sim/scene";
 import { readOut } from "../sim/catalog";
 
 async function exports() {
@@ -112,6 +112,25 @@ export async function loadSeed42Region(face: number, level: number, ix: number, 
       return parseRegion(readOut(e));
     })();
     regionCache.set(key, cached);
+  }
+  return cached;
+}
+
+const eclipsesCache = new Map<string, Promise<ReturnType<typeof parseEclipses>>>();
+
+/** Instantiate the vendored binary, seed 42, and return the strict-parsed
+ * eclipses document — cached per `(from, until)` after the first call. */
+export async function loadSeed42Eclipses(from: number, until: number) {
+  const key = `${from},${until}`;
+  let cached = eclipsesCache.get(key);
+  if (!cached) {
+    cached = (async () => {
+      const e = await exports();
+      e.hw_new(42n);
+      if (e.hw_scene_eclipses(from, until) !== 0) throw new Error(readOut(e));
+      return parseEclipses(readOut(e));
+    })();
+    eclipsesCache.set(key, cached);
   }
   return cached;
 }

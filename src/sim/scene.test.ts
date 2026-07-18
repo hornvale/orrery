@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSystem, parseTiles, parseRegion, parseMoons, parseNeighbors, SceneFormatError } from './scene';
+import { parseSystem, parseTiles, parseRegion, parseMoons, parseNeighbors, parseEclipses, SceneFormatError } from './scene';
 
 const DOC = JSON.stringify({
   schema: 'scene/system/v1',
@@ -399,5 +399,111 @@ describe('parseNeighbors', () => {
     const doc = JSON.parse(NEIGHBORS_DOC);
     doc.stars[0].dec_deg = 91;
     expect(() => parseNeighbors(JSON.stringify(doc))).toThrow('dec_deg');
+  });
+});
+
+function validEclipses(): Record<string, unknown> {
+  return {
+    schema: 'scene/eclipses/v1',
+    seed: 42,
+    from_day: 0,
+    until_day: 2000,
+    events: [
+      {
+        day: 85.982974,
+        moon_index: 0,
+        body: 'solar',
+        kind: 'total',
+        track: {
+          center_lat_deg: 82.494963,
+          half_width_deg: 2.0,
+          start_lon_deg: -32.693882,
+          end_lon_deg: -58.835236,
+          duration_days: 0.063892372,
+        },
+      },
+      {
+        day: 94.34317,
+        moon_index: 0,
+        body: 'lunar',
+        kind: 'total',
+        track: null,
+      },
+    ],
+  };
+}
+
+describe('parseEclipses', () => {
+  it('reads a valid document and maps snake_case to camelCase', () => {
+    const ecl = parseEclipses(JSON.stringify(validEclipses()));
+    expect(ecl.schema).toBe('scene/eclipses/v1');
+    expect(ecl.seed).toBe(42);
+    expect(ecl.fromDay).toBe(0);
+    expect(ecl.untilDay).toBe(2000);
+    expect(ecl.events).toHaveLength(2);
+  });
+
+  it('rejects the wrong schema', () => {
+    const doc = validEclipses();
+    doc.schema = 'scene/eclipses/v0';
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow(SceneFormatError);
+  });
+
+  it('rejects events that are not an array', () => {
+    const doc = validEclipses();
+    doc.events = 'not an array';
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('events');
+  });
+
+  it("parses a solar event's track into camelCase", () => {
+    const ecl = parseEclipses(JSON.stringify(validEclipses()));
+    const solar = ecl.events[0]!;
+    expect(solar.body).toBe('solar');
+    expect(solar.track).toEqual({
+      centerLatDeg: 82.494963,
+      halfWidthDeg: 2.0,
+      startLonDeg: -32.693882,
+      endLonDeg: -58.835236,
+      durationDays: 0.063892372,
+    });
+  });
+
+  it("leaves a lunar event's track as null", () => {
+    const ecl = parseEclipses(JSON.stringify(validEclipses()));
+    const lunar = ecl.events[1]!;
+    expect(lunar.body).toBe('lunar');
+    expect(lunar.track).toBeNull();
+  });
+
+  it('rejects an invalid body', () => {
+    const doc = validEclipses();
+    (doc.events as Record<string, unknown>[])[0]!.body = 'partial';
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('body');
+  });
+
+  it('rejects an invalid kind', () => {
+    const doc = validEclipses();
+    (doc.events as Record<string, unknown>[])[0]!.kind = 'partial';
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('kind');
+  });
+
+  it('rejects a solar event with a null track', () => {
+    const doc = validEclipses();
+    (doc.events as Record<string, unknown>[])[0]!.track = null;
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('track');
+  });
+
+  it('rejects a lunar event with a non-null track', () => {
+    const doc = validEclipses();
+    (doc.events as Record<string, unknown>[])[1]!.track = (doc.events as Record<string, unknown>[])[0]!.track;
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('track');
+  });
+
+  it('rejects a centerLatDeg of 91', () => {
+    const doc = validEclipses();
+    (
+      (doc.events as Record<string, unknown>[])[0]!.track as Record<string, unknown>
+    ).center_lat_deg = 91;
+    expect(() => parseEclipses(JSON.stringify(doc))).toThrow('center_lat_deg');
   });
 });

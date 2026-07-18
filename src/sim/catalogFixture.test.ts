@@ -12,6 +12,7 @@ import {
   loadSeed42Region,
   loadSeed42Moons,
   loadSeed42Neighbors,
+  loadSeed42Eclipses,
 } from "../testHelpers/wasmFixture";
 
 test("the vendored binary's tiles document parses strictly", async () => {
@@ -83,4 +84,12 @@ test("the vendored binary's region document parses strictly", async () => {
   expect(region.t_mean_c).toHaveLength(nodes);
   expect(region.t_swing_c).toHaveLength(nodes);
   expect(region.moisture).toHaveLength(nodes);
+});
+
+test("the vendored binary's eclipses document parses strictly", async () => {
+  const ecl = await loadSeed42Eclipses(0, 2000);
+  expect(ecl.schema).toBe("scene/eclipses/v1");
+  expect(ecl.events.length).toBeGreaterThan(0);
+  expect(ecl.events.some((e) => e.body === "solar" && e.track !== null)).toBe(true);
+  expect(ecl.events.some((e) => e.body === "lunar" && e.track === null)).toBe(true);
 });

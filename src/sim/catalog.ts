@@ -29,6 +29,7 @@ interface HwExports {
   hw_scene_moons(): number;
   hw_scene_neighbors(): number;
   hw_scene_tiles(width: number): number;
+  hw_scene_eclipses(from: number, until: number): number;
   hw_in_ptr(): number;
   hw_out_ptr(): number;
   hw_out_len(): number;
@@ -71,6 +72,8 @@ export interface Catalog {
   sceneNeighbors(): string;
   /** The `scene/tiles/v1` document (at `width` columns) as raw JSON text. */
   sceneTiles(width: number): string;
+  /** The `scene/eclipses/v1` document (over `[fromDay, untilDay)`) as raw JSON text. */
+  sceneEclipses(fromDay: number, untilDay: number): string;
 }
 
 /** Fetch and instantiate the world-wasm catalog at `wasmUrl`. */
@@ -105,6 +108,10 @@ export async function loadCatalog(wasmUrl: string): Promise<Catalog> {
     },
     sceneTiles(width) {
       check(e.hw_scene_tiles(width));
+      return readOut(e);
+    },
+    sceneEclipses(fromDay, untilDay) {
+      check(e.hw_scene_eclipses(fromDay, untilDay));
       return readOut(e);
     },
   };

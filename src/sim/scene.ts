@@ -188,6 +188,39 @@ export interface NeighborsScene {
   stars: FieldStar[];
 }
 
+/** One `scene/eclipses/v1` ground track: the path of totality/annularity a
+ * solar eclipse traces across the globe (`windows/scene`'s track element).
+ * `null` on the owning event for lunar eclipses (visible from the whole
+ * night hemisphere, no track). */
+export interface GroundTrack {
+  centerLatDeg: number;
+  halfWidthDeg: number;
+  startLonDeg: number;
+  endLonDeg: number;
+  durationDays: number;
+}
+
+/** One `scene/eclipses/v1` event: a dated eclipse, solar or lunar
+ * (`windows/scene`'s eclipse element). */
+export interface EclipseEvent {
+  day: number;
+  moonIndex: number;
+  body: "solar" | "lunar";
+  kind: "total" | "annular";
+  /** The ground track a solar eclipse traces; `null` for lunar eclipses. */
+  track: GroundTrack | null;
+}
+
+/** One `scene/eclipses/v1` document: a world's dated eclipses over a
+ * requested day window. */
+export interface EclipsesScene {
+  schema: string;
+  seed: number;
+  fromDay: number;
+  untilDay: number;
+  events: EclipseEvent[];
+}
+
 /** A scene document violated the contract; the message names how. */
 export class SceneFormatError extends Error {}
 
@@ -198,6 +231,8 @@ const REGION_SCHEMA = "scene/tiles-region/v1";
 export const MOONS_SCHEMA = "scene/moons/v1";
 /** The `scene/neighbors/v1` schema identifier. */
 export const NEIGHBORS_SCHEMA = "scene/neighbors/v1";
+/** The `scene/eclipses/v1` schema identifier. */
+export const ECLIPSES_SCHEMA = "scene/eclipses/v1";
 
 function fail(message: string): never {
   throw new SceneFormatError(message);
@@ -244,6 +279,28 @@ function requireDecDeg(doc: Record<string, unknown>, key: string): number {
   const value = requireNumber(doc, key);
   if (value < -90 || value > 90) fail(`${key} must be in [-90, 90]`);
   return value;
+}
+
+function requireLonDeg(doc: Record<string, unknown>, key: string): number {
+  const value = requireNumber(doc, key);
+  if (value < -180 || value >= 180) fail(`${key} must be in [-180, 180)`);
+  return value;
+}
+
+function requireEclipseBody(doc: Record<string, unknown>, key: string): "solar" | "lunar" {
+  const value = requireString(doc, key);
+  if (value !== "solar" && value !== "lunar") {
+    fail(`${key} must be "solar" or "lunar", got ${JSON.stringify(value)}`);
+  }
+  return value as "solar" | "lunar";
+}
+
+function requireEclipseKind(doc: Record<string, unknown>, key: string): "total" | "annular" {
+  const value = requireString(doc, key);
+  if (value !== "total" && value !== "annular") {
+    fail(`${key} must be "total" or "annular", got ${JSON.stringify(value)}`);
+  }
+  return value as "total" | "annular";
 }
 
 function parseStar(doc: unknown): StarElem {
@@ -529,5 +586,56 @@ export function parseRegion(text: string): RegionScene {
     t_mean_c: numberArray(doc, "t_mean_c", nodes),
     t_swing_c: numberArray(doc, "t_swing_c", nodes),
     moisture: numberArray(doc, "moisture", nodes),
+  };
+}
+
+function parseGroundTrack(doc: unknown): GroundTrack {
+  const t = doc as Record<string, unknown>;
+  if (typeof t !== "object" || t === null) fail("track must be an object");
+  return {
+    centerLatDeg: requireDecDeg(t, "center_lat_deg"),
+    halfWidthDeg: requireNumber(t, "half_width_deg"),
+    startLonDeg: requireLonDeg(t, "start_lon_deg"),
+    endLonDeg: requireLonDeg(t, "end_lon_deg"),
+    durationDays: requireNumber(t, "duration_days"),
+  };
+}
+
+function parseEclipseEvent(doc: unknown): EclipseEvent {
+  const e = doc as Record<string, unknown>;
+  if (typeof e !== "object" || e === null) fail("an event must be an object");
+  const day = requireNumber(e, "day");
+  const moonIndex = requireNumber(e, "moon_index");
+  const body = requireEclipseBody(e, "body");
+  const kind = requireEclipseKind(e, "kind");
+  const trackRaw = e.track;
+  let track: GroundTrack | null;
+  if (body === "solar") {
+    if (trackRaw === null || trackRaw === undefined) fail("track must be present for a solar event");
+    track = parseGroundTrack(trackRaw);
+  } else {
+    if (trackRaw !== null && trackRaw !== undefined) fail("track must be null for a lunar event");
+    track = null;
+  }
+  return { day, moonIndex, body, kind, track };
+}
+
+/** Parse and validate a scene/eclipses/v1 document; throw SceneFormatError naming any violation. */
+export function parseEclipses(text: string): EclipsesScene {
+  const doc = parseDocument(text);
+  if (doc.schema !== ECLIPSES_SCHEMA) {
+    fail(`schema must be ${ECLIPSES_SCHEMA}, got ${String(doc.schema)}`);
+  }
+  const seed = requireNumber(doc, "seed");
+  const fromDay = requireNumber(doc, "from_day");
+  const untilDay = requireNumber(doc, "until_day");
+  const events = doc.events;
+  if (!Array.isArray(events)) fail("events must be an array");
+  return {
+    schema: ECLIPSES_SCHEMA,
+    seed,
+    fromDay,
+    untilDay,
+    events: events.map(parseEclipseEvent),
   };
 }
