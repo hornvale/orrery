@@ -8,11 +8,12 @@ import type { ZoomTarget } from '../views/zoom';
 export interface RungPolicy { defaultMult: number; maxMult: number | null }
 
 /** System keeps the shipped year-in-~12s, snapped to its nearest real step
- * (`~1 mo/s`) so the HUD highlight is honest from boot; the globe gets one
- * rotation in ~24 s and never offers the blur rates. */
+ * (`~1 mo/s`) so the HUD highlight is honest from boot; the globe defaults
+ * to 1 hr/s but now offers the fast rates too (10 d/s, ~1 mo/s) — the
+ * diurnal-spin freeze is what makes them watchable rather than a blur. */
 export const SPEED_POLICY: Record<ZoomTarget, RungPolicy> = {
   system: { defaultMult: 2.6e6, maxMult: null },
-  globe: { defaultMult: 3600, maxMult: 86400 },
+  globe: { defaultMult: 3600, maxMult: 2.6e6 },
 };
 
 /** `mult` clamped to `view`'s cap. */
