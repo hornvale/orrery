@@ -1,6 +1,15 @@
-// worker.ts — genesis off the main thread (it takes seconds).
-import { CatalogFetchError, loadCatalog } from "./catalog";
-import { parseEclipses, parseMoons, parseNeighbors, parseSystem, parseTiles, SceneFormatError } from "./scene";
+// worker.ts — genesis off the main thread (it takes seconds), and region-tile
+// (LOD) requests served from the already-generated world.
+import { CatalogFetchError, loadCatalog, type Catalog } from "./catalog";
+import {
+  parseEclipses,
+  parseMoons,
+  parseNeighbors,
+  parseRegion,
+  parseSystem,
+  parseTiles,
+  SceneFormatError,
+} from "./scene";
 
 /** How main.ts distinguishes the three worker failure modes it renders as
  * distinct, styled full-screen states: the catalog binary itself never
@@ -36,10 +45,34 @@ function errorKind(err: unknown): WorkerErrorKind {
   return "unknown";
 }
 
+// The catalog persists across messages so a region request reuses the world
+// genesis already built (genesis is seconds; a region tile is instant).
+let catalog: Catalog | null = null;
+
 self.onmessage = async (ev: MessageEvent) => {
-  const { seed, pins, tilesWidth } = ev.data;
+  const msg = ev.data;
+  if (msg.type === "region") {
+    // A LOD region tile for the already-generated world (main.ts posts these
+    // after 'world' lands, so the catalog is set). `key` round-trips so the
+    // globe can match the reply to the tile that asked for it.
+    try {
+      if (!catalog) throw new Error("region requested before genesis");
+      const region = parseRegion(
+        catalog.sceneTilesRegion(msg.face, msg.level, msg.ix, msg.iy, msg.samples),
+      );
+      self.postMessage({ type: "region", key: msg.key, region });
+    } catch (err) {
+      self.postMessage({
+        type: "region-error",
+        key: msg.key,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  const { seed, pins, tilesWidth } = msg;
   try {
-    const catalog = await loadCatalog(catalogUrl(import.meta.env.BASE_URL, self.location.origin));
+    catalog = await loadCatalog(catalogUrl(import.meta.env.BASE_URL, self.location.origin));
     catalog.generate(BigInt(seed), pins);
     const system = parseSystem(catalog.sceneSystem());
     const moons = parseMoons(catalog.sceneMoons());

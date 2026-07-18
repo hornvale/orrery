@@ -29,6 +29,7 @@ interface HwExports {
   hw_scene_moons(): number;
   hw_scene_neighbors(): number;
   hw_scene_tiles(width: number): number;
+  hw_scene_tiles_region(face: number, level: number, ix: number, iy: number, samples: number): number;
   hw_scene_eclipses(from: number, until: number): number;
   hw_in_ptr(): number;
   hw_out_ptr(): number;
@@ -72,6 +73,10 @@ export interface Catalog {
   sceneNeighbors(): string;
   /** The `scene/tiles/v1` document (at `width` columns) as raw JSON text. */
   sceneTiles(width: number): string;
+  /** The `scene/tiles-region/v1` document for one cube-sphere tile address, at
+   * `samples`+1 nodes per side — true higher-res terrain re-sampled from the
+   * world's own fields (not interpolated from the coarse tiles export). */
+  sceneTilesRegion(face: number, level: number, ix: number, iy: number, samples: number): string;
   /** The `scene/eclipses/v1` document (over `[fromDay, untilDay)`) as raw JSON text. */
   sceneEclipses(fromDay: number, untilDay: number): string;
 }
@@ -108,6 +113,10 @@ export async function loadCatalog(wasmUrl: string): Promise<Catalog> {
     },
     sceneTiles(width) {
       check(e.hw_scene_tiles(width));
+      return readOut(e);
+    },
+    sceneTilesRegion(face, level, ix, iy, samples) {
+      check(e.hw_scene_tiles_region(face, level, ix, iy, samples));
       return readOut(e);
     },
     sceneEclipses(fromDay, untilDay) {
