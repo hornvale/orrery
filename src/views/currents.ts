@@ -213,15 +213,18 @@ export function createCurrents(
    * zero despite a nonzero `(currentEast, currentNorth)` — if every retry
    * lands there anyway (never observed in practice), the particle simply
    * re-seeds again on the very next frame rather than the overlay failing. */
-  function seedParticle(): CurrentParticle {
+  // `randomizeAge` spreads the INITIAL population's ages so they don't all
+  // re-seed in lockstep (a field that pulses together reads as artificial). A
+  // mid-simulation re-seed, by contrast, is a birth: age 0, full opacity — a
+  // reborn particle must fade IN from its new position, never appear already
+  // half-faded (or flicker through several re-seeds in a row).
+  function seedParticle(randomizeAge: boolean): CurrentParticle {
     for (let attempt = 0; attempt < 8; attempt++) {
       const i = candidates[Math.floor(Math.random() * candidates.length)]!;
       const { lat, lon } = tileLatLon(tiles, i);
       const position = unitPosition(lat, lon);
       if (currentTangentAt(tiles.currentEast[i]!, tiles.currentNorth[i]!, lat, lon).lengthSq() > 0) {
-        // Ages are randomized at birth so particles don't all re-seed in
-        // lockstep — a field that pulses together reads as artificial.
-        const age = Math.random() * PARTICLE_MAX_AGE_DAYS;
+        const age = randomizeAge ? Math.random() * PARTICLE_MAX_AGE_DAYS : 0;
         return { position, age, opacity: particleOpacity(age) };
       }
     }
@@ -231,7 +234,7 @@ export function createCurrents(
   }
 
   const seeds = Math.min(CURRENT_PARTICLES, candidates.length);
-  const particles: CurrentParticle[] = Array.from({ length: seeds }, seedParticle);
+  const particles: CurrentParticle[] = Array.from({ length: seeds }, () => seedParticle(true));
 
   const positions = new Float32Array(seeds * 2 * 3);
   const colors = new Float32Array(seeds * 2 * 3);
@@ -302,7 +305,7 @@ export function createCurrents(
       const tangent = tangentAt(p.position);
       const stepped = stepParticle(p.position, p.age, tangent, dt);
       const next: CurrentParticle = stepped.reseed
-        ? seedParticle()
+        ? seedParticle(false)
         : { position: stepped.position, age: stepped.age, opacity: stepped.opacity };
       particles[k] = next;
       // Redraw at the particle's arrival tile, not its departure tile — a

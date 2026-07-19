@@ -221,6 +221,12 @@ describe('stepParticle', () => {
     expect(result.opacity).toBe(particleOpacity(1.5));
   });
 
+  it('a reborn particle (age 0) is at full opacity — a re-seed fades IN, never appears half-faded', () => {
+    // The re-seed path sets age 0; this pins the invariant it relies on, so a
+    // regression to a randomized re-seed age (partly-faded rebirth) is caught.
+    expect(particleOpacity(0)).toBe(1);
+  });
+
   it('re-seeds when the particle ages out', () => {
     const position = new THREE.Vector3(1, 0, 0);
     const tangent = currentTangentAt(1, 0, 0, 0);
