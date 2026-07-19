@@ -4,7 +4,7 @@ import { LENSES, moistureLens } from '../views/lens';
 import type { EclipseEvent } from '../sim/scene';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {}, onCurrents() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onDayHold() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onToggleView() {}, onScrub(_: number) {}, onLens(_: string) {}, onWinds() {}, onCurrents() {}, onClouds() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onDayHold() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -213,6 +213,39 @@ describe('buildHud interactions', () => {
     hud.setCurrentsActive(true);
     expect(btn.classList.contains('active')).toBe(true);
     hud.setCurrentsActive(false);
+    expect(btn.classList.contains('active')).toBe(false);
+  });
+
+  it('clouds toggle fires onClouds when available', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onClouds: () => { calls++; } });
+    hud.setCloudsAvailable(true);
+    const btn = root.querySelector('button[name="clouds-toggle"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    expect(calls).toBe(1);
+  });
+
+  it('clouds toggle is disabled with the reason on a locked world, not hidden', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onClouds: () => { calls++; } });
+    hud.setCloudsAvailable(false, 'no circulation bands: this world is tidally locked');
+    const btn = root.querySelector('button[name="clouds-toggle"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(root.textContent).toContain('no circulation bands: this world is tidally locked');
+    btn.click(); // a disabled button does not dispatch a click handler at all
+    expect(calls).toBe(0);
+  });
+
+  it('setCloudsActive toggles the active class', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    const btn = root.querySelector('button[name="clouds-toggle"]') as HTMLButtonElement;
+    hud.setCloudsActive(true);
+    expect(btn.classList.contains('active')).toBe(true);
+    hud.setCloudsActive(false);
     expect(btn.classList.contains('active')).toBe(false);
   });
 

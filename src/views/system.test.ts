@@ -72,6 +72,8 @@ function tinyTiles(): TilesScene {
     currentEast: Array(n).fill(0), currentNorth: Array(n).fill(0),
     season_period_days: 365, circulationBands: null, moisture: Array(n).fill(0.5),
     plate: Array(n).fill(0), unrest: Array(n).fill(0), locked: false,
+    precipMmYr: Array(n).fill(800), snowFraction: Array(n).fill(0.1),
+    precipRegime: Array(n).fill(0), cloudFraction: Array(n).fill(0.4),
   };
 }
 

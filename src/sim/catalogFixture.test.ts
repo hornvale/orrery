@@ -42,6 +42,23 @@ test("the vendored binary carries the ocean-current layer", async () => {
   }
 });
 
+test("the vendored binary carries the precipitation/cloud layers (The Rains)", async () => {
+  const tiles = await loadSeed42Tiles(64);
+  const n = tiles.width * tiles.height;
+  expect(tiles.precipMmYr).toHaveLength(n);
+  expect(tiles.snowFraction).toHaveLength(n);
+  expect(tiles.precipRegime).toHaveLength(n);
+  expect(tiles.cloudFraction).toHaveLength(n);
+  expect(tiles.precipMmYr.some((v) => v > 0)).toBe(true);
+  expect(Math.min(...tiles.precipMmYr)).toBeGreaterThanOrEqual(0);
+  expect(Math.min(...tiles.snowFraction)).toBeGreaterThanOrEqual(0);
+  expect(Math.max(...tiles.snowFraction)).toBeLessThanOrEqual(1);
+  expect(Math.min(...tiles.cloudFraction)).toBeGreaterThanOrEqual(0);
+  expect(Math.max(...tiles.cloudFraction)).toBeLessThanOrEqual(1);
+  // PrecipRegime has 4 declared variants (Uniform, SummerMax, WinterMax, Monsoon).
+  expect(tiles.precipRegime.every((r) => r >= 0 && r <= 3)).toBe(true);
+});
+
 test("the vendored binary's system document parses strictly", async () => {
   const sys = await loadSeed42System();
   expect(sys.schema).toBe("scene/system/v1");

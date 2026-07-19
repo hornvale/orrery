@@ -33,6 +33,7 @@ import {
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { createCurrents } from './currents';
+import { createClouds } from './clouds';
 import { iceFraction } from './ice';
 import { systemSeasonalContext } from '../sim/lockedClimate';
 import { MARGIN as ECLIPSE_MARGIN, bandVisibleAt, buildEclipseBand } from './eclipseBand';
@@ -268,6 +269,10 @@ export interface GlobeView {
   /** Show or hide the ocean-current advection overlay (The Gyre) — a no-op
    * when `createCurrents` built nothing to show (no ocean-current data). */
   setCurrents(on: boolean): void;
+  /** Show or hide the cloud advection overlay (The Rains) — a no-op when
+   * `createClouds` built nothing to show (a locked world has no wind to
+   * advect along, or no tile clears the cloud-fraction threshold). */
+  setClouds(on: boolean): void;
   /** Show or hide the ocean's drifting wave pattern (the normal map). Off
    * leaves a smooth, still sea; the depth grading stays. */
   setWaves(on: boolean): void;
@@ -585,6 +590,19 @@ export function createGlobeView(
     currentsOn = on;
     currents?.setVisible(on);
   }
+
+  // The Rains' cloud advection overlay: same build-once-seed, per-frame-drift
+  // idiom as currents above, but riding the wind (reconstructed from
+  // circulationBands) rather than a per-tile current vector. `null` on a
+  // locked world (no bands) or a world with no cell above the cloud
+  // threshold — nothing to mount, step, or toggle.
+  const clouds = createClouds(tiles, GLOBE_RADIUS);
+  if (clouds) spinGroup.add(clouds.object3d);
+  let cloudsOn = false;
+  function setClouds(on: boolean): void {
+    cloudsOn = on;
+    clouds?.setVisible(on);
+  }
   function setWaves(on: boolean): void {
     ocean.setWaves(on);
   }
@@ -674,6 +692,7 @@ export function createGlobeView(
     spinGroup.rotation.z = seasonalSpinZ(sys, day, seasonalHold);
     ocean.update(day);
     if (currentsOn) currents?.update(day);
+    if (cloudsOn) clouds?.update(day);
     // The active lens (and ice, under natural) is blended into the base
     // vertex color before the material's lighting, so it inherits the
     // honest terminator for free — no ambient light means the recolored
@@ -713,6 +732,7 @@ export function createGlobeView(
     setLens,
     setWinds,
     setCurrents,
+    setClouds,
     setWaves,
     setGlint,
     setNightFill,

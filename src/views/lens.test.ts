@@ -3,7 +3,7 @@ import { LENSES, lensById, naturalLens } from './lens';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import { HEX } from './colormap';
 import { elevationColor } from '../sim/palette';
-import { moistureLens, temperatureLens, topographicLens, unrestLens, plateLens } from './lens';
+import { moistureLens, precipitationLens, temperatureLens, topographicLens, unrestLens, plateLens } from './lens';
 import { PLATE_BOUNDARY, PLATE_SLOTS, colorPlates, isBoundaryTile, plateAdjacency } from './plateColoring';
 import type { TilesScene } from '../sim/scene';
 
@@ -105,6 +105,26 @@ describe('the moisture lens', () => {
     const at = (m: number) => moistureLens.colorAt(oneTile({ moisture: [m] }), 0, 0);
     expect(at(0)).toEqual(HEX('#cde2fb'));
     expect(at(1)).toEqual(HEX('#0d366b'));
+  });
+});
+
+describe('the precipitation lens', () => {
+  it('ramps arid→wet as mm/yr rises', () => {
+    const at = (mm: number) => precipitationLens.colorAt(oneTile({ precipMmYr: [mm] }), 0, 0);
+    expect(at(0)).toEqual(HEX('#ddc38a'));
+    expect(at(2000)).toEqual(HEX('#0f5c4d'));
+  });
+
+  it('a wetter tile reads darker/greener than a drier one (higher mm/yr → wetter color)', () => {
+    const at = (mm: number) => precipitationLens.colorAt(oneTile({ precipMmYr: [mm] }), 0, 0);
+    // The tan pole is lighter in every channel than the teal pole, so the
+    // red channel falls monotonically as mm/yr rises toward the wet pole.
+    expect(at(1500)[0]).toBeLessThan(at(200)[0]);
+  });
+
+  it('clamps beyond the extent rather than extrapolating', () => {
+    const at = (mm: number) => precipitationLens.colorAt(oneTile({ precipMmYr: [mm] }), 0, 0);
+    expect(at(5000)).toEqual(at(2000));
   });
 });
 

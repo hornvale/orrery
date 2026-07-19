@@ -34,6 +34,12 @@ export interface HudCallbacks {
    * zeroes the whole field) — the browser's own `disabled` attribute blocks
    * the click before this callback is reached. */
   onCurrents(): void;
+  /** The viewer toggled the cloud advection overlay (The Rains). Never fires
+   * while the control is disabled (no wind to advect along — a locked world
+   * reports no circulation bands, or no tile clears the cloud-fraction
+   * threshold) — the browser's own `disabled` attribute blocks the click
+   * before this callback is reached. */
+  onClouds(): void;
   /** The viewer clicked an eclipse mark on the day scrubber. */
   onEclipseMark(event: EclipseEvent): void;
   /** The viewer toggled the spin freeze: hold the globe's daily rotation so a
@@ -83,6 +89,13 @@ export interface Hud {
   setCurrentsAvailable(available: boolean, reason?: string): void;
   /** Marks the currents toggle's on/off state (only meaningful while available). */
   setCurrentsActive(on: boolean): void;
+  /** Enables or disables the clouds toggle. When unavailable, `reason` names
+   * why (a locked world has no wind to advect along, or no tile clears the
+   * cloud threshold) — shown next to the disabled button rather than the
+   * control silently vanishing. */
+  setCloudsAvailable(available: boolean, reason?: string): void;
+  /** Marks the clouds toggle's on/off state (only meaningful while available). */
+  setCloudsActive(on: boolean): void;
   /** Rebuilds the day scrubber's eclipse marks for the displayed year's
    * `events`, placed against `maxDay` (the scrubber's own range). */
   setEclipses(events: EclipseEvent[], maxDay: number): void;
@@ -237,6 +250,15 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   const currentsRow = el('div', 'hud-winds-row');
   currentsRow.append(currentsToggle, currentsReason);
 
+  // The Rains' cloud advection overlay: same "overlay beside the lens panel"
+  // placement as winds/currents above, for the same reason.
+  const cloudsToggle = el('button', '', 'clouds');
+  (cloudsToggle as HTMLButtonElement).name = 'clouds-toggle';
+  cloudsToggle.addEventListener('click', () => cb.onClouds());
+  const cloudsReason = el('span', 'hud-winds-reason', '');
+  const cloudsRow = el('div', 'hud-winds-row');
+  cloudsRow.append(cloudsToggle, cloudsReason);
+
   // Ocean-surface effect toggles: the drifting wave pattern and the sun-glint
   // (both material properties of the ocean; only visible under the natural
   // lens, but always togglable). Default on, matching the material defaults.
@@ -256,7 +278,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   oceanRow.append(wavesToggle, glintToggle, nightFillToggle);
 
   const lensPanel = el('div', 'hud hud-lens-panel');
-  lensPanel.append(lensRow, legendBox, lensCaption, windsRow, currentsRow, oceanRow);
+  lensPanel.append(lensRow, legendBox, lensCaption, windsRow, currentsRow, cloudsRow, oceanRow);
 
   root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
@@ -307,6 +329,11 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       currentsReason.textContent = available ? '' : (reason ?? '');
     },
     setCurrentsActive: (on) => { currentsToggle.classList.toggle('active', on); },
+    setCloudsAvailable: (available, reason) => {
+      (cloudsToggle as HTMLButtonElement).disabled = !available;
+      cloudsReason.textContent = available ? '' : (reason ?? '');
+    },
+    setCloudsActive: (on) => { cloudsToggle.classList.toggle('active', on); },
     setEclipses: (events, maxDay) => {
       eclipseMarksEl.replaceChildren();
       for (const mark of eclipseMarkPositions(events, maxDay)) {

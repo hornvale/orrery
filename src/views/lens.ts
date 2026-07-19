@@ -99,6 +99,13 @@ const TEMP_HOT = HEX('#e34948');
 const TEMP_EXTENT = 30;
 const MOISTURE_RAMP: RGB[] = [HEX('#cde2fb'), HEX('#0d366b')];
 const UNREST_RAMP: RGB[] = [HEX('#d4f0e4'), HEX('#0a4a33')];
+/** Arid tan → wet blue-green, following the same light→dark sequential
+ * convention as the moisture/unrest ramps above. */
+const PRECIP_RAMP: RGB[] = [HEX('#ddc38a'), HEX('#0f5c4d')];
+/** Clamp for the precipitation lens, mm/yr — the producer's `precip_mm_yr`
+ * curve (`2000 * moisture^1.5`) tops out at exactly this value (moisture=1),
+ * so the ramp's wet pole is reachable, not an arbitrary round number. */
+const PRECIP_EXTENT_MM = 2000;
 
 /** Elevation everywhere through the hypsometric ramp — the atlas raster's own
  * convention, applied to land and sea alike rather than only under the sea. */
@@ -169,6 +176,23 @@ export const unrestLens: Lens = {
   ],
 };
 
+/** Annual precipitation, mm/yr — the producer's Earth-ranged total (The
+ * Rains), not the dimensionless moisture index the moisture lens already
+ * shows. Ramps arid tan (0 mm/yr) to wet blue-green (`PRECIP_EXTENT_MM`+),
+ * matching the light→dark sequential convention. */
+export const precipitationLens: Lens = {
+  id: 'precipitation',
+  label: 'precip',
+  caption:
+    'annual precipitation, mm/yr — the moisture index mapped to an Earth-ranged total (spec §5); a documented approximation, not a measured climatology.',
+  dependsOnDay: false,
+  colorAt: (tiles, i) => sequential(PRECIP_RAMP, tiles.precipMmYr[i]! / PRECIP_EXTENT_MM),
+  legend: () => [
+    { swatch: PRECIP_RAMP[0]!, label: '0 mm/yr — arid' },
+    { swatch: PRECIP_RAMP[1]!, label: `${PRECIP_EXTENT_MM}+ mm/yr — wet` },
+  ],
+};
+
 const plateColorCache = new WeakMap<TilesScene, Map<number, number>>();
 function platesFor(tiles: TilesScene): Map<number, number> {
   let c = plateColorCache.get(tiles);
@@ -208,6 +232,7 @@ export const LENSES: readonly Lens[] = [
   topographicLens,
   temperatureLens,
   moistureLens,
+  precipitationLens,
   unrestLens,
   plateLens,
 ];

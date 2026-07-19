@@ -20,6 +20,7 @@ import { createSystemView } from './views/system';
 import { createGlobeView, RELIEF_EXAGGERATION, type GlobeView } from './views/globe';
 import { TILE_QUADS, tileKey, type TileId } from './views/cubeSphere';
 import { lensById, naturalLens } from './views/lens';
+import { CLOUD_FRACTION_THRESHOLD } from './views/clouds';
 import { ZoomController, dollyLookAt, dollyPosition, wheelHandoff, type ZoomTarget } from './views/zoom';
 import { SPEED_POLICY, SpeedMemory, clampMult, reconcileDayHold } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, SystemScene, TilesScene } from './sim/scene';
@@ -255,6 +256,9 @@ function mountViews(
   // toggle idiom as winds, starting hidden to match `createCurrents`'s built
   // geometry.
   let currentsOn = false;
+  // The Rains' cloud advection overlay: same single globe-wide toggle idiom
+  // as currents, starting hidden to match `createClouds`'s built geometry.
+  let cloudsOn = false;
   // Ocean-surface effects start on, matching the ocean material defaults; the
   // HUD reflects that initial state in buildHud.
   let wavesOn = true;
@@ -555,6 +559,11 @@ function mountViews(
       globeView.setCurrents(currentsOn);
       hud.setCurrentsActive(currentsOn);
     },
+    onClouds() {
+      cloudsOn = !cloudsOn;
+      globeView.setClouds(cloudsOn);
+      hud.setCloudsActive(cloudsOn);
+    },
     onEclipseMark(event) {
       infoCard.show(eclipseInfo(event));
     },
@@ -608,6 +617,13 @@ function mountViews(
     // toggle for a world that has one.
     tiles.currentEast.some((v) => v !== 0) || tiles.currentNorth.some((v) => v !== 0),
     'no ocean-current data: this world is tidally locked',
+  );
+  hud.setCloudsAvailable(
+    // Match `createClouds`'s own build conditions: bands must exist (a
+    // locked world reports none) AND at least one tile must clear its cloud
+    // threshold.
+    tiles.circulationBands !== null && tiles.cloudFraction.some((v) => v >= CLOUD_FRACTION_THRESHOLD),
+    'no circulation bands: this world is tidally locked',
   );
   hud.setEclipses(eclipses.events, system.world.yearDays);
 

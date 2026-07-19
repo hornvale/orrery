@@ -103,6 +103,22 @@ export interface TilesScene {
    * `lockedTemperatureAt`) rather than the spinning-world sinusoid
    * (`temperatureAt`). */
   locked: boolean;
+  /** Annual precipitation per tile, mm/yr (The Rains) — the moisture field
+   * mapped into an Earth-ranged total (0 arid, up to ~2000 rainforest-wet);
+   * row-major, matching `elevation_m`. */
+  precipMmYr: number[];
+  /** The fraction of precipitation falling as snow per tile, dimensionless
+   * in [0, 1] (The Rains) — row-major, matching `elevation_m`. */
+  snowFraction: number[];
+  /** The seasonal precipitation regime per tile, as an index into the
+   * producer's `PrecipRegime` declaration order (The Rains):
+   * 0 = Uniform, 1 = SummerMax, 2 = WinterMax, 3 = Monsoon. Row-major,
+   * matching `elevation_m`. */
+  precipRegime: number[];
+  /** Diagnostic cloud fraction per tile, dimensionless in [0, 1] (The
+   * Rains) — feeds nothing else in the sim, a readable field only. Row-major,
+   * matching `elevation_m`. */
+  cloudFraction: number[];
 }
 
 /** The fields of a `scene/tiles-region/v1` document — a regional tile
@@ -466,6 +482,25 @@ function numberArray(doc: Record<string, unknown>, key: string, length: number):
   return value as number[];
 }
 
+function intArrayInRange(
+  doc: Record<string, unknown>,
+  key: string,
+  length: number,
+  min: number,
+  max: number,
+): number[] {
+  const value = doc[key];
+  if (!Array.isArray(value) || value.length !== length) {
+    fail(`${key} must be an array of ${length} integers`);
+  }
+  for (const v of value) {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) {
+      fail(`${key} holds a value outside [${min}, ${max}]`);
+    }
+  }
+  return value as number[];
+}
+
 function booleanArray(doc: Record<string, unknown>, key: string, length: number): boolean[] {
   const value = doc[key];
   if (!Array.isArray(value) || value.length !== length) {
@@ -547,6 +582,10 @@ export function parseTiles(text: string): TilesScene {
     circulationBands,
     moisture: numberArray(doc, "moisture", tiles),
     locked: requireBoolean(doc, "locked"),
+    precipMmYr: numberArray(doc, "precip_mm_yr", tiles),
+    snowFraction: numberArray(doc, "snow_fraction", tiles),
+    precipRegime: intArrayInRange(doc, "precip_regime", tiles, 0, 3),
+    cloudFraction: numberArray(doc, "cloud_fraction", tiles),
   };
 }
 

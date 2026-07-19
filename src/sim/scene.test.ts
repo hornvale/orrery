@@ -115,6 +115,10 @@ function validTiles(): Record<string, unknown> {
     plate: Array.from({ length: tiles }, (_, i) => i % 4),
     unrest: Array.from({ length: tiles }, (_, i) => (i % 5) / 4),
     locked: false,
+    precip_mm_yr: Array(tiles).fill(800.0),
+    snow_fraction: Array(tiles).fill(0.2),
+    precip_regime: Array.from({ length: tiles }, (_, i) => i % 4),
+    cloud_fraction: Array(tiles).fill(0.4),
   };
 }
 
@@ -282,6 +286,61 @@ describe('parseTiles', () => {
     const spinningDoc = validTiles();
     spinningDoc.locked = false;
     expect(parseTiles(JSON.stringify(spinningDoc)).locked).toBe(false);
+  });
+
+  it('reads precip_mm_yr/snow_fraction/precip_regime/cloud_fraction onto camelCase names', () => {
+    const t = parseTiles(JSON.stringify(validTiles()));
+    expect(t.precipMmYr.length).toEqual(128);
+    expect(t.snowFraction.length).toEqual(128);
+    expect(t.precipRegime.length).toEqual(128);
+    expect(t.cloudFraction.length).toEqual(128);
+    expect(t.precipMmYr[0]).toEqual(800.0);
+    expect(t.snowFraction[0]).toEqual(0.2);
+    expect(t.cloudFraction[0]).toEqual(0.4);
+  });
+
+  it('accepts every valid precip_regime index (0-3)', () => {
+    const doc = validTiles();
+    (doc.precip_regime as number[]) = Array.from({ length: 128 }, (_, i) => i % 4);
+    const t = parseTiles(JSON.stringify(doc));
+    expect(t.precipRegime.every((r) => r >= 0 && r <= 3)).toBe(true);
+    expect(new Set(t.precipRegime)).toEqual(new Set([0, 1, 2, 3]));
+  });
+
+  it('rejects a precip_regime index of 4 (out of the 4-variant range)', () => {
+    const doc = validTiles();
+    (doc.precip_regime as number[])[0] = 4;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('precip_regime');
+  });
+
+  it('rejects a non-integer precip_regime entry', () => {
+    const doc = validTiles();
+    (doc.precip_regime as number[])[0] = 1.5;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('precip_regime');
+  });
+
+  it('rejects a mismatched precip_mm_yr length', () => {
+    const doc = validTiles();
+    (doc.precip_mm_yr as number[]).pop();
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('precip_mm_yr');
+  });
+
+  it('rejects a document missing snow_fraction', () => {
+    const doc = validTiles();
+    delete doc.snow_fraction;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('snow_fraction');
+  });
+
+  it('rejects a document missing cloud_fraction', () => {
+    const doc = validTiles();
+    delete doc.cloud_fraction;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('cloud_fraction');
+  });
+
+  it('rejects a document missing precip_regime', () => {
+    const doc = validTiles();
+    delete doc.precip_regime;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('precip_regime');
   });
 });
 
