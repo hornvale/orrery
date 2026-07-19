@@ -59,6 +59,18 @@ test("the vendored binary carries the precipitation/cloud layers (The Rains)", a
   expect(tiles.precipRegime.every((r) => r >= 0 && r <= 3)).toBe(true);
 });
 
+test("the vendored binary carries the typed-weather layers (Weather Program C4)", async () => {
+  const tiles = await loadSeed42Tiles(64);
+  const n = tiles.width * tiles.height;
+  expect(tiles.weatherPropensity).toHaveLength(n);
+  expect(tiles.cloudType).toHaveLength(n);
+  expect(Math.min(...tiles.weatherPropensity)).toBeGreaterThanOrEqual(0);
+  expect(Math.max(...tiles.weatherPropensity)).toBeLessThanOrEqual(1);
+  // CloudType has 6 declared variants (None, Cumulus, Stratus, Nimbostratus,
+  // Cumulonimbus, Cirrus).
+  expect(tiles.cloudType.every((c) => c >= 0 && c <= 5)).toBe(true);
+});
+
 test("the vendored binary's system document parses strictly", async () => {
   const sys = await loadSeed42System();
   expect(sys.schema).toBe("scene/system/v1");

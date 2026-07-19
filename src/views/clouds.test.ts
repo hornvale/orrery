@@ -4,9 +4,12 @@ import {
   CLOUD_FRACTION_THRESHOLD,
   CLOUD_PARTICLES,
   CLOUD_PARTICLE_MAX_AGE_DAYS,
+  cloudStyleFor,
   createClouds,
+  luminance,
   particleOpacity,
   stepParticle,
+  weightedIndex,
   windTangentAt,
 } from './clouds';
 import type { TilesScene } from '../sim/scene';
@@ -16,8 +19,18 @@ function tilesFixture(opts: {
   height: number;
   circulationBands: number | null;
   cloudFraction: number[];
+  weatherPropensity?: number[];
+  cloudType?: number[];
 }): TilesScene {
-  return opts as never;
+  const n = opts.cloudFraction.length;
+  return {
+    // Defaults for tests that don't care about the typed-cloud fields: a
+    // uniform mid-propensity, real (non-None) type so a candidate tile
+    // always has *something* to sample a style from.
+    weatherPropensity: opts.weatherPropensity ?? Array(n).fill(0.5),
+    cloudType: opts.cloudType ?? Array(n).fill(1),
+    ...opts,
+  } as never;
 }
 
 describe('windTangentAt', () => {
@@ -156,6 +169,27 @@ describe('createClouds', () => {
     const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
     expect(base.length()).toBeCloseTo(1.03, 5); // radius(1) * LIFT
   });
+
+  it('draws a bigger puff for Cumulonimbus (4) than for Cirrus (5) — cloudType drives sizeScale', () => {
+    // Only tile 0 clears the cloud threshold, so every particle seeds
+    // there and shares its cloudType's style.
+    const cloudFraction = [0.9, 0, 0, 0, 0, 0, 0, 0];
+    const puffLength = (type: number): number => {
+      const tiles = tilesFixture({
+        width: 4,
+        height: 2,
+        circulationBands: 3,
+        cloudFraction,
+        cloudType: [type, 0, 0, 0, 0, 0, 0, 0],
+      });
+      const clouds = createClouds(tiles, 1)!;
+      const pos = (clouds.object3d as THREE.LineSegments).geometry.getAttribute('position');
+      const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
+      const tip = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1));
+      return base.distanceTo(tip);
+    };
+    expect(puffLength(4)).toBeGreaterThan(puffLength(5));
+  });
 });
 
 describe('particleOpacity', () => {
@@ -229,5 +263,86 @@ describe('CLOUD_FRACTION_THRESHOLD', () => {
   it('sits strictly between 0 and 1', () => {
     expect(CLOUD_FRACTION_THRESHOLD).toBeGreaterThan(0);
     expect(CLOUD_FRACTION_THRESHOLD).toBeLessThan(1);
+  });
+});
+
+describe('cloudStyleFor', () => {
+  it('is TOTAL over the wire range 0..=5 — every declared type resolves to a valid style', () => {
+    for (let type = 0; type <= 5; type++) {
+      const style = cloudStyleFor(type);
+      expect(style.color).toHaveLength(3);
+      for (const c of style.color) {
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThanOrEqual(1);
+      }
+      expect(style.sizeScale).toBeGreaterThan(0);
+      expect(style.densityScale).toBeGreaterThan(0);
+      expect(style.densityScale).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('gives every one of the six types a distinct color — a real per-type distinction, not a shared default', () => {
+    const colors = Array.from({ length: 6 }, (_, type) => cloudStyleFor(type).color.join(','));
+    expect(new Set(colors).size).toBe(6);
+  });
+
+  it('Cumulonimbus (4) renders denser AND darker than Cirrus (5)', () => {
+    const cumulonimbus = cloudStyleFor(4);
+    const cirrus = cloudStyleFor(5);
+    expect(cumulonimbus.densityScale).toBeGreaterThan(cirrus.densityScale); // denser
+    expect(luminance(cumulonimbus.color)).toBeLessThan(luminance(cirrus.color)); // darker
+  });
+
+  it('clamps an out-of-range index to Cumulus (1) rather than throwing — mirrors biomeColor', () => {
+    const cumulus = cloudStyleFor(1);
+    expect(cloudStyleFor(6)).toEqual(cumulus);
+    expect(cloudStyleFor(-1)).toEqual(cumulus);
+    expect(cloudStyleFor(1.5)).toEqual(cumulus);
+  });
+});
+
+describe('luminance', () => {
+  it('is the mean of the three channels', () => {
+    expect(luminance([1, 0, 0])).toBeCloseTo(1 / 3);
+    expect(luminance([1, 1, 1])).toBe(1);
+    expect(luminance([0, 0, 0])).toBe(0);
+  });
+});
+
+describe('weightedIndex', () => {
+  it('picks index 0 for any sample within the first candidate\'s cumulative-weight span', () => {
+    expect(weightedIndex([0.95, 1.0], 0)).toBe(0);
+    expect(weightedIndex([0.95, 1.0], 0.5)).toBe(0);
+    expect(weightedIndex([0.95, 1.0], 0.94)).toBe(0);
+  });
+
+  it('picks the next index once the sample exceeds the prior cumulative weight', () => {
+    expect(weightedIndex([0.95, 1.0], 0.96)).toBe(1);
+    expect(weightedIndex([0.95, 1.0], 1.0)).toBe(1);
+  });
+
+  it('a heavier candidate claims a proportionally larger share of the sample range — the mechanism behind "particle density seeded from weatherPropensity"', () => {
+    // Three candidates, weights 1, 1, 8 (cumulative 1, 2, 10): the heavy
+    // third candidate should win ~80% of a sweep across [0, 10).
+    const cumulative = [1, 2, 10];
+    const trials = 1000;
+    let heavyWins = 0;
+    for (let i = 0; i < trials; i++) {
+      const sample = (i / trials) * 10; // deterministic sweep, not Math.random — no flake risk
+      if (weightedIndex(cumulative, sample) === 2) heavyWins++;
+    }
+    expect(heavyWins / trials).toBeCloseTo(0.8, 1);
+  });
+
+  it('an equal-weight sweep splits evenly across candidates', () => {
+    const cumulative = [1, 2, 3, 4];
+    const counts = [0, 0, 0, 0];
+    const trials = 400;
+    for (let i = 0; i < trials; i++) {
+      counts[weightedIndex(cumulative, (i / trials) * 4)]!++;
+    }
+    // Bucket boundaries can land exactly on an integer sample, tipping one
+    // count by one; the point is an even SPLIT, not exact equality.
+    for (const c of counts) expect(c).toBeCloseTo(trials / 4, -1);
   });
 });

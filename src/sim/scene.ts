@@ -119,6 +119,18 @@ export interface TilesScene {
    * Rains) — feeds nothing else in the sim, a readable field only. Row-major,
    * matching `elevation_m`. */
   cloudFraction: number[];
+  /** Weather-system propensity per tile, dimensionless in [0, 1] (Weather
+   * Program C4) — how storm-prone the cell reads, independent of
+   * `cloudFraction`'s coverage-only diagnostic. Row-major, matching
+   * `elevation_m`; the orrery's typed-cloud overlay (`./views/clouds.ts`)
+   * biases how many particles seed at a tile by this value. */
+  weatherPropensity: number[];
+  /** The classified cloud type per tile, as an index into the producer's
+   * `CloudType` declaration order (Weather Program C4): 0 = None,
+   * 1 = Cumulus, 2 = Stratus, 3 = Nimbostratus, 4 = Cumulonimbus,
+   * 5 = Cirrus. Row-major, matching `elevation_m`; the orrery's typed-cloud
+   * overlay (`./views/clouds.ts`) reads this to pick each puff's color/size. */
+  cloudType: number[];
 }
 
 /** The fields of a `scene/tiles-region/v1` document — a regional tile
@@ -586,6 +598,8 @@ export function parseTiles(text: string): TilesScene {
     snowFraction: numberArray(doc, "snow_fraction", tiles),
     precipRegime: intArrayInRange(doc, "precip_regime", tiles, 0, 3),
     cloudFraction: numberArray(doc, "cloud_fraction", tiles),
+    weatherPropensity: numberArray(doc, "weather_propensity", tiles),
+    cloudType: intArrayInRange(doc, "cloud_type", tiles, 0, 5),
   };
 }
 

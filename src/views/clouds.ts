@@ -1,4 +1,5 @@
-/** The cloud advection overlay (The Rains).
+/** The cloud advection overlay (The Rains; typed clouds are Weather
+ * Program C4).
  *
  * Sibling to `./currents.ts`: same split (pure tangent-frame geometry,
  * unit-tested without WebGL; a three.js builder that consumes it) and the
@@ -18,9 +19,16 @@
  * position when it ages out or drifts off a cloudy cell. Non-deterministic
  * client eyecandy: seeding and re-seeding are `Math.random`-sampled, never
  * derived from the world seed — only the per-step geometry (`windTangentAt`,
- * `stepParticle`) is pure and tested. The visual treatment here (short
- * streaks, matching `currents.ts`) is a placeholder; a softer billowing
- * "veil" look is a presentation-only follow-up. */
+ * `stepParticle`) is pure and tested.
+ *
+ * Candidacy (which tiles can seed a puff at all) still gates on
+ * `cloudFraction` clearing `CLOUD_FRACTION_THRESHOLD`, unchanged from The
+ * Rains. Weather Program C4 upgrades what happens once a tile qualifies:
+ * each puff is typed, not uniform white — `cloudStyleFor` maps the tile's
+ * `cloudType` under it to a color/size/density (Cumulonimbus reads
+ * darkest and densest, Cirrus palest and thinnest), and `weatherPropensity`
+ * biases which candidate gets picked so storm-prone cells draw more of the
+ * fixed particle budget (`pickCandidate`'s weighted sampling). */
 import * as THREE from 'three';
 import { windAt } from '../sim/climate';
 import type { TilesScene } from '../sim/scene';
@@ -51,11 +59,95 @@ const LIFT = 1.03;
  * `POLE_EPSILON_SQ`. */
 const POLE_EPSILON_SQ = 1e-18;
 
-/** The puffs' base color (0-1 channels) — a pale, slightly cool white,
- * distinct from the currents overlay's `BASE_COLOR`; a particle's drawn
- * color is this scaled by its opacity, fading toward the black of space as
- * it ages (mirrors `currents.ts`'s fade-by-darkening convention). */
-const BASE_COLOR: readonly [number, number, number] = [0xf0 / 255, 0xf6 / 255, 0xff / 255];
+/** One `cloudType`'s visual treatment: a base color (0-1 channels), a
+ * multiplier on `PUFF_LENGTH` (how big the puff reads), and a multiplier on
+ * the particle's age-based opacity (how solid/dense it reads) — a particle's
+ * drawn color is `color` scaled by `opacity * densityScale`, fading toward
+ * the black of space as it ages or thins (mirrors `currents.ts`'s
+ * fade-by-darkening convention, now also type-scaled). */
+export interface CloudStyle {
+  /** Base color, 0-1 RGB channels. */
+  color: readonly [number, number, number];
+  /** Multiplier on `PUFF_LENGTH`. */
+  sizeScale: number;
+  /** Multiplier on the particle's age-derived opacity — the type's
+   * "denser/thinner" read. */
+  densityScale: number;
+}
+
+/** The six `cloudType` styles, in the producer's `CloudType` declaration
+ * order (Weather Program C4, mirrored in `../sim/scene.ts`'s `cloudType`
+ * doc comment): 0 None, 1 Cumulus, 2 Stratus, 3 Nimbostratus,
+ * 4 Cumulonimbus, 5 Cirrus. Fair-weather puffs (Cumulus) anchor the middle
+ * of the range; the storm types (Nimbostratus, Cumulonimbus) darken and
+ * densify going up, the high wispy type (Cirrus) is the palest and
+ * thinnest of all six — the deliberate contrast `cloudStyleFor`'s tests
+ * check (Cumulonimbus denser AND darker than Cirrus). Presentation-only
+ * tuning (decision 0022), not a physical model. */
+const CLOUD_STYLES: readonly CloudStyle[] = [
+  // 0 None — a candidate tile should never carry this (candidacy requires
+  // cloudFraction to clear the threshold), but the mapping stays TOTAL for
+  // defensive safety: faint and small rather than absent.
+  { color: [0xd8 / 255, 0xe4 / 255, 0xf0 / 255], sizeScale: 0.5, densityScale: 0.15 },
+  // 1 Cumulus — fair-weather puffs: bright white, mid-size, mid-density.
+  { color: [0xff / 255, 0xff / 255, 0xfa / 255], sizeScale: 1.0, densityScale: 0.6 },
+  // 2 Stratus — flat grey overcast layer: duller, broader, thinner.
+  { color: [0xc9 / 255, 0xcf / 255, 0xd6 / 255], sizeScale: 1.3, densityScale: 0.5 },
+  // 3 Nimbostratus — rain-bearing overcast: darker grey, broad, dense.
+  { color: [0x9a / 255, 0xa2 / 255, 0xac / 255], sizeScale: 1.4, densityScale: 0.75 },
+  // 4 Cumulonimbus — storm towers: the darkest and densest of the six.
+  { color: [0x55 / 255, 0x58 / 255, 0x60 / 255], sizeScale: 1.6, densityScale: 0.95 },
+  // 5 Cirrus — high wispy ice cloud: the palest and thinnest of the six.
+  { color: [0xf5 / 255, 0xf7 / 255, 0xfb / 255], sizeScale: 0.6, densityScale: 0.25 },
+];
+
+/** The visual style for a `cloudType` index — TOTAL over `0..=5` (every
+ * value the wire's `intArrayInRange(..., 0, 5)` parse guard admits, see
+ * `../sim/scene.ts`'s `parseTiles`). An out-of-range index defensively
+ * clamps to Cumulus (index 1, the "ordinary cloud" middle ground) rather
+ * than throwing — mirrors `biomePalette.ts`'s `biomeColor` out-of-range
+ * convention, though the parse guard means the client should never actually
+ * see one. Pure and unit-tested without WebGL. */
+export function cloudStyleFor(cloudType: number): CloudStyle {
+  const idx = Number.isInteger(cloudType) && cloudType >= 0 && cloudType < CLOUD_STYLES.length ? cloudType : 1;
+  return CLOUD_STYLES[idx]!;
+}
+
+/** Mean of a color's RGB channels (0-1) — the brightness metric
+ * `cloudStyleFor`'s darker-for-storm-types contract is checked against. */
+export function luminance(color: readonly [number, number, number]): number {
+  return (color[0] + color[1] + color[2]) / 3;
+}
+
+/** A candidate tile's weight when picking WHICH cell to seed a puff at —
+ * higher `weatherPropensity` draws more of the fixed `CLOUD_PARTICLES`
+ * budget (Weather Program C4's "particle density seeded from
+ * weatherPropensity"), so a storm-prone cell visibly reads denser than a
+ * fair-weather one even though both cleared the `cloudFraction` candidacy
+ * floor. The floor keeps every candidate reachable — a momentarily
+ * near-zero-propensity cloudy tile is rare, never impossible. */
+const MIN_SEED_WEIGHT = 0.05;
+
+/** Inverse-CDF weighted pick: given per-candidate `cumulativeWeights` (a
+ * non-decreasing running sum, as `createClouds` builds from
+ * `weatherPropensity`), returns the array INDEX (not the tile id) of the
+ * smallest prefix whose cumulative weight is at least `sample` — a
+ * "roulette wheel" selection, so a candidate with a bigger weight slice
+ * wins a proportionally bigger share of the sample range. `sample` is a
+ * value in `[0, cumulativeWeights[cumulativeWeights.length - 1])`; the
+ * caller supplies `Math.random() * totalWeight` in production and a fixed
+ * value in tests. Binary search: O(log n) regardless of how many tiles
+ * clear the cloud threshold. Pure, unit-tested without WebGL. */
+export function weightedIndex(cumulativeWeights: readonly number[], sample: number): number {
+  let lo = 0;
+  let hi = cumulativeWeights.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cumulativeWeights[mid]! < sample) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 /** Sim days a particle lives before it re-seeds regardless of where it
  * drifted — mirrors `currents.ts`'s `PARTICLE_MAX_AGE_DAYS`. Tuning knob,
@@ -183,6 +275,22 @@ export function createClouds(
   }
   if (candidates.length === 0) return null;
 
+  // Cumulative seeding weight per candidate, biased by weatherPropensity —
+  // see MIN_SEED_WEIGHT's doc comment. Built once: the field is static data
+  // for this world, so the weighting never changes over the overlay's life.
+  const cumulativeWeight: number[] = [];
+  let totalWeight = 0;
+  for (const i of candidates) {
+    totalWeight += Math.max(MIN_SEED_WEIGHT, tiles.weatherPropensity[i]!);
+    cumulativeWeight.push(totalWeight);
+  }
+
+  /** Picks one candidate tile index, weighted by weatherPropensity (see
+   * `weightedIndex`). */
+  function pickCandidate(): number {
+    return candidates[weightedIndex(cumulativeWeight, Math.random() * totalWeight)]!;
+  }
+
   const r = radius * LIFT;
 
   /** The world-space wind tangent at a unit-sphere `position`. */
@@ -200,12 +308,23 @@ export function createClouds(
     return sampleTile(tiles, latDeg, lonDeg, 'cloudFraction') >= CLOUD_FRACTION_THRESHOLD;
   }
 
-  /** A freshly-seeded particle at a random cloudy tile. `randomizeAge`
-   * spreads the INITIAL population's ages (mirrors `currents.ts`'s
-   * `seedParticle`); a mid-simulation re-seed is a birth: age 0, full
-   * opacity — a reborn particle fades IN, never appears already faded. */
+  /** The typed-cloud style under unit-sphere `position` — samples the
+   * tile's `cloudType` there (nearest-tile lookup, the same addressing
+   * `isCloudyAt`/`sampleTile` use for every other per-tile field), so a
+   * drifted puff's look updates if it crosses into a differently-typed
+   * cell. */
+  function styleAt(position: THREE.Vector3): CloudStyle {
+    const { latDeg, lonDeg } = unitLatLon([position.x, position.y, position.z]);
+    return cloudStyleFor(sampleTile(tiles, latDeg, lonDeg, 'cloudType'));
+  }
+
+  /** A freshly-seeded particle at a cloudy tile, chosen by `pickCandidate`
+   * (weighted by weatherPropensity). `randomizeAge` spreads the INITIAL
+   * population's ages (mirrors `currents.ts`'s `seedParticle`); a
+   * mid-simulation re-seed is a birth: age 0, full opacity — a reborn
+   * particle fades IN, never appears already faded. */
   function seedParticle(randomizeAge: boolean): CloudParticle {
-    const i = candidates[Math.floor(Math.random() * candidates.length)]!;
+    const i = pickCandidate();
     const { lat, lon } = tileLatLon(tiles, i);
     const age = randomizeAge ? Math.random() * CLOUD_PARTICLE_MAX_AGE_DAYS : 0;
     return { position: unitPosition(lat, lon), age, opacity: particleOpacity(age) };
@@ -218,18 +337,21 @@ export function createClouds(
   const colors = new Float32Array(seeds * 2 * 3);
 
   /** Writes particle `k`'s puff (base at its lifted position, tip along the
-   * wind's direction there) into the shared position/color buffers —
-   * mirrors `currents.ts`'s `writeParticle`. */
+   * wind's direction there) into the shared position/color buffers, styled
+   * by the `cloudType` at its position — mirrors `currents.ts`'s
+   * `writeParticle`, now type-scaled in both size and color/density. */
   function writeParticle(k: number, p: CloudParticle, tangent: THREE.Vector3): void {
+    const style = styleAt(p.position);
+    const puffLength = PUFF_LENGTH * style.sizeScale;
     const base = p.position.clone().multiplyScalar(r);
     let tipX = base.x;
     let tipY = base.y;
     let tipZ = base.z;
     if (tangent.lengthSq() > 0) {
       const dir = tangent.clone().normalize();
-      tipX += dir.x * PUFF_LENGTH * radius;
-      tipY += dir.y * PUFF_LENGTH * radius;
-      tipZ += dir.z * PUFF_LENGTH * radius;
+      tipX += dir.x * puffLength * radius;
+      tipY += dir.y * puffLength * radius;
+      tipZ += dir.z * puffLength * radius;
     }
     const o = 6 * k;
     positions[o] = base.x;
@@ -238,9 +360,10 @@ export function createClouds(
     positions[o + 3] = tipX;
     positions[o + 4] = tipY;
     positions[o + 5] = tipZ;
-    const cr = BASE_COLOR[0] * p.opacity;
-    const cg = BASE_COLOR[1] * p.opacity;
-    const cb = BASE_COLOR[2] * p.opacity;
+    const scale = p.opacity * style.densityScale;
+    const cr = style.color[0] * scale;
+    const cg = style.color[1] * scale;
+    const cb = style.color[2] * scale;
     colors[o] = cr;
     colors[o + 1] = cg;
     colors[o + 2] = cb;

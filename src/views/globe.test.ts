@@ -125,6 +125,7 @@ function markerTiles(features: TilesScene['features']): TilesScene {
     plate: Array(n).fill(0), unrest: Array(n).fill(0), locked: false,
     precipMmYr: Array(n).fill(800), snowFraction: Array(n).fill(0.1),
     precipRegime: Array(n).fill(0), cloudFraction: Array(n).fill(0.4),
+    weatherPropensity: Array(n).fill(0.3), cloudType: Array(n).fill(0),
   };
 }
 

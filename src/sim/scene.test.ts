@@ -119,6 +119,8 @@ function validTiles(): Record<string, unknown> {
     snow_fraction: Array(tiles).fill(0.2),
     precip_regime: Array.from({ length: tiles }, (_, i) => i % 4),
     cloud_fraction: Array(tiles).fill(0.4),
+    weather_propensity: Array(tiles).fill(0.3),
+    cloud_type: Array.from({ length: tiles }, (_, i) => i % 6),
   };
 }
 
@@ -341,6 +343,52 @@ describe('parseTiles', () => {
     const doc = validTiles();
     delete doc.precip_regime;
     expect(() => parseTiles(JSON.stringify(doc))).toThrow('precip_regime');
+  });
+
+  it('reads weather_propensity/cloud_type onto camelCase names', () => {
+    const t = parseTiles(JSON.stringify(validTiles()));
+    expect(t.weatherPropensity.length).toEqual(128);
+    expect(t.cloudType.length).toEqual(128);
+    expect(t.weatherPropensity[0]).toEqual(0.3);
+    expect(t.cloudType[0]).toEqual(0);
+  });
+
+  it('rejects a mismatched weather_propensity length', () => {
+    const doc = validTiles();
+    (doc.weather_propensity as number[]).pop();
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('weather_propensity');
+  });
+
+  it('rejects a document missing weather_propensity', () => {
+    const doc = validTiles();
+    delete doc.weather_propensity;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('weather_propensity');
+  });
+
+  it('accepts every valid cloud_type index (0-5)', () => {
+    const doc = validTiles();
+    (doc.cloud_type as number[]) = Array.from({ length: 128 }, (_, i) => i % 6);
+    const t = parseTiles(JSON.stringify(doc));
+    expect(t.cloudType.every((c) => c >= 0 && c <= 5)).toBe(true);
+    expect(new Set(t.cloudType)).toEqual(new Set([0, 1, 2, 3, 4, 5]));
+  });
+
+  it('rejects a cloud_type index of 6 (out of the 6-variant range)', () => {
+    const doc = validTiles();
+    (doc.cloud_type as number[])[0] = 6;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('cloud_type');
+  });
+
+  it('rejects a non-integer cloud_type entry', () => {
+    const doc = validTiles();
+    (doc.cloud_type as number[])[0] = 1.5;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('cloud_type');
+  });
+
+  it('rejects a document missing cloud_type', () => {
+    const doc = validTiles();
+    delete doc.cloud_type;
+    expect(() => parseTiles(JSON.stringify(doc))).toThrow('cloud_type');
   });
 });
 
