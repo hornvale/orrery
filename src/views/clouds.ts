@@ -35,20 +35,31 @@ import type { TilesScene } from '../sim/scene';
 import { sampleTile } from './worldMesh';
 import { unitLatLon } from './cubeSphere';
 
-/** How many cloud puffs to draw, at most (one world-space line segment
- * each) — a fixed budget independent of the tile lattice's resolution,
- * mirroring `currents.ts`'s `CURRENT_PARTICLES`. */
-export const CLOUD_PARTICLES = 700;
+/** How many cloud puffs to draw, at most (one round sprite each) — a fixed
+ * budget independent of the tile lattice's resolution, mirroring
+ * `currents.ts`'s `CURRENT_PARTICLES`. */
+export const CLOUD_PARTICLES = 1400;
 
 /** A tile counts as cloudy (a valid seed/re-seed target) once its
  * `cloudFraction` clears this — well above the `CLOUD_BASE` (0.3) floor the
  * producer's model always contributes, so only genuinely cloudy cells (rising
  * bands or orographic uplift) seed a puff. */
-export const CLOUD_FRACTION_THRESHOLD = 0.5;
+export const CLOUD_FRACTION_THRESHOLD = 0.35;
 
-/** Puff length, as a fraction of the sphere's radius — shorter than a
- * current arrow (clouds drift slower, and read as puffs, not streaks). */
-const PUFF_LENGTH = 0.03;
+/** Base per-particle sprite size before a style's `sizeScale` multiplier —
+ * the world-space-ish size fed into the vertex shader's
+ * `size * (SIZE_ATTEN / -mvPosition.z)` attenuation term. Tuned visually so
+ * a mid-distance Cumulus puff reads as a soft, clearly visible blob (not the
+ * old 1px hairline) at default zoom. Tuning knob, not a contract
+ * (presentation only, decision 0022); the controller may retune this and
+ * `SIZE_ATTEN` by eye. */
+export const BASE_POINT_SIZE = 22;
+
+/** Size-attenuation coefficient in the vertex shader's
+ * `size * (SIZE_ATTEN / -mvPosition.z)` term — bigger values make a sprite
+ * shrink less steeply as it recedes from the camera. Tuning knob, not a
+ * contract; see `BASE_POINT_SIZE`. */
+export const SIZE_ATTEN = 300;
 
 /** Lift above the sphere, higher than the currents/winds overlays
  * (`LIFT` in `currents.ts`/`winds.ts`) so clouds visibly float above both. */
@@ -60,15 +71,15 @@ const LIFT = 1.03;
 const POLE_EPSILON_SQ = 1e-18;
 
 /** One `cloudType`'s visual treatment: a base color (0-1 channels), a
- * multiplier on `PUFF_LENGTH` (how big the puff reads), and a multiplier on
- * the particle's age-based opacity (how solid/dense it reads) — a particle's
- * drawn color is `color` scaled by `opacity * densityScale`, fading toward
- * the black of space as it ages or thins (mirrors `currents.ts`'s
- * fade-by-darkening convention, now also type-scaled). */
+ * multiplier on `BASE_POINT_SIZE` (how big the sprite reads), and a
+ * multiplier on the particle's age-based opacity (how solid/dense it reads)
+ * — a particle's drawn color is `color` scaled by `opacity * densityScale`,
+ * fading toward the black of space as it ages or thins (mirrors
+ * `currents.ts`'s fade-by-darkening convention, now also type-scaled). */
 export interface CloudStyle {
   /** Base color, 0-1 RGB channels. */
   color: readonly [number, number, number];
-  /** Multiplier on `PUFF_LENGTH`. */
+  /** Multiplier on `BASE_POINT_SIZE`. */
   sizeScale: number;
   /** Multiplier on the particle's age-derived opacity — the type's
    * "denser/thinner" read. */
@@ -162,6 +173,40 @@ export const CLOUD_PARTICLE_SPEED = 3;
 /** Clamp on one `update` call's `dt` (sim days) — mirrors `currents.ts`'s
  * `MAX_STEP_DAYS` (a day *scrub* must not visibly teleport the field). */
 const MAX_STEP_DAYS = CLOUD_PARTICLE_MAX_AGE_DAYS;
+
+/** Vertex shader for the cloud sprite `THREE.Points` material: reads the
+ * per-vertex `size` attribute (see `writeParticle`) and applies distance
+ * attenuation (`sizeAtten`, from `SIZE_ATTEN`) so a near puff reads bigger
+ * than a far one, clamped to a sane max so a very close particle never
+ * balloons past a legible sprite. `color` is auto-declared by three.js
+ * because the material sets `vertexColors: true`. */
+const CLOUD_VERTEX_SHADER = `
+attribute float size;
+varying vec3 vColor;
+uniform float sizeAtten;
+
+void main() {
+  vColor = color;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_PointSize = min(size * (sizeAtten / -mvPosition.z), 128.0);
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+/** Fragment shader for the cloud sprite material: a soft round puff —
+ * `smoothstep` fades alpha from opaque at the sprite's center to fully
+ * transparent past its radius, discarding fully-transparent fragments
+ * outright so depth/blending never has to sort a fully invisible quad. */
+const CLOUD_FRAGMENT_SHADER = `
+varying vec3 vColor;
+
+void main() {
+  float d = length(gl_PointCoord - vec2(0.5));
+  float a = smoothstep(0.5, 0.15, d);
+  if (a <= 0.0) discard;
+  gl_FragColor = vec4(vColor, a);
+}
+`;
 
 /** Lat/lon (degrees) to a point on a unit sphere — same convention as
  * `currents.ts`'s `unitPosition`. */
@@ -333,61 +378,52 @@ export function createClouds(
   const seeds = Math.min(CLOUD_PARTICLES, candidates.length);
   const particles: CloudParticle[] = Array.from({ length: seeds }, () => seedParticle(true));
 
-  const positions = new Float32Array(seeds * 2 * 3);
-  const colors = new Float32Array(seeds * 2 * 3);
+  const positions = new Float32Array(seeds * 3);
+  const colors = new Float32Array(seeds * 3);
+  const sizes = new Float32Array(seeds);
 
-  /** Writes particle `k`'s puff (base at its lifted position, tip along the
-   * wind's direction there) into the shared position/color buffers, styled
-   * by the `cloudType` at its position — mirrors `currents.ts`'s
-   * `writeParticle`, now type-scaled in both size and color/density. */
-  function writeParticle(k: number, p: CloudParticle, tangent: THREE.Vector3): void {
+  /** Writes particle `k`'s sprite — position, color, and per-particle size
+   * — into the shared buffers, styled by the `cloudType` at its position:
+   * mirrors `currents.ts`'s `writeParticle`, now a single point (no tip;
+   * `sizeScale` drives the sprite's `size` attribute instead of a puff's
+   * drawn length). */
+  function writeParticle(k: number, p: CloudParticle): void {
     const style = styleAt(p.position);
-    const puffLength = PUFF_LENGTH * style.sizeScale;
     const base = p.position.clone().multiplyScalar(r);
-    let tipX = base.x;
-    let tipY = base.y;
-    let tipZ = base.z;
-    if (tangent.lengthSq() > 0) {
-      const dir = tangent.clone().normalize();
-      tipX += dir.x * puffLength * radius;
-      tipY += dir.y * puffLength * radius;
-      tipZ += dir.z * puffLength * radius;
-    }
-    const o = 6 * k;
+    const o = 3 * k;
     positions[o] = base.x;
     positions[o + 1] = base.y;
     positions[o + 2] = base.z;
-    positions[o + 3] = tipX;
-    positions[o + 4] = tipY;
-    positions[o + 5] = tipZ;
     const scale = p.opacity * style.densityScale;
-    const cr = style.color[0] * scale;
-    const cg = style.color[1] * scale;
-    const cb = style.color[2] * scale;
-    colors[o] = cr;
-    colors[o + 1] = cg;
-    colors[o + 2] = cb;
-    colors[o + 3] = cr;
-    colors[o + 4] = cg;
-    colors[o + 5] = cb;
+    colors[o] = style.color[0] * scale;
+    colors[o + 1] = style.color[1] * scale;
+    colors[o + 2] = style.color[2] * scale;
+    sizes[k] = BASE_POINT_SIZE * style.sizeScale;
   }
 
   for (let k = 0; k < seeds; k++) {
-    const p = particles[k]!;
-    writeParticle(k, p, tangentAt(p.position));
+    writeParticle(k, particles[k]!);
   }
 
   const geom = new THREE.BufferGeometry();
   const posAttr = new THREE.BufferAttribute(positions, 3);
   const colorAttr = new THREE.BufferAttribute(colors, 3);
+  const sizeAttr = new THREE.BufferAttribute(sizes, 1);
   geom.setAttribute('position', posAttr);
   geom.setAttribute('color', colorAttr);
-  const lines = new THREE.LineSegments(
-    geom,
-    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8 }),
-  );
-  lines.name = 'globe-clouds';
-  lines.visible = false;
+  geom.setAttribute('size', sizeAttr);
+  const material = new THREE.ShaderMaterial({
+    uniforms: { sizeAtten: { value: SIZE_ATTEN } },
+    vertexShader: CLOUD_VERTEX_SHADER,
+    fragmentShader: CLOUD_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    vertexColors: true,
+  });
+  const points = new THREE.Points(geom, material);
+  points.name = 'globe-clouds';
+  points.visible = false;
 
   // The last day `update` saw — mirrors `currents.ts`'s `lastDay` baseline.
   let lastDay: number | null = null;
@@ -408,16 +444,17 @@ export function createClouds(
         ? seedParticle(false)
         : { position: stepped.position, age: stepped.age, opacity: stepped.opacity };
       particles[k] = next;
-      writeParticle(k, next, tangentAt(next.position));
+      writeParticle(k, next);
     }
     posAttr.needsUpdate = true;
     colorAttr.needsUpdate = true;
+    sizeAttr.needsUpdate = true;
   }
 
   return {
-    object3d: lines,
+    object3d: points,
     setVisible: (on) => {
-      lines.visible = on;
+      points.visible = on;
     },
     update,
   };

@@ -84,7 +84,7 @@ describe('createClouds', () => {
     expect(createClouds(tiles, 1)).toBeNull();
   });
 
-  it('builds a line-segment overlay when at least one tile clears the cloud threshold', () => {
+  it('builds a point-sprite overlay when at least one tile clears the cloud threshold', () => {
     const tiles = tilesFixture({
       width: 4,
       height: 2,
@@ -93,8 +93,8 @@ describe('createClouds', () => {
     });
     const clouds = createClouds(tiles, 1)!;
     expect(clouds).not.toBeNull();
-    const lines = clouds.object3d as THREE.LineSegments;
-    expect(lines.geometry.getAttribute('position').count).toBe(2); // one puff, two vertices
+    const points = clouds.object3d as THREE.Points;
+    expect(points.geometry.getAttribute('position').count).toBe(1); // one particle, one point
   });
 
   it('starts hidden', () => {
@@ -129,7 +129,7 @@ describe('createClouds', () => {
       cloudFraction: [0.9, 0.9],
     });
     const clouds = createClouds(tiles, 10)!;
-    const p = (clouds.object3d as THREE.LineSegments).geometry.getAttribute('position');
+    const p = (clouds.object3d as THREE.Points).geometry.getAttribute('position');
     const base = new THREE.Vector3(p.getX(0), p.getY(0), p.getZ(0));
     expect(base.length()).toBeGreaterThan(10);
   });
@@ -143,8 +143,8 @@ describe('createClouds', () => {
       cloudFraction: Array(n).fill(0.9),
     });
     const clouds = createClouds(tiles, 1)!;
-    const count = (clouds.object3d as THREE.LineSegments).geometry.getAttribute('position').count;
-    expect(count).toBeLessThanOrEqual(CLOUD_PARTICLES * 2);
+    const count = (clouds.object3d as THREE.Points).geometry.getAttribute('position').count;
+    expect(count).toBeLessThanOrEqual(CLOUD_PARTICLES);
     expect(count).toBeGreaterThan(0);
   });
 
@@ -164,17 +164,17 @@ describe('createClouds', () => {
     // the tangent plane and re-normalizes).
     clouds.update(0);
     clouds.update(0.01);
-    const p = clouds.object3d as THREE.LineSegments;
+    const p = clouds.object3d as THREE.Points;
     const pos = p.geometry.getAttribute('position');
     const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
     expect(base.length()).toBeCloseTo(1.03, 5); // radius(1) * LIFT
   });
 
-  it('draws a bigger puff for Cumulonimbus (4) than for Cirrus (5) — cloudType drives sizeScale', () => {
+  it('gives a bigger sprite size for Cumulonimbus (4) than for Cirrus (5) — cloudType drives sizeScale', () => {
     // Only tile 0 clears the cloud threshold, so every particle seeds
     // there and shares its cloudType's style.
     const cloudFraction = [0.9, 0, 0, 0, 0, 0, 0, 0];
-    const puffLength = (type: number): number => {
+    const pointSize = (type: number): number => {
       const tiles = tilesFixture({
         width: 4,
         height: 2,
@@ -183,12 +183,10 @@ describe('createClouds', () => {
         cloudType: [type, 0, 0, 0, 0, 0, 0, 0],
       });
       const clouds = createClouds(tiles, 1)!;
-      const pos = (clouds.object3d as THREE.LineSegments).geometry.getAttribute('position');
-      const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
-      const tip = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1));
-      return base.distanceTo(tip);
+      const sizes = (clouds.object3d as THREE.Points).geometry.getAttribute('size');
+      return sizes.getX(0);
     };
-    expect(puffLength(4)).toBeGreaterThan(puffLength(5));
+    expect(pointSize(4)).toBeGreaterThan(pointSize(5));
   });
 });
 
