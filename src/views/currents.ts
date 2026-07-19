@@ -25,10 +25,11 @@ import { unitLatLon } from './cubeSphere';
  * each) — a fixed budget independent of the tile lattice's resolution
  * (hundreds of thousands of ocean tiles at the client's 512-wide fetch), so
  * the overlay stays cheap regardless of how fine the lattice gets. */
-export const CURRENT_PARTICLES = 400;
+export const CURRENT_PARTICLES = 900;
 
-/** Arrow length, as a fraction of the sphere's radius. */
-const ARROW_LENGTH = 0.02;
+/** Arrow length, as a fraction of the sphere's radius. Long enough that the
+ * flow reads as streaks over the ocean, not a scatter of specks. */
+const ARROW_LENGTH = 0.038;
 
 /** Lift above the sphere, so exaggerated relief cannot swallow the arrows —
  * matches `winds.ts`'s LIFT. */
@@ -42,7 +43,7 @@ const POLE_EPSILON_SQ = 1e-18;
 /** The arrows' base color (0-1 channels), matching the old static overlay's
  * `0x8fd9ff` — a particle's drawn color is this scaled by its opacity, so it
  * visibly fades toward the black of space as it ages. */
-const BASE_COLOR: readonly [number, number, number] = [0x8f / 255, 0xd9 / 255, 0xff / 255];
+const BASE_COLOR: readonly [number, number, number] = [0xc8 / 255, 0xf4 / 255, 0xff / 255];
 
 /** Sim days a particle lives before it re-seeds regardless of where it
  * drifted — keeps the field looking alive (continuous births and deaths)
