@@ -137,7 +137,7 @@ test("lensTemperatureAt adds nothing when dayLengthStd is null (no day length to
 test("lensTemperatureAt: seasonDayOverride pins the season while the diurnal pulse still tracks live day", () => {
   const tiles = dryEquatorialTile();
   tiles.t_swing_c = [9, 9, 9, 9]; // give the season a real signal to hold still against
-  tiles.t_diurnal_amp_c = [12, 12, 12, 12]; // and a real diurnal signal to keep tracking
+  tiles.tDiurnalAmpC = [12, 12, 12, 12]; // and a real diurnal signal to keep tracking
   const ctx = { yearPhaseOffset: 0.2, obliquityDeg: 21, insolation: 1, dayLengthStd: 1, seasonDayOverride: 100.6 };
   // Same day_fraction (.6), far-apart integer days — the season term must
   // read `seasonDayOverride` (100.6) both times, not the live `day`. Tile 0
