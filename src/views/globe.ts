@@ -572,14 +572,17 @@ export function createGlobeView(
     winds?.setVisible(on);
   }
 
-  // The Gyre's ocean-current advection overlay: same build-once placement as
-  // winds above (the particles' own drift is Task 6's per-frame pass; this
-  // overlay's static seed geometry rides the world's spin like winds does).
-  // `null` when there is no current data to show (a locked world zeroes the
-  // whole field) — nothing to mount or toggle.
+  // The Gyre's ocean-current advection overlay: build-once particle seeding,
+  // riding the world's spin like winds above, but its particles genuinely
+  // drift — `currents.update(day)` steps them every frame (mirroring
+  // `ocean.update(day)` below), gated on `currentsOn` so a hidden overlay
+  // costs nothing. `null` when there is no current data to show (a locked
+  // world zeroes the whole field) — nothing to mount, step, or toggle.
   const currents = createCurrents(tiles, GLOBE_RADIUS);
   if (currents) spinGroup.add(currents.object3d);
+  let currentsOn = false;
   function setCurrents(on: boolean): void {
+    currentsOn = on;
     currents?.setVisible(on);
   }
   function setWaves(on: boolean): void {
@@ -670,6 +673,7 @@ export function createGlobeView(
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = seasonalSpinZ(sys, day, seasonalHold);
     ocean.update(day);
+    if (currentsOn) currents?.update(day);
     // The active lens (and ice, under natural) is blended into the base
     // vertex color before the material's lighting, so it inherits the
     // honest terminator for free — no ambient light means the recolored

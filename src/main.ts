@@ -602,7 +602,11 @@ function mountViews(
     'no circulation bands: this world is tidally locked',
   );
   hud.setCurrentsAvailable(
-    tiles.currentEast.some((v) => v !== 0),
+    // Match `createCurrents`'s own build condition: a tile counts as
+    // current-bearing if EITHER component is nonzero, not just east — an
+    // east-zero/north-nonzero current would otherwise wrongly disable the
+    // toggle for a world that has one.
+    tiles.currentEast.some((v) => v !== 0) || tiles.currentNorth.some((v) => v !== 0),
     'no ocean-current data: this world is tidally locked',
   );
   hud.setEclipses(eclipses.events, system.world.yearDays);

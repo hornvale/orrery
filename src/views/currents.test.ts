@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { CURRENT_PARTICLES, createCurrents, currentTangentAt } from './currents';
+import {
+  CURRENT_PARTICLES,
+  PARTICLE_MAX_AGE_DAYS,
+  createCurrents,
+  currentTangentAt,
+  particleOpacity,
+  stepParticle,
+} from './currents';
 import type { TilesScene } from '../sim/scene';
 
 function tilesFixture(opts: {
@@ -149,5 +156,89 @@ describe('createCurrents', () => {
     const count = (currents.object3d as THREE.LineSegments).geometry.getAttribute('position').count;
     expect(count).toBeLessThanOrEqual(CURRENT_PARTICLES * 2);
     expect(count).toBeGreaterThan(0);
+  });
+
+  it('advects when visible and the toggle drives it (update is exposed)', () => {
+    const tiles = tilesFixture({
+      width: 4,
+      height: 2,
+      ocean: [true, false, false, false, false, false, false, false],
+      currentEast: [0.5, 0, 0, 0, 0, 0, 0, 0],
+      currentNorth: [0, 0, 0, 0, 0, 0, 0, 0],
+    });
+    const currents = createCurrents(tiles, 1)!;
+    expect(typeof currents.update).toBe('function');
+    // First call only establishes the day baseline (no motion yet); the
+    // second call actually steps — neither should throw, and the arrow's
+    // base must stay on the lifted sphere (a particle only ever moves in
+    // the tangent plane and re-normalizes).
+    currents.update(0);
+    currents.update(0.01);
+    const p = currents.object3d as THREE.LineSegments;
+    const pos = p.geometry.getAttribute('position');
+    const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
+    expect(base.length()).toBeCloseTo(1.015, 5); // radius(1) * LIFT
+  });
+});
+
+describe('particleOpacity', () => {
+  it('is fully opaque for the first two-thirds of a particle life', () => {
+    expect(particleOpacity(0)).toBe(1);
+    expect(particleOpacity(PARTICLE_MAX_AGE_DAYS * 0.5)).toBe(1);
+  });
+
+  it('fades linearly to zero over the last third of life', () => {
+    const nearEnd = particleOpacity(PARTICLE_MAX_AGE_DAYS * 0.9);
+    const atEnd = particleOpacity(PARTICLE_MAX_AGE_DAYS);
+    expect(nearEnd).toBeGreaterThan(atEnd);
+    expect(atEnd).toBe(0);
+  });
+
+  it('never goes negative past its lifetime', () => {
+    expect(particleOpacity(PARTICLE_MAX_AGE_DAYS * 2)).toBe(0);
+  });
+});
+
+describe('stepParticle', () => {
+  it('moves a particle over a nonzero current in the current\'s direction', () => {
+    // At lat=0, lon=0 the unit position is (1, 0, 0); a pure-eastward
+    // current's tangent there is (0, 1, 0) (see currentTangentAt's tests).
+    const position = new THREE.Vector3(1, 0, 0);
+    const tangent = currentTangentAt(1, 0, 0, 0);
+    const result = stepParticle(position, 0, tangent, 0.05);
+    expect(result.reseed).toBe(false);
+    const delta = result.position.clone().sub(position);
+    expect(delta.dot(tangent)).toBeGreaterThan(0);
+    // Stays on the unit sphere (tangent-plane step + renormalize).
+    expect(result.position.length()).toBeCloseTo(1, 10);
+  });
+
+  it('ages the particle by dt and fades its opacity accordingly', () => {
+    const position = new THREE.Vector3(1, 0, 0);
+    const tangent = currentTangentAt(1, 0, 0, 0);
+    const result = stepParticle(position, 1, tangent, 0.5);
+    expect(result.age).toBeCloseTo(1.5, 10);
+    expect(result.opacity).toBe(particleOpacity(1.5));
+  });
+
+  it('re-seeds when the particle ages out', () => {
+    const position = new THREE.Vector3(1, 0, 0);
+    const tangent = currentTangentAt(1, 0, 0, 0);
+    const result = stepParticle(position, PARTICLE_MAX_AGE_DAYS - 0.001, tangent, 1);
+    expect(result.reseed).toBe(true);
+  });
+
+  it('re-seeds when it lands on a zero-current cell (land, or a currentless tile)', () => {
+    const position = new THREE.Vector3(1, 0, 0);
+    const zeroTangent = new THREE.Vector3(0, 0, 0);
+    const result = stepParticle(position, 0, zeroTangent, 0.1);
+    expect(result.reseed).toBe(true);
+  });
+
+  it('does not move a re-seeding particle itself — the caller replaces it', () => {
+    const position = new THREE.Vector3(1, 0, 0);
+    const zeroTangent = new THREE.Vector3(0, 0, 0);
+    const result = stepParticle(position, 0, zeroTangent, 0.1);
+    expect(result.position).toBe(position); // same reference: no wasted work
   });
 });
