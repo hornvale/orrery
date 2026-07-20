@@ -30,6 +30,13 @@ day) locks it: it fails on the spun-frame gate, passes on the fix.
 
 ## Zoom-in (deep zoom on seed 42, globe view) — same harness, both versions
 
+The `buildTiles`/`applyTileSet` JS counter is new on this branch, so the baseline
+column was produced by checking the four `a3ff771` view files back into the tree
+and instrumenting the old `buildTiles` with the identical `__btCount`/`__btMs`
+increment (then reverting). Same harness, same interaction, same counter shape —
+but the baseline counter was a deliberate ad-hoc port, not code that ever shipped
+at `a3ff771`.
+
 | Metric | Baseline (a3ff771) | Fix | 
 |---|---|---|
 | **JS tile-build work (ms)** — the real lever | **13875** | **795** (**~17× less**) |
