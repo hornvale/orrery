@@ -83,6 +83,28 @@ region cell dwarfs the 0.2° probe, which rounds back to the same node and yield
 degenerately-radial normals that hide the seam — a fixture footgun the tests now
 guard against explicitly.)
 
+## Amortized build (the real-hardware hitch fix)
+
+The ~17× JS cut still left the globe **jerky on real hardware any time an LOD
+change fired** (controller's visual pass). Cause, measured: each `applyTileSet`
+did all its work in ONE frame — the worst was **36 tiles built in 69ms** (a
+zoom-settle burst; ~4 dropped frames), and even a spin's few-tile churn was
+~11ms (2/3 of a frame). The ~17× cut the *total* work but not the per-change
+*spike*, which is what the eye sees.
+
+Fix: `applyTileSet` now only RECONCILES (enqueue to build, mark undesired tiles
+"retiring") and `drainBuildQueue` — called every frame — builds only a few tiles
+per frame under a time budget (5ms) + a hard count cap (6). A big refine sharpens
+progressively over ~10 frames instead of freezing one. Disposal of the coarse
+tiles a refine replaces is DEFERRED until their finer replacements are built, so
+no hole ever opens mid-refinement.
+
+Result, same harness: **worst single-frame build 69ms → 7.3ms** (~9×, now under
+the 16.7ms budget); total JS unchanged (~0.3–0.8s). Trade-off to watch on real
+hardware: a brief LOD "pop"/shimmer during the ~10-frame progressive refine
+(coarse and partial-fine tiles coexist for a few frames) — the controller's
+visual pass judges whether it reads as "settling" or as an artifact.
+
 ## The sweep (T6) — the other interactions
 
 Each interaction's flamegraph, JS share only (the render-bound rest is a headless

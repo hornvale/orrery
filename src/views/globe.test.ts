@@ -105,6 +105,13 @@ function tileMeshesByKey(view: ReturnType<typeof createGlobeView>): Map<string, 
   return out;
 }
 
+/** Drive `update` enough frames to fully drain the amortized build queue — LOD
+ * refinement now builds only a few tiles per frame, so a single update no longer
+ * reaches the fully-built settled set. 48 frames far exceed any one refine. */
+function pump(view: ReturnType<typeof createGlobeView>, camera: THREE.Camera, n = 48): void {
+  for (let i = 0; i < n; i++) view.update(0, camera);
+}
+
 test('onRegion swaps only the arriving tile to region geometry — other tiles keep their geometry object; an unmounted key is a no-op', () => {
   const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
   // Sidestep the ice blend's TilesScene-only field (see regionFixture's doc).
@@ -116,12 +123,10 @@ test('onRegion swaps only the arriving tile to region geometry — other tiles k
   // to mount regardless of which face the spin has rotated under the point.
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
-  // On-settle refinement (reselect's SETTLE_FRAMES_NEEDED=2) holds refining
-  // splits back until the camera has been still for a couple of frames —
-  // three identical-position updates reach the settled, fully-refined set.
-  view.update(0, camera);
-  view.update(0, camera);
-  view.update(0, camera);
+  // On-settle refinement holds refining splits back until the camera has been
+  // still for a couple of frames; the amortized build queue then sharpens over
+  // subsequent frames — pump enough to reach the settled, fully-built set.
+  pump(view, camera);
 
   const before = tileMeshesByKey(view);
   let targetKey: string | null = null;
@@ -152,7 +157,7 @@ test('onRegion swaps only the arriving tile to region geometry — other tiles k
   const samples = TILE_QUADS;
   const region = regionFixture(face, level, ix, iy, samples);
   view.onRegion(targetKey!, region);
-  view.update(0, camera); // next reselect/apply — pendingUpgrades triggers the swap
+  pump(view, camera); // pendingUpgrades → the swap is enqueued and drains in over frames
 
   const after = tileMeshesByKey(view);
   expect(after.has(staleKey)).toBe(false); // (c) still a no-op — no mesh ever built for it
@@ -193,14 +198,42 @@ test('refines under autoplay spin: a still camera reaches a deep tile while the 
   expect(maxLevel).toBeGreaterThanOrEqual(3); // reached REGION_MIN_LEVEL despite the spin (buggy gate froze at 1)
 });
 
+test('LOD refinement is amortized and hole-free: a big refine builds a few tiles per frame while the coarse tiles it replaces stay mounted until their replacements exist', () => {
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  const deep = (v: ReturnType<typeof createGlobeView>) =>
+    [...tileMeshesByKey(v).keys()].filter((k) => Number(k.split(':')[1]) >= 3).length;
+
+  // Settle far away (a coarse set), then zoom to the surface — a big refine.
+  camera.position.set(GLOBE_RADIUS * 4, 0, 0);
+  pump(view, camera);
+  const coarseCount = tileMeshesByKey(view).size;
+  const coarseMax = Math.max(...[...tileMeshesByKey(view).keys()].map((k) => Number(k.split(':')[1])));
+
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  view.update(0, camera);
+  view.update(0, camera);
+  view.update(0, camera); // 3rd frame: settled → the whole refine is enqueued, first drain caps it
+
+  // Hole-free: nothing was disposed before its replacement built — the coarse
+  // cover is all still mounted (retiring), so the total only grew.
+  expect(tileMeshesByKey(view).size).toBeGreaterThanOrEqual(coarseCount);
+  const partialDeep = deep(view);
+
+  pump(view, camera); // finish draining the refine
+  const fullDeep = deep(view);
+  expect(fullDeep).toBeGreaterThan(partialDeep); // amortized: frame 1 did NOT build the whole refine
+  const settledMax = Math.max(...[...tileMeshesByKey(view).keys()].map((k) => Number(k.split(':')[1])));
+  expect(settledMax).toBeGreaterThan(coarseMax); // refined deeper than the coarse start
+});
+
 test('mounted region patches are normal-stitched: adjacent same-level region tiles share identical edge normals (no shading seam)', () => {
   const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
   view.setLens(moistureLens);
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
-  view.update(0, camera);
-  view.update(0, camera);
-  view.update(0, camera); // settled, refined to a deep patch under the camera
+  pump(view, camera); // settled + fully built: a deep patch under the camera
 
   // Find two horizontally-adjacent (same face/level/iy, ix differing by 1)
   // mounted tiles at >= REGION_MIN_LEVEL — they share an exact edge.
@@ -233,7 +266,7 @@ test('mounted region patches are normal-stitched: adjacent same-level region til
   };
   view.onRegion(a!, sloped(a!));
   view.onRegion(b!, sloped(b!));
-  view.update(0, camera); // applies both swaps → stitchMountedRegions reconciles them
+  pump(view, camera); // both swaps drain in → stitchMountedRegions reconciles them
 
   const meshes = tileMeshesByKey(view);
   const seen = new Map<string, [number, number, number]>();

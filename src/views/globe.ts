@@ -26,6 +26,7 @@ import {
   LOD_MIN_LEVEL,
   LOD_SPLIT_FACTOR,
   TILE_QUADS,
+  children as childTiles,
   parent as parentTile,
   selectTiles,
   splitAncestorKeys,
@@ -644,68 +645,139 @@ export function createGlobeView(
   // Initial coarse set (the data-matching base level); the camera refines it.
   rebuildAllTiles(tilesAtLevel(LOD_MIN_LEVEL));
 
-  /** Apply a new leaf-tile selection incrementally: diff it against the
-   * mounted slots (`diffTileSets`), dispose only `removed`, build only
-   * `added` — every kept tile's mesh/geometry/colours are left completely
-   * untouched (no global stitch needed since T2). Also upgrades any mounted
-   * base tile whose region just arrived (`pendingUpgrades`), even though its
-   * key is unchanged and the diff alone would never touch it. This is the
-   * O(diff) path the harness's `__btCount`/`__btMs` counters below measure —
-   * `reselect` calls it once per leaf-set change (a handful of times across a
-   * zoom), never per frame. */
+  // Amortized build: a leaf-set change would build up to ~36 tiles at once
+  // (measured worst case ~69ms — several dropped frames, felt as a hitch on
+  // every LOD change). Instead `applyTileSet` only RECONCILES — it disposes
+  // nothing that would leave a hole, enqueues the tiles to build, and marks
+  // the now-undesired ones "retiring" — while `drainBuildQueue` (called every
+  // frame from `update`) builds only a few tiles per frame under a time
+  // budget. A big refine then sharpens progressively over ~10 frames instead
+  // of freezing one; a spin's few-tile churn never busts a frame either.
+  const buildQueue: TileId[] = [];
+  const queuedKeys = new Set<string>();
+  const swapQueued = new Set<string>(); // queued keys that are region swaps (for __swapCount)
+  // Mounted tiles no longer desired, kept RENDERED until the finer/coarser
+  // tiles that replace them are built — deferring disposal is what prevents a
+  // hole (a disposed split-parent with its children not yet built) opening
+  // mid-refinement.
+  const retiringKeys = new Set<string>();
+  let regionDirtyPending = false; // a region tile built/left since the last stitch
+  const BUILD_BUDGET_MS = 5; // per-frame time budget (governs production pacing)
+  const MAX_BUILDS_PER_FRAME = 6; // hard count cap (governs when builds are ~free, e.g. tests)
+
+  const keyToTile = (key: string): TileId => {
+    const [face, level, ix, iy] = key.split(':').map(Number) as [number, number, number, number];
+    return { face, level, ix, iy };
+  };
+  /** A retiring tile may be disposed only once everything that covers its area
+   * is mounted: its selected children (a split) all built, or its nearest
+   * selected ancestor (a merge) built. Until then it stays on screen. */
+  function coveringMounted(r: TileId, selectedKeys: Set<string>, mounted: Set<string>): boolean {
+    const kids = childTiles(r).map(tileKey).filter((k) => selectedKeys.has(k));
+    if (kids.length > 0) return kids.every((k) => mounted.has(k));
+    for (let p = parentTile(r); p !== null; p = parentTile(p)) {
+      const pk = tileKey(p);
+      if (selectedKeys.has(pk)) return mounted.has(pk);
+    }
+    return true; // no covering tile desired (fully removed) — safe to dispose
+  }
+
+  /** Reconcile the desired leaf set against what's mounted/queued: enqueue
+   * tiles to build, mark undesired ones retiring (disposed later, hole-free),
+   * and register any region swap. Builds nothing here — `drainBuildQueue`
+   * does, a few tiles per frame. `reselect` calls this once per leaf-set
+   * change; the harness's `__btCount` counts those changes. */
   function applyTileSet(selected: TileId[]): void {
     const t0 = performance.now();
-    const { added, removed } = diffTileSets(new Set(tileSlots.keys()), selected);
-    // A region tile leaving the mounted set changes the region-stitch input as
-    // much as one arriving does (captured before disposal reads slot.isRegion).
-    const removedRegion = removed.some((k) => tileSlots.get(k)?.isRegion === true);
-    for (const key of removed) disposeSlot(key);
-    const scale = reliefScale();
-    const toBuild = [...added];
-    const buildKeys = new Set(added.map((t) => tileKey(t)));
-    // Keys built because a region *swapped in* for an already-mounted,
-    // unchanged-key tile (as opposed to `added`, a genuinely new leaf from
-    // the LOD diff) — the harness's `__swapCount` counts only these, one per
-    // single-tile region swap.
-    const swapKeys = new Set<string>();
+    const selectedKeys = new Set(selected.map(tileKey));
+    // Mounted-but-undesired → retiring (kept rendered); desired-again → un-retire.
+    for (const key of tileSlots.keys()) if (!selectedKeys.has(key)) retiringKeys.add(key);
+    for (const key of selectedKeys) retiringKeys.delete(key);
+    // Drop queued tiles no longer desired (the camera moved on before they built).
+    for (let i = buildQueue.length - 1; i >= 0; i--) {
+      const key = tileKey(buildQueue[i]!);
+      if (!selectedKeys.has(key)) {
+        buildQueue.splice(i, 1);
+        queuedKeys.delete(key);
+        swapQueued.delete(key);
+      }
+    }
+    // Enqueue desired tiles neither mounted nor already queued.
+    for (const t of selected) {
+      const key = tileKey(t);
+      if (!tileSlots.has(key) && !queuedKeys.has(key)) {
+        buildQueue.push(t);
+        queuedKeys.add(key);
+      }
+    }
+    // A region that arrived for an already-mounted (base) tile: enqueue a
+    // same-key rebuild — its old base slot is disposed and replaced atomically
+    // when built, so it never leaves a hole and needs no retiring entry.
     if (pendingUpgrades.size > 0) {
       for (const t of selected) {
         const key = tileKey(t);
-        if (pendingUpgrades.has(key) && tileSlots.has(key) && !buildKeys.has(key)) {
-          toBuild.push(t);
-          buildKeys.add(key);
-          swapKeys.add(key);
+        if (pendingUpgrades.has(key) && tileSlots.has(key) && !queuedKeys.has(key)) {
+          buildQueue.push(t);
+          queuedKeys.add(key);
+          swapQueued.add(key);
         }
       }
       pendingUpgrades.clear();
     }
-    const builtKeys: string[] = [];
-    let builtRegion = false;
-    for (const t of toBuild) {
-      const key = tileKey(t);
-      disposeSlot(key); // no-op unless this is a base→region upgrade in place
-      const slot = buildTileSlot(t, scale);
-      tileSlots.set(key, slot);
-      if (slot.isRegion) builtRegion = true;
-      builtKeys.push(key);
-    }
-    // Re-stitch the mounted region set only when it actually changed — a
-    // region tile arrived, swapped in, or left. A base-only LOD change skips
-    // it. Re-stitches the whole (small) mounted region set so a newly-arrived
-    // patch reconciles with its already-mounted neighbours and they with it.
-    if (removedRegion || builtRegion) stitchMountedRegions();
     currentSelected = selected;
     currentSignature = signatureOf(selected);
-    if (builtKeys.length > 0) repaintSlots(builtKeys);
-    // Render-independent perf counters `e2e/perf-harness.spec.ts` reads
-    // (`buildTiles_calls`/`buildTiles_total_ms`/`region_swaps`) — wired on
-    // this incremental path only (never `rebuildAllTiles`'s whole-globe
-    // events), since this is the per-frame-triggered path the harness's
-    // zoom scenario actually measures.
-    const g = globalThis as { __btCount?: number; __btMs?: number; __swapCount?: number };
+    const g = globalThis as { __btCount?: number; __btMs?: number };
     g.__btCount = (g.__btCount ?? 0) + 1;
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
-    if (swapKeys.size > 0) g.__swapCount = (g.__swapCount ?? 0) + swapKeys.size;
+  }
+
+  /** Build a few queued tiles under a per-frame time budget, then dispose any
+   * retiring tiles whose replacements are now all mounted. Called every frame
+   * from `update`. This is the amortization — no single frame builds the whole
+   * refine. Re-stitches the region set only once the queue has drained (a
+   * region tile changed), never mid-drain. */
+  function drainBuildQueue(): void {
+    const t0 = performance.now();
+    if (buildQueue.length > 0) {
+      const scale = reliefScale();
+      const built: string[] = [];
+      let swaps = 0;
+      do {
+        const t = buildQueue.shift()!;
+        const key = tileKey(t);
+        queuedKeys.delete(key);
+        if (swapQueued.delete(key)) swaps++;
+        disposeSlot(key); // no-op unless this is a base→region swap in place
+        const slot = buildTileSlot(t, scale);
+        tileSlots.set(key, slot);
+        if (slot.isRegion) regionDirtyPending = true;
+        built.push(key);
+      } while (buildQueue.length > 0 && built.length < MAX_BUILDS_PER_FRAME && performance.now() - t0 < BUILD_BUDGET_MS);
+      if (built.length > 0) repaintSlots(built);
+      if (swaps > 0) {
+        const g = globalThis as { __swapCount?: number };
+        g.__swapCount = (g.__swapCount ?? 0) + swaps;
+      }
+    }
+    // Dispose retiring tiles whose covering replacements are now all mounted.
+    if (retiringKeys.size > 0) {
+      const selectedKeys = new Set(currentSelected.map(tileKey));
+      const mounted = new Set(tileSlots.keys());
+      for (const rk of [...retiringKeys]) {
+        if (coveringMounted(keyToTile(rk), selectedKeys, mounted)) {
+          if (tileSlots.get(rk)?.isRegion) regionDirtyPending = true;
+          disposeSlot(rk);
+          retiringKeys.delete(rk);
+        }
+      }
+    }
+    // Region stitch only when the set is stable (queue drained, none retiring).
+    if (regionDirtyPending && buildQueue.length === 0 && retiringKeys.size === 0) {
+      stitchMountedRegions();
+      regionDirtyPending = false;
+    }
+    const g = globalThis as { __btMs?: number };
+    g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
   }
 
   // On-settle refinement (spec §2, Nathan-approved): while the camera moved
@@ -940,8 +1012,12 @@ export function createGlobeView(
       const mesh = bandMeshes[i];
       if (mesh) mesh.visible = visible;
     }
-    if (!camera) return;
-    reselect(camera); // per-tile CDLOD; rebuilds only when the leaf set changes
+    if (!camera) {
+      drainBuildQueue(); // finish any pending builds even on a camera-less tick
+      return;
+    }
+    reselect(camera); // per-tile CDLOD; reconciles the leaf set (enqueues, retires)
+    drainBuildQueue(); // build a few queued tiles this frame (amortized, hole-free)
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
       const near = onNearSide(upWorld, camera.position, GLOBE_RADIUS);
