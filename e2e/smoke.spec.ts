@@ -133,3 +133,52 @@ test('the lens roster: every lens repaints the globe and updates its own caption
 
   expect(errors).toEqual([]);
 });
+
+test('the style roster: every render style renders the globe non-blank and transformed', async ({ page }) => {
+  test.setTimeout(240_000);
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await page.goto('#seed=42&view=globe&day=0.1');
+  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+
+  const globeCanvas = page.locator('canvas.view-canvas').last();
+  // Pause the clock (same reason as the lens roster: a running day can drift two
+  // captures onto the dark night side and make them byte-identical black frames).
+  await page.locator('.hud-bottom button').first().click();
+  // Rotate to bring land into view so the styles have real relief/colour to act on.
+  const box = (await globeCanvas.boundingBox())!;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx - 150, cy, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+  }
+
+  // A style shader that fails to compile (e.g. a GLSL reserved-word variable)
+  // renders the whole globe black — a very short, highly-compressible PNG. The
+  // >5000-byte non-blank check catches that; the not-equal-to-photoreal check
+  // confirms the style actually transformed the frame.
+  const styleButtons = page.locator('[data-style]');
+  expect(await styleButtons.count()).toBeGreaterThanOrEqual(5);
+
+  await page.locator('[data-style="photoreal"]').click();
+  await page.waitForTimeout(250);
+  const photoreal = await globeCanvas.screenshot();
+  expect(photoreal.length).toBeGreaterThan(5_000);
+
+  for (const id of ['pixel-art', 'cel', 'engraving', 'watercolor']) {
+    await page.locator(`[data-style="${id}"]`).click();
+    await expect(globeCanvas).toBeVisible();
+    await page.waitForTimeout(300);
+    const shot = await globeCanvas.screenshot();
+    expect(shot.length, `${id} rendered blank`).toBeGreaterThan(5_000);
+    expect(shot.equals(photoreal), `${id} did not transform the frame`).toBe(false);
+  }
+
+  expect(errors).toEqual([]);
+});
