@@ -65,10 +65,23 @@ The headless frame-gap cannot see this — hence the render-independent counter.
 Baseline's ~408ms/rebuild includes `stitchNormals` — an O(all-vertices) pass over
 a `Map` keyed by a freshly-allocated coordinate string per vertex (the T1
 flamegraph put it at ~35% of a rebuild). Analytic normals (each vertex normal
-from the elevation field's slope, a pure function of lat/lon, so shared tile edges
-agree by construction) delete that pass and its allocation entirely — which is
-also what lets a single tile be built or swapped in isolation, the property the
-incremental diff depends on.
+from the elevation field's slope, a pure function of lat/lon) delete that
+**global** pass entirely for BASE tiles, whose shared edges then agree by
+construction — which is also what lets a single tile be built or swapped in
+isolation, the property the incremental diff depends on.
+
+One nuance the whole-branch review caught: analytic normals do NOT agree across
+REGION patches, because `sampleRegionElevation` clamps its probe to a patch's own
+bounds, so at the production sample count a patch's edge normal is one-sided and
+adjacent deep tiles draw a shading crease. The proper cure (a 1-node halo in the
+region export) needs the wasm producer + a release (out of scope); so a
+`stitchNormals` pass survives, scoped to just the handful of mounted region tiles
+(never the whole globe). Its cost is a few ms over those tiles per region-set
+change — absorbed in the sub-second total, so the ~17× win stands. (The bug
+reproduces ONLY at the production sample count `TILE_QUADS`: at a coarse count the
+region cell dwarfs the 0.2° probe, which rounds back to the same node and yields
+degenerately-radial normals that hide the seam — a fixture footgun the tests now
+guard against explicitly.)
 
 ## The sweep (T6) — the other interactions
 
