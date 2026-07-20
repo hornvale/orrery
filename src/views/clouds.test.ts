@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { CLOUD_TEX_H, CLOUD_TEX_W } from './cloudTexture';
-import { CLOUD_FRACTION_THRESHOLD, DRIFT_RATE, SHELL_HEADROOM, createClouds } from './clouds';
+import { DRIFT_RATE, SHELL_HEADROOM, createClouds } from './clouds';
 import type { TilesScene } from '../sim/scene';
 
 /** A minimal `TilesScene` fixture: only the fields `createClouds`/
@@ -97,17 +97,5 @@ describe('createClouds', () => {
     clouds.update(100000);
     expect(texture.offset.x).toBeGreaterThanOrEqual(0);
     expect(texture.offset.x).toBeLessThan(1);
-  });
-});
-
-// CLOUD_FRACTION_THRESHOLD is no longer consulted by createClouds itself
-// (the shell draws from cloudType/weatherPropensity, not cloudFraction) but
-// stays exported for main.ts's existing hud.setCloudsAvailable import —
-// Task 3 does not touch main.ts. Referenced here only to confirm the export
-// survives the rewrite.
-describe('CLOUD_FRACTION_THRESHOLD', () => {
-  it('sits strictly between 0 and 1', () => {
-    expect(CLOUD_FRACTION_THRESHOLD).toBeGreaterThan(0);
-    expect(CLOUD_FRACTION_THRESHOLD).toBeLessThan(1);
   });
 });

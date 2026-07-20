@@ -20,7 +20,6 @@ import { createSystemView } from './views/system';
 import { createGlobeView, RELIEF_EXAGGERATION, type GlobeView } from './views/globe';
 import { TILE_QUADS, tileKey, type TileId } from './views/cubeSphere';
 import { lensById, naturalLens } from './views/lens';
-import { CLOUD_FRACTION_THRESHOLD } from './views/clouds';
 import { ZoomController, dollyLookAt, dollyPosition, wheelHandoff, type ZoomTarget } from './views/zoom';
 import { SPEED_POLICY, SpeedMemory, clampMult, reconcileDayHold } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, SystemScene, TilesScene } from './sim/scene';
@@ -619,11 +618,12 @@ function mountViews(
     'no ocean-current data: this world is tidally locked',
   );
   hud.setCloudsAvailable(
-    // Match `createClouds`'s own build conditions: bands must exist (a
-    // locked world reports none) AND at least one tile must clear its cloud
-    // threshold.
-    tiles.circulationBands !== null && tiles.cloudFraction.some((v) => v >= CLOUD_FRACTION_THRESHOLD),
-    'no circulation bands: this world is tidally locked',
+    // Match `createClouds`'s build condition: the cloud shell exists when any
+    // tile carries a non-clear cloud type (The Mantle). Unlike the old
+    // particle overlay this no longer requires circulation bands — a locked
+    // world has weather and clouds too.
+    tiles.cloudType.some((t) => t > 0),
+    'no clouds: every tile reports a clear sky',
   );
   hud.setEclipses(eclipses.events, system.world.yearDays);
 

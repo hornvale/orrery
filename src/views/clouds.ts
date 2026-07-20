@@ -60,15 +60,6 @@ export const DRIFT_RATE = 0.004;
  * magic 0 on `mesh.rotation.y`. */
 export const SHELL_ROTATION_Y = 0;
 
-/** Kept for `main.ts`'s existing `hud.setCloudsAvailable` gate (Task 3
- * does not touch `main.ts`) — the texture shell built here no longer
- * consults this threshold itself (it draws from `cloudType`/
- * `weatherPropensity`, not `cloudFraction`, and needs no circulation
- * bands), so the gate's own condition may deserve revisiting in a later
- * task now that a locked world can show clouds too. Value unchanged from
- * the particle overlay this file replaced. */
-export const CLOUD_FRACTION_THRESHOLD = 0.5;
-
 /** The cloud layer, or `null` when there is nothing to draw — mirrors
  * `./currents.ts`/`./winds.ts`'s `null`-on-no-data contract, so
  * `./globe.ts`'s `if (clouds) spinGroup.add(...)` and `main.ts`'s
