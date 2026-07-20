@@ -51,3 +51,29 @@ export function sampleRegionElevation(region: RegionScene, latDeg: number, lonDe
   const clampedRow = Math.min(samples, Math.max(0, row));
   return region.elevation_m[clampedRow * (samples + 1) + clampedCol]!;
 }
+
+/** Bilinearly-interpolated region elevation — the continuous counterpart of
+ * `sampleRegionElevation`, for the same reason `sampleElevationBilinear` exists
+ * for base tiles: the geometry (and the analytic normal taken from its
+ * gradient) must sample elevation continuously, or a nearest-node step spikes
+ * the normal to grazing under 60× relief. Clamps to the patch's own bounds
+ * (edge normals stay one-sided there — the scoped region stitch reconciles
+ * those; see globe.ts `stitchMountedRegions`). */
+export function sampleRegionElevationBilinear(region: RegionScene, latDeg: number, lonDeg: number): number {
+  const { face, level, ix, iy, samples } = region;
+  const u = unitFromLatLon(latDeg, lonDeg);
+  const { a, b } = faceParamsAt(face, u);
+  const scale = 1 << level;
+  const fc = samples * (((a + 1) / 2) * scale - ix);
+  const fr = samples * (((b + 1) / 2) * scale - iy);
+  const c0 = Math.floor(fc);
+  const r0 = Math.floor(fr);
+  const tx = fc - c0;
+  const ty = fr - r0;
+  const n = samples + 1;
+  const clamp = (v: number): number => Math.min(samples, Math.max(0, v));
+  const at = (r: number, c: number): number => region.elevation_m[clamp(r) * n + clamp(c)]!;
+  const top = at(r0, c0) * (1 - tx) + at(r0, c0 + 1) * tx;
+  const bot = at(r0 + 1, c0) * (1 - tx) + at(r0 + 1, c0 + 1) * tx;
+  return top * (1 - ty) + bot * ty;
+}

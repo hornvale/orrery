@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import type { RegionScene, TilesScene } from '../sim/scene';
 import type { RGB } from './lens';
 import { TILE_QUADS, tileGrid, unitFromLatLon, unitLatLon, type TileId } from './cubeSphere';
-import { regionPatchUnits, sampleRegionElevation } from './regionPatch';
+import { regionPatchUnits, sampleRegionElevationBilinear } from './regionPatch';
 
 /** Reference body radius (Earth's, meters) used only to turn raw elevation
  * meters into a *fraction* of a rendered radius before exaggerating — not a
@@ -35,6 +35,35 @@ export function tileIndex(tiles: TilesScene, lat: number, lon: number): number {
   const rawCol = Math.floor((lon + 180) / colSpan);
   const col = ((rawCol % tiles.width) + tiles.width) % tiles.width;
   return row * tiles.width + col;
+}
+
+/** Bilinearly-interpolated elevation (metres) at `(lat, lon)` over the same
+ * row-major pixel-center lattice `tileIndex` addresses. The geometry samples
+ * elevation CONTINUOUSLY rather than snapping to the nearest cell, so relief —
+ * and the analytic normals taken from its gradient — are smooth instead of
+ * stepping at every data-cell boundary. That step was catastrophic under 60×
+ * relief: a one-cell elevation jump became a near-vertical wall over the 0.2°
+ * normal probe, tilting the normal to grazing (black on the lit side, bright on
+ * the dark side). Longitude wraps at the ±180 seam; latitude clamps at the
+ * poles — matching `tileIndex`. Elevation only: discrete layers (biome, ocean)
+ * are never interpolated (their `colorAt` still samples the nearest cell). */
+export function sampleElevationBilinear(tiles: TilesScene, lat: number, lon: number): number {
+  const rowSpan = 180 / tiles.height;
+  const colSpan = 360 / tiles.width;
+  // Pixel CENTERS: cell (r,c) is centered half a span in, so shift by 0.5.
+  const fy = (90 - lat) / rowSpan - 0.5;
+  const fx = (lon + 180) / colSpan - 0.5;
+  const r0 = Math.floor(fy);
+  const c0 = Math.floor(fx);
+  const ty = fy - r0;
+  const tx = fx - c0;
+  const elev = tiles.elevation_m as unknown as ArrayLike<number>;
+  const rowAt = (r: number): number => Math.min(tiles.height - 1, Math.max(0, r));
+  const colAt = (c: number): number => ((c % tiles.width) + tiles.width) % tiles.width;
+  const at = (r: number, c: number): number => elev[rowAt(r) * tiles.width + colAt(c)]!;
+  const top = at(r0, c0) * (1 - tx) + at(r0, c0 + 1) * tx;
+  const bot = at(r0 + 1, c0) * (1 - tx) + at(r0 + 1, c0 + 1) * tx;
+  return top * (1 - ty) + bot * ty;
 }
 
 /** Sample a per-tile layer at `(lat, lon)` through the row-major equirect
@@ -72,7 +101,7 @@ export function buildTileGeometry(
   // lat/lon-offset neighbours, not just grid vertices) agrees bit-for-bit
   // with whatever any OTHER tile computes at that same (lat, lon).
   const radiusAtLatLon = (lat: number, lon: number): number =>
-    radius * (1 + (reliefScale * sampleTile(tiles, lat, lon, 'elevation_m')) / REFERENCE_RADIUS_M);
+    radius * (1 + (reliefScale * sampleElevationBilinear(tiles, lat, lon)) / REFERENCE_RADIUS_M);
   return buildGridGeometry(
     n,
     (i) => [grid.units[3 * i]!, grid.units[3 * i + 1]!, grid.units[3 * i + 2]!],
@@ -104,7 +133,7 @@ export function buildRegionTileGeometry(
   // `sampleRegionElevation`) — the counterpart of `buildTileGeometry`'s
   // `radiusAtLatLon`, used by the analytic normal probe.
   const radiusAtLatLon = (lat: number, lon: number): number =>
-    radius * (1 + (reliefScale * sampleRegionElevation(region, lat, lon)) / REFERENCE_RADIUS_M);
+    radius * (1 + (reliefScale * sampleRegionElevationBilinear(region, lat, lon)) / REFERENCE_RADIUS_M);
   return buildGridGeometry(
     n,
     (i) => units[i]!,

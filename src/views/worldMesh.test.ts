@@ -5,6 +5,7 @@ import {
   buildFaceGeometry,
   buildRegionTileGeometry,
   buildTileGeometry,
+  sampleElevationBilinear,
   sampleTile,
   stitchNormals,
   tileIndex,
@@ -102,6 +103,22 @@ describe('tileIndex', () => {
       expect(i).toBeLessThan(tiles.width * tiles.height);
       expect(sampleTile(tiles, lat, lon, 'elevation_m')).toBe(tiles.elevation_m[i]);
     }
+  });
+});
+
+describe('sampleElevationBilinear', () => {
+  it('returns the node value at a cell center and interpolates continuously between cells', () => {
+    // 4×2 grid: rowSpan 90°, colSpan 90°; values are pixel centers.
+    const tiles = { width: 4, height: 2, elevation_m: [0, 100, 200, 300, 400, 500, 600, 700] } as never;
+    const centerLat = (r: number): number => 90 - (r + 0.5) * 90;
+    const centerLon = (c: number): number => -180 + (c + 0.5) * 90;
+    // At an exact cell center, bilinear == the nearest-cell value.
+    expect(sampleElevationBilinear(tiles, centerLat(0), centerLon(1))).toBeCloseTo(100, 6);
+    expect(sampleElevationBilinear(tiles, centerLat(1), centerLon(2))).toBeCloseTo(600, 6);
+    // Halfway between col 1 (100) and col 2 (200) on row 0 → the midpoint 150,
+    // a continuous interpolation rather than the stepped 100-or-200 nearest
+    // sample whose gradient spikes the analytic normal under 60× relief.
+    expect(sampleElevationBilinear(tiles, centerLat(0), (centerLon(1) + centerLon(2)) / 2)).toBeCloseTo(150, 6);
   });
 });
 
