@@ -45,7 +45,7 @@ const fragmentShader = /* glsl */ `
     if (l < 0.75) ink = max(ink, hatch(px, 0.6));
     if (l < 0.5)  ink = max(ink, hatch(px, -0.6));
     if (l < 0.28) ink = max(ink, hatch(px, 1.9));
-    gl_FragColor = vec4(mix(cream, sepia, ink), src.a);
+    gl_FragColor = vec4(mix(cream, sepia, ink), 1.0);
   }
 `;
 
