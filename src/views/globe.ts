@@ -642,12 +642,18 @@ export function createGlobeView(
     const scale = reliefScale();
     const toBuild = [...added];
     const buildKeys = new Set(added.map((t) => tileKey(t)));
+    // Keys built because a region *swapped in* for an already-mounted,
+    // unchanged-key tile (as opposed to `added`, a genuinely new leaf from
+    // the LOD diff) — the harness's `__swapCount` counts only these, one per
+    // single-tile region swap.
+    const swapKeys = new Set<string>();
     if (pendingUpgrades.size > 0) {
       for (const t of selected) {
         const key = tileKey(t);
         if (pendingUpgrades.has(key) && tileSlots.has(key) && !buildKeys.has(key)) {
           toBuild.push(t);
           buildKeys.add(key);
+          swapKeys.add(key);
         }
       }
       pendingUpgrades.clear();
@@ -662,9 +668,15 @@ export function createGlobeView(
     currentSelected = selected;
     currentSignature = signatureOf(selected);
     if (builtKeys.length > 0) repaintSlots(builtKeys);
-    const g = globalThis as { __btCount?: number; __btMs?: number };
+    // Render-independent perf counters `e2e/perf-harness.spec.ts` reads
+    // (`buildTiles_calls`/`buildTiles_total_ms`/`region_swaps`) — wired on
+    // this incremental path only (never `rebuildAllTiles`'s whole-globe
+    // events), since this is the per-frame-triggered path the harness's
+    // zoom scenario actually measures.
+    const g = globalThis as { __btCount?: number; __btMs?: number; __swapCount?: number };
     g.__btCount = (g.__btCount ?? 0) + 1;
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
+    if (swapKeys.size > 0) g.__swapCount = (g.__swapCount ?? 0) + swapKeys.size;
   }
 
   // On-settle refinement (spec §2, Nathan-approved): while the camera moved

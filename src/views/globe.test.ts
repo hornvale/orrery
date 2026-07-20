@@ -18,7 +18,7 @@ import { REFERENCE_RADIUS_M } from './worldMesh';
 import { TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
 import { iceFraction } from './ice';
 import { rotationPhase } from '../sim/ephemeris';
-import type { SystemScene, TilesScene } from '../sim/scene';
+import type { RegionScene, SystemScene, TilesScene } from '../sim/scene';
 import { loadSeed42Tiles, loadSeed42System } from '../testHelpers/wasmFixture';
 import { moistureLens, naturalLens, temperatureLens } from './lens';
 
@@ -71,6 +71,107 @@ test('gateRefinement lets a coarsening merge through immediately', () => {
 test('gateRefinement passes an unchanged tile through untouched', () => {
   const t: TileId = { face: 3, level: 2, ix: 1, iy: 1 };
   expect(gateRefinement([t], [t])).toEqual([t]);
+});
+
+/** A minimal `scene/tiles-region/v1` fixture at `(face, level, ix, iy)`: only
+ * the fields `buildRegionTileGeometry` (elevation_m, samples, the tile
+ * address) and `moistureLens.colorAt` (moisture) read — the same
+ * minimal-fixture convention `worldMesh.test.ts`'s
+ * `buildRegionTileGeometry meshes a region patch` test uses. `moisture`
+ * (not `natural`'s ocean/biome/ice fields) is deliberate: the ice blend
+ * under `natural` reads `tDiurnalAmpC`, a `TilesScene`-only field this
+ * region fixture has no reason to carry. */
+function regionFixture(face: number, level: number, ix: number, iy: number, samples: number): RegionScene {
+  const n = (samples + 1) * (samples + 1);
+  return {
+    face,
+    level,
+    ix,
+    iy,
+    samples,
+    elevation_m: Array(n).fill(500),
+    moisture: Array(n).fill(0.5),
+  } as unknown as RegionScene;
+}
+
+/** Every `globe-tile-<key>` mesh currently mounted under `view`, keyed by
+ * `tileKey` — the incremental diff's mounted-slot set is otherwise private
+ * to `globe.ts`, so a test reads it back the same way `faceColors` does. */
+function tileMeshesByKey(view: ReturnType<typeof createGlobeView>): Map<string, THREE.Mesh> {
+  const out = new Map<string, THREE.Mesh>();
+  view.object3d.traverse((o) => {
+    if (o.name.startsWith('globe-tile-')) out.set(o.name.slice('globe-tile-'.length), o as THREE.Mesh);
+  });
+  return out;
+}
+
+test('onRegion swaps only the arriving tile to region geometry — other tiles keep their geometry object; an unmounted key is a no-op', () => {
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
+  // Sidestep the ice blend's TilesScene-only field (see regionFixture's doc).
+  view.setLens(moistureLens);
+
+  // Camera just above the surface: whatever tile sits under it is close
+  // enough (dist << threshold at every level) to subdivide all the way to
+  // LOD_CDLOD_MAX_LEVEL, so a deep (>= REGION_MIN_LEVEL) tile is guaranteed
+  // to mount regardless of which face the spin has rotated under the point.
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  // On-settle refinement (reselect's SETTLE_FRAMES_NEEDED=2) holds refining
+  // splits back until the camera has been still for a couple of frames —
+  // three identical-position updates reach the settled, fully-refined set.
+  view.update(0, camera);
+  view.update(0, camera);
+  view.update(0, camera);
+
+  const before = tileMeshesByKey(view);
+  let targetKey: string | null = null;
+  let otherKey: string | null = null;
+  for (const key of before.keys()) {
+    const level = Number(key.split(':')[1]);
+    if (level >= 3 && targetKey === null) targetKey = key;
+    else if (key !== targetKey && otherKey === null) otherKey = key;
+  }
+  expect(targetKey).not.toBeNull(); // the deep zoom actually reached REGION_MIN_LEVEL
+  expect(otherKey).not.toBeNull(); // and left at least one other tile mounted
+  const otherMeshBefore = before.get(otherKey!)!;
+  const otherGeomBefore = otherMeshBefore.geometry;
+  const targetGeomBefore = before.get(targetKey!)!.geometry;
+
+  // A region arriving for a key nothing currently mounts: cached against a
+  // future selection, not applied now — never throws.
+  const staleKey = '5:9:9:9'; // level 9 exceeds LOD_CDLOD_MAX_LEVEL — never a real selected tile
+  expect(() => view.onRegion(staleKey, regionFixture(5, 9, 9, 9, TILE_QUADS))).not.toThrow();
+
+  const [face, level, ix, iy] = targetKey!.split(':').map(Number) as [number, number, number, number];
+  // Matches the real producer contract (`main.ts`'s requestRegion reply):
+  // every region arrives sampled at TILE_QUADS — `buildTileSlot`'s region
+  // branch reuses the module-level `identityIdx` (sized TILE_QUADS+1
+  // squared) for every region tile rather than deriving it from
+  // `region.samples`, so a region at any other sample count is outside the
+  // contract this path assumes.
+  const samples = TILE_QUADS;
+  const region = regionFixture(face, level, ix, iy, samples);
+  view.onRegion(targetKey!, region);
+  view.update(0, camera); // next reselect/apply — pendingUpgrades triggers the swap
+
+  const after = tileMeshesByKey(view);
+  expect(after.has(staleKey)).toBe(false); // (c) still a no-op — no mesh ever built for it
+
+  // (a) the target tile's geometry became the region's: a genuinely new
+  // geometry object (the swap actually happened, not a no-op) whose surface
+  // vertex count matches the region's (samples+1)^2 node count plus the
+  // fixed 4*(samples+1) skirt apron (worldMesh.test.ts pins the same formula
+  // for buildRegionTileGeometry).
+  const targetGeomAfter = after.get(targetKey!)!.geometry;
+  expect(targetGeomAfter).not.toBe(targetGeomBefore);
+  const n = samples + 1;
+  expect(targetGeomAfter.getAttribute('position').count).toBe(n * n + 4 * n);
+
+  // (b) another mounted tile's mesh AND geometry are the exact same object
+  // references as before the swap — applyTileSet never touched it (no
+  // rebuild-all).
+  expect(after.get(otherKey!)).toBe(otherMeshBefore);
+  expect(after.get(otherKey!)!.geometry).toBe(otherGeomBefore);
 });
 
 test('sampleTile maps lat/lon to the row-major equirect lattice', () => {
