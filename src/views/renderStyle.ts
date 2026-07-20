@@ -48,6 +48,14 @@ export class StylePipeline {
   ) {
     this.composer = new EffectComposer(renderer);
     this.renderPass = new RenderPass(scene, camera);
+    // Clear the composer's intermediate target to OPAQUE black. Without this the
+    // target's alpha where the globe drew is 0, and three's premultiplied output
+    // then zeroes the globe's RGB — so any style ShaderPass reads a black frame
+    // and the globe vanishes. An opaque clear keeps the globe's colour intact for
+    // the style to transform; space stays black. (Photoreal renders to screen and
+    // is unaffected.)
+    this.renderPass.clearColor = new THREE.Color(0, 0, 0);
+    this.renderPass.clearAlpha = 1;
     this.composer.addPass(this.renderPass);
   }
 

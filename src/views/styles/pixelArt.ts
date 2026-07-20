@@ -53,7 +53,15 @@ const fragmentShader = /* glsl */ `
       float d = distance(src.rgb, uPalette[i]);
       if (d < best) { best = d; pick = uPalette[i]; }
     }
-    gl_FragColor = vec4(pick, src.a);
+    // Force opaque output: the composer's intermediate target does not carry a
+    // reliable alpha where the globe drew, so preserving src.a rendered the whole
+    // frame transparent (the page background showed through). Keep the near-black
+    // space background black rather than snapping it to a biome colour.
+    if (max(src.r, max(src.g, src.b)) < 0.02) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+      gl_FragColor = vec4(pick, 1.0);
+    }
   }
 `;
 
@@ -68,11 +76,10 @@ export const pixelArtStyle: RenderStyle = {
   passes(tiles: TilesScene): Pass[] {
     const palette = biomePalette(tiles);
     const flat = new Array(16).fill(0).map((_, i) => new THREE.Vector3(...(palette[i] ?? palette[palette.length - 1] ?? [0, 0, 0])));
-    const uResolution = { value: new THREE.Vector2(1, 1) };
     const pass = new ShaderPass({
       uniforms: {
         tDiffuse: { value: null },
-        uResolution,
+        uResolution: { value: new THREE.Vector2(1, 1) },
         uPixelSize: { value: 4.0 },
         uPalette: { value: flat },
         uPaletteLen: { value: Math.max(1, palette.length) },
@@ -80,9 +87,13 @@ export const pixelArtStyle: RenderStyle = {
       vertexShader,
       fragmentShader,
     });
-    // Keep uResolution current: ShaderPass.setSize is called by the composer.
+    // ShaderPass CLONES the uniforms above, so the live uniform the shader reads
+    // is `pass.uniforms.uResolution` — NOT the object literal we passed in.
+    // Capture it AFTER construction; the composer calls this setSize (via
+    // EffectComposer.addPass/setSize) with the drawing-buffer dimensions.
+    const uRes = pass.uniforms.uResolution!.value as THREE.Vector2;
     (pass as unknown as { setSize: (w: number, h: number) => void }).setSize = (w, h) => {
-      uResolution.value.set(w, h);
+      uRes.set(w, h);
     };
     return [pass];
   },
