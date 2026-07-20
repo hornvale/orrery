@@ -35,3 +35,21 @@ all ~40); region arrivals swap a single tile (pendingUpgrades). Headless
 software-GL still floors the frame time; on real hardware (fast GPU) the now-
 tiny JS makes it smoother still. Visual: refinement correct, no gaps/duplicates/
 seams/thrash. 460 tests green.
+
+## The sweep (T6) — the other interactions
+
+Measured each interaction's flamegraph. **The zoom was the only JS-bound
+hotspot.** All others are render-bound (headless software-GL rasterization — a
+measurement artifact the real GPU handles fast; no main-thread JS lever):
+
+| Interaction | JS share | Verdict |
+|---|---|---|
+| Zoom | (fixed) | `buildTiles`/`stitchNormals` — fixed 12× by T2+T3 |
+| Day-scrub (temperature lens) | ~1.7% (`repaint`/`colorAt`/`diurnalWaveform`) | render-bound; no JS lever |
+| Lens-swap | ~0.5% (`repaint` 32ms total) | render-bound; no JS lever |
+| Boot | wasm genesis + render dominate; `parseTiles` trivial | not a JS hotspot |
+
+"Go as deep as it takes" bottoms out here: the JS work is exhausted. The one
+unmeasurable-in-headless real-HW lever is draw-call count (many per-tile meshes),
+but reducing it fights the per-tile-mesh architecture the incremental diff needs,
+so it is left un-chased (no measurement to justify the risk).
