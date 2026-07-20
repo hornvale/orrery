@@ -244,7 +244,7 @@ function mountViews(
   // the globe frame, orthogonal to the data lens. Photoreal (the default) is
   // an empty pass chain — an EffectComposer whose only pass is the base
   // RenderPass renders identically to the old direct `renderer.render` call.
-  const stylePipeline = new StylePipeline(globeRenderer, globeScene, globeCamera, tiles);
+  const stylePipeline = new StylePipeline(globeRenderer, globeScene, globeCamera, tiles, globeView);
   stylePipeline.setStyle(styleById('photoreal'));
 
   // The zoom itself (src/views/zoom.ts): CLOSE_OFFSET is a small, arbitrary

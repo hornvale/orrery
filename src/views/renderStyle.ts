@@ -7,6 +7,8 @@ import { pixelArtStyle } from './styles/pixelArt';
 import { celStyle } from './styles/cel';
 import { engravingStyle } from './styles/engraving';
 import { watercolorStyle } from './styles/watercolor';
+import type { SymbolLayer } from './symbols/symbolLayer';
+import { buildSymbolLayer } from './symbols/symbolLayer';
 
 /** How the globe SURFACE is shaded, as a per-vertex colour transform applied
  * on top of the active lens's colour inside globe.ts's computeBaseColor.
@@ -63,17 +65,29 @@ export function styleById(id: string): RenderStyle {
   return STYLES.find((s) => s.id === id) ?? photorealStyle;
 }
 
+/** The minimal structural surface `StylePipeline` needs from the globe view to
+ * apply a style's scene-renderer aspects (base treatment + symbol layer) —
+ * kept narrow so this module doesn't need to import all of globe.ts. The
+ * globe view returned by `createGlobeView` satisfies this today. */
+export interface GlobeStyleTarget {
+  setBaseTreatment(t: BaseTreatment | null): void;
+  mountSymbolLayer(layer: SymbolLayer): void;
+  unmountSymbolLayer(): void;
+}
+
 /** Owns an EffectComposer over the globe renderer and swaps pass chains when the
  * style changes. `render()` replaces the plain `renderer.render(scene, camera)`. */
 export class StylePipeline {
   private composer: EffectComposer;
   private renderPass: RenderPass;
+  private activeSymbolLayer: SymbolLayer | null = null;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     camera: THREE.Camera,
     private tiles: TilesScene,
+    private globe: GlobeStyleTarget,
   ) {
     this.composer = new EffectComposer(renderer);
     this.renderPass = new RenderPass(scene, camera);
@@ -101,6 +115,18 @@ export class StylePipeline {
     passes.forEach((p, i) => {
       p.renderToScreen = i === passes.length - 1;
     });
+
+    // Scene-renderer aspects: base treatment + symbol layer.
+    if (this.activeSymbolLayer) {
+      this.globe.unmountSymbolLayer();
+      this.activeSymbolLayer.dispose();
+      this.activeSymbolLayer = null;
+    }
+    this.globe.setBaseTreatment(style.base ?? null);
+    if (style.symbolLayer) {
+      this.activeSymbolLayer = buildSymbolLayer(this.tiles);
+      this.globe.mountSymbolLayer(this.activeSymbolLayer);
+    }
   }
 
   setSize(w: number, h: number): void {

@@ -1,6 +1,5 @@
 import { expect, test } from 'vitest';
 import { STYLES, styleById, photorealStyle } from './renderStyle';
-import { biomePalette } from './styles/pixelArt';
 
 test('STYLES has photoreal first and every entry has a unique id + label', () => {
   expect(STYLES[0]).toBe(photorealStyle);
@@ -19,20 +18,11 @@ test('photoreal produces an empty effect chain (identity)', () => {
   expect(photorealStyle.passes(fakeTiles)).toEqual([]);
 });
 
-test('biomePalette is deterministic and bounded, ordered by biome frequency', () => {
-  // 4 cells: biome 2 appears x3, biome 5 once → 2 must come before 5.
-  const tiles = { width: 4, height: 1, elevation_m: [0, 0, 0, 0], biome: [2, 2, 2, 5] } as never;
-  const a = biomePalette(tiles);
-  const b = biomePalette(tiles);
-  expect(a).toEqual(b); // deterministic
-  expect(a.length).toBeGreaterThan(0);
-  expect(a.length).toBeLessThanOrEqual(16); // bounded
-  for (const [r, g, bl] of a) {
-    for (const c of [r, g, bl]) {
-      expect(c).toBeGreaterThanOrEqual(0);
-      expect(c).toBeLessThanOrEqual(1);
-    }
-  }
+test('pixel-art is a scene-renderer style (base + symbol layer, no post pass)', () => {
+  const s = STYLES.find((x) => x.id === 'pixel-art')!;
+  expect(s.base?.id).toBe('pixel');
+  expect(s.symbolLayer).toBeDefined();
+  expect(s.passes({ ocean: [], biome: [], biomeLegend: [] } as any)).toEqual([]);
 });
 
 test('photoreal and filter styles declare no base or symbol layer', () => {
