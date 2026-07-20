@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import {
   REFERENCE_RADIUS_M,
   buildFaceGeometry,
   buildRegionTileGeometry,
   buildTileGeometry,
   sampleTile,
-  stitchNormals,
   tileIndex,
 } from './worldMesh';
 import type { RegionScene } from '../sim/scene';
@@ -41,6 +41,37 @@ function flatTiles(): TilesScene {
 function bumpyTiles(): TilesScene {
   const width = 16, height = 8, n = width * height;
   const elevation_m = Array.from({ length: n }, (_, i) => 4000 * Math.sin(i * 2.39996));
+  return {
+    schema: 'scene/tiles/v1', width, height, sea_level_m: 0,
+    elevation_m, ocean: Array(n).fill(false),
+    biome: Array(n).fill(0), biomeLegend: ['steppe'], features: [],
+    t_mean_c: Array(n).fill(15), t_swing_c: Array(n).fill(5), tDiurnalAmpC: Array(n).fill(8),
+    currentEast: Array(n).fill(0), currentNorth: Array(n).fill(0),
+    season_period_days: 365, circulationBands: null, moisture: Array(n).fill(0.5),
+    plate: Array(n).fill(0), unrest: Array(n).fill(0), locked: false,
+    precipMmYr: Array(n).fill(800), snowFraction: Array(n).fill(0.1),
+    precipRegime: Array(n).fill(0), cloudFraction: Array(n).fill(0.4),
+    weatherPropensity: Array(n).fill(0.6), cloudType: Array(n).fill(0),
+  };
+}
+
+/** A flat (zero-elevation) world — for the "analytic normals are radial on a
+ * flat patch" test. Any relief-detecting probe should read pure-sphere
+ * normals here regardless of the probe delta chosen. */
+function flatZeroTiles(): TilesScene {
+  return { ...flatTiles(), elevation_m: Array(8).fill(0) };
+}
+
+/** A steep-sawtooth world: elevation ramps 0→3000m every 1° of longitude
+ * (4 columns of the 0.25°/cell grid), on a grid fine enough (1440 cols) that
+ * the analytic-normal probe delta (0.2°, `NORMAL_PROBE_DELTA_DEG` in
+ * worldMesh.ts) reliably crosses a real elevation step — with a per-degree
+ * slope steep enough (3000 m/°) to produce a normal tilt well above the
+ * flat-patch tolerance, not just a few noise-level ULPs. `bumpyTiles` (16
+ * cols → 22.5°/cell) is far too coarse for that probe to see any slope. */
+function slopedTiles(): TilesScene {
+  const width = 1440, height = 2, n = width * height;
+  const elevation_m = Array.from({ length: n }, (_, i) => 3000 * (((i % width) % 4) / 4));
   return {
     schema: 'scene/tiles/v1', width, height, sea_level_m: 0,
     elevation_m, ocean: Array(n).fill(false),
@@ -170,42 +201,65 @@ describe('buildFaceGeometry', () => {
   });
 });
 
-describe('stitchNormals', () => {
-  /** Map of position key → normals seen there, across all `geoms`. */
-  function normalsByPosition(geoms: ReturnType<typeof buildFaceGeometry>[]): Map<string, number[][]> {
-    const seen = new Map<string, number[][]>();
-    for (const g of geoms) {
-      const pos = g.getAttribute('position');
-      const nrm = g.getAttribute('normal');
-      for (let i = 0; i < pos.count; i++) {
-        const key = `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
-        const list = seen.get(key) ?? [];
-        list.push([nrm.getX(i), nrm.getY(i), nrm.getZ(i)]);
-        seen.set(key, list);
-      }
+// `stitchNormals` (the post-hoc cross-tile normal-averaging pass) is gone —
+// superseded by analytic normals below, which make shared-edge vertices
+// agree BY CONSTRUCTION (both sides derive the normal from the same pure
+// function of (lat, lon) + the elevation field) instead of reconciling
+// disagreeing face-averaged normals after the fact.
+describe('analytic normals (buildGridGeometry)', () => {
+  it('a flat (zero-elevation) patch has purely radial normals', () => {
+    const geom = buildTileGeometry(flatZeroTiles(), { face: 0, level: 2, ix: 1, iy: 1 }, 2, 0, ignoreColor, 0);
+    const pos = geom.getAttribute('position');
+    const nrm = geom.getAttribute('normal');
+    for (let i = 0; i < pos.count; i++) {
+      const p = new THREE.Vector3().fromBufferAttribute(pos, i).normalize();
+      const n = new THREE.Vector3().fromBufferAttribute(nrm, i);
+      expect(n.length()).toBeCloseTo(1, 5);
+      expect(n.dot(p)).toBeGreaterThan(0.99); // radial
     }
-    return seen;
-  }
+  });
 
-  it('makes normals agree at every vertex shared across faces', () => {
-    const geoms = Array.from({ length: 6 }, (_, f) => buildFaceGeometry(bumpyTiles(), f, 2, 60, ignoreColor));
-    // Sanity: before stitching, at least one shared edge vertex disagrees —
-    // otherwise this test can't fail for the seam bug it guards against.
-    const before = [...normalsByPosition(geoms).values()].filter((l) => l.length > 1);
-    expect(before.length).toBeGreaterThan(0);
-    expect(
-      before.some((l) => l.some((n) => Math.hypot(n[0]! - l[0]![0]!, n[1]! - l[0]![1]!, n[2]! - l[0]![2]!) > 1e-3)),
-    ).toBe(true);
-
-    stitchNormals(geoms);
-    for (const list of normalsByPosition(geoms).values()) {
-      for (const n of list) {
-        expect(Math.hypot(n[0]!, n[1]!, n[2]!)).toBeCloseTo(1, 5);
-        expect(n[0]).toBe(list[0]![0]);
-        expect(n[1]).toBe(list[0]![1]);
-        expect(n[2]).toBe(list[0]![2]);
-      }
+  it('a sloped patch tilts the normal off-radial, but never inward', () => {
+    const geom = buildTileGeometry(slopedTiles(), { face: 0, level: 0, ix: 0, iy: 0 }, 2, 30, ignoreColor, 0);
+    const pos = geom.getAttribute('position');
+    const nrm = geom.getAttribute('normal');
+    let sawTilt = false;
+    for (let i = 0; i < pos.count; i++) {
+      const p = new THREE.Vector3().fromBufferAttribute(pos, i).normalize();
+      const n = new THREE.Vector3().fromBufferAttribute(nrm, i);
+      expect(n.length()).toBeCloseTo(1, 5);
+      const d = n.dot(p);
+      expect(d).toBeGreaterThan(0); // always flipped outward, never inward
+      if (d < 0.999) sawTilt = true;
     }
+    expect(sawTilt).toBe(true);
+  });
+
+  it('two same-level neighbouring tiles agree on shared-edge normals without a stitch pass', () => {
+    const tiles = bumpyTiles();
+    const a = buildTileGeometry(tiles, { face: 0, level: 1, ix: 0, iy: 0 }, 2, 60, ignoreColor);
+    const b = buildTileGeometry(tiles, { face: 0, level: 1, ix: 1, iy: 0 }, 2, 60, ignoreColor);
+    const n = 65; // TILE_QUADS + 1
+    const posA = a.getAttribute('position');
+    const nrmA = a.getAttribute('normal');
+    const posB = b.getAttribute('position');
+    const nrmB = b.getAttribute('normal');
+    let checked = 0;
+    for (let row = 0; row < n; row++) {
+      const ia = row * n + (n - 1); // a's right (max-ix) edge
+      const ib = row * n; // b's left (min-ix) edge — the shared border
+      // The positions are bit-identical by cubeSphere.ts's dyadic-parameter
+      // guarantee; the point of this test is that the NORMALS agree too,
+      // with no stitching pass run.
+      expect(posA.getX(ia)).toBeCloseTo(posB.getX(ib), 6);
+      expect(posA.getY(ia)).toBeCloseTo(posB.getY(ib), 6);
+      expect(posA.getZ(ia)).toBeCloseTo(posB.getZ(ib), 6);
+      expect(nrmA.getX(ia)).toBeCloseTo(nrmB.getX(ib), 5);
+      expect(nrmA.getY(ia)).toBeCloseTo(nrmB.getY(ib), 5);
+      expect(nrmA.getZ(ia)).toBeCloseTo(nrmB.getZ(ib), 5);
+      checked++;
+    }
+    expect(checked).toBe(n);
   });
 });
 

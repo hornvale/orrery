@@ -56,6 +56,33 @@ export function unitLatLon(u: V3): { latDeg: number; lonDeg: number } {
   return { latDeg, lonDeg };
 }
 
+/** Inverse of `unitLatLon`: the unit vector at (lat, lon) — a pure spherical
+ * parameterization with no face/tile involved at all. This is the read half
+ * of the (lat,lon) ⇄ unit round trip analytic surface normals depend on:
+ * two points built from the same global (lat, lon) coordinate come out
+ * bit-identical no matter which tile or face computed them, which is what
+ * lets adjacent tiles agree on a shared-edge normal without a post-hoc
+ * cross-tile stitch (see `worldMesh.ts`'s `analyticNormal`). */
+export function unitFromLatLon(latDeg: number, lonDeg: number): V3 {
+  const lat = (latDeg * Math.PI) / 180;
+  const lon = (lonDeg * Math.PI) / 180;
+  const cosLat = Math.cos(lat);
+  return [cosLat * Math.cos(lon), cosLat * Math.sin(lon), Math.sin(lat)];
+}
+
+/** Project unit vector `u` onto `face`'s square, returning its (a, b) face
+ * parameters — the forced-face counterpart to `containingTile`'s
+ * auto-detected one. Used to locate a (lat, lon) point within a *specific*
+ * region patch's own node lattice (`regionPatch.ts`'s elevation sampler),
+ * where the face is already known and mustn't be re-derived from `u`. */
+export function faceParamsAt(face: number, u: V3): { a: number; b: number } {
+  const f = FACES[face]!;
+  const denom = u[0] * f.n[0] + u[1] * f.n[1] + u[2] * f.n[2];
+  const a = (u[0] * f.u[0] + u[1] * f.u[1] + u[2] * f.u[2]) / denom;
+  const b = (u[0] * f.v[0] + u[1] * f.v[1] + u[2] * f.v[2]) / denom;
+  return { a, b };
+}
+
 /** Face parameter of a tile-grid node: dyadic, exact in f64. */
 function param(index: number, offset: number, level: number): number {
   return -1 + (2 * (index + offset)) / (1 << level);

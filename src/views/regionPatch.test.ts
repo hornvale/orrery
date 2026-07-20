@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { faceUnit } from "./cubeSphere";
-import { regionPatchUnits } from "./regionPatch";
+import { faceUnit, unitLatLon } from "./cubeSphere";
+import { regionPatchUnits, sampleRegionElevation } from "./regionPatch";
 import { loadSeed42Region } from "../testHelpers/wasmFixture";
+import type { RegionScene } from "../sim/scene";
 
 /** The tile-local face parameter (cubeSphere's internal `param`), recomputed
  * independently here so the registration assertion doesn't just echo the
@@ -51,4 +52,49 @@ describe("regionPatchUnits: single-patch registration/seam proof", () => {
     },
     30_000,
   );
+});
+
+describe("sampleRegionElevation", () => {
+  it("round-trips: sampling at a node's own (lat, lon) returns that node's elevation", () => {
+    const samples = 4;
+    const nodes = (samples + 1) * (samples + 1);
+    // A synthetic patch (no wasm fixture needed) — only the fields
+    // regionPatchUnits/sampleRegionElevation read.
+    const region = {
+      face: 2,
+      level: 2,
+      ix: 1,
+      iy: 2,
+      samples,
+      elevation_m: Array.from({ length: nodes }, (_, i) => i * 10),
+    } as unknown as RegionScene;
+    const units = regionPatchUnits(region);
+    for (let i = 0; i < nodes; i++) {
+      const { latDeg, lonDeg } = unitLatLon(units[i]!);
+      expect(sampleRegionElevation(region, latDeg, lonDeg)).toBeCloseTo(region.elevation_m[i]!, 6);
+    }
+  });
+
+  it("clamps a probe that steps just past the patch edge to the nearest edge node", () => {
+    const samples = 4;
+    const nodes = (samples + 1) * (samples + 1);
+    const region = {
+      face: 0,
+      level: 2,
+      ix: 1,
+      iy: 1,
+      samples,
+      elevation_m: Array.from({ length: nodes }, (_, i) => i * 10),
+    } as unknown as RegionScene;
+    // Step just past the patch's (row 0, col 0) corner in (a, b) face
+    // parameter space — genuinely off the patch, not just off a node — then
+    // convert that (a, b) back to (lat, lon) through the SAME faceUnit /
+    // unitLatLon path the patch's own nodes use, so the probe direction is
+    // unambiguous (no guessing which way lat/lon moves relative to a/b).
+    const a0 = param(1, 0, 2); // this patch's own ix=1 col-0 parameter
+    const b0 = param(1, 0, 2); // this patch's own iy=1 row-0 parameter
+    const probeUnit = faceUnit(0, a0 - 0.1, b0 - 0.1);
+    const { latDeg, lonDeg } = unitLatLon(probeUnit);
+    expect(sampleRegionElevation(region, latDeg, lonDeg)).toBe(region.elevation_m[0]);
+  });
 });

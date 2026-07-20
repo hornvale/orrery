@@ -15,7 +15,6 @@ import {
   buildRegionTileGeometry,
   buildTileGeometry,
   sampleTile,
-  stitchNormals,
   tileIndex,
 } from './worldMesh';
 import type { Lens } from './lens';
@@ -465,10 +464,11 @@ export function createGlobeView(
       tileMeshes.push(mesh);
       tileGeoms.push(geom);
     }
-    // Same-level neighbours share exact edge vertices; reconcile their normals
-    // or the directional light draws every seam (worst at 60× relief). Skirts
-    // cover the *positional* cracks at mixed-level boundaries.
-    stitchNormals(tileGeoms);
+    // Same-level neighbours share exact edge vertices; their normals already
+    // agree by construction (`worldMesh.ts`'s analytic normal is a pure
+    // function of (lat, lon) + the field, so no post-hoc stitch is needed
+    // here anymore). Skirts still cover the *positional* cracks at
+    // mixed-level boundaries.
     rebuildBase();
     repaint(lastDay ?? 0, true);
     currentSelected = selected;
