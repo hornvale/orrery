@@ -348,7 +348,7 @@ function mountViews(
   function resize(): void {
     systemRenderer.setSize(window.innerWidth, window.innerHeight);
     globeRenderer.setSize(window.innerWidth, window.innerHeight);
-    stylePipeline.setSize(globeCanvas.clientWidth, globeCanvas.clientHeight);
+    stylePipeline.setSize(window.innerWidth, window.innerHeight);
     const aspect = window.innerWidth / window.innerHeight;
     systemCamera.aspect = aspect;
     systemCamera.updateProjectionMatrix();

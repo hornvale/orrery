@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildHud, SPEED_STEPS } from './hud';
 import { LENSES, moistureLens } from '../views/lens';
+import { photorealStyle } from '../views/renderStyle';
 import type { EclipseEvent } from '../sim/scene';
 
 describe('buildHud interactions', () => {
@@ -158,6 +159,23 @@ describe('buildHud interactions', () => {
     hud.setLens(moistureLens, moistureLens.legend(undefined as never));
     const active = [...root.querySelectorAll('.hud-lenses button.active')];
     expect(active.map((b) => b.textContent)).toEqual(['moisture']);
+  });
+
+  it('reports the chosen style id', () => {
+    const root = document.createElement('div');
+    const chosen: string[] = [];
+    buildHud(root, '42', { ...noop, onStyle: (id: string) => { chosen.push(id); } });
+    const btn = [...root.querySelectorAll('button')].find((b) => b.textContent === photorealStyle.label)!;
+    btn.click();
+    expect(chosen).toEqual([photorealStyle.id]);
+  });
+
+  it('marks only the active style button', () => {
+    const root = document.createElement('div');
+    const hud = buildHud(root, '42', noop);
+    hud.setStyle(photorealStyle);
+    const active = [...root.querySelectorAll('.hud-styles button.active')];
+    expect(active.map((b) => b.textContent)).toEqual([photorealStyle.label]);
   });
 
   it('winds toggle fires onWinds when available', () => {

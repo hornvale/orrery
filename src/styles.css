@@ -26,7 +26,7 @@ canvas { display: block; }
 .hud-lens-panel { top: 64px; left: 12px; flex-direction: column; align-items: flex-start;
   max-height: calc(100vh - 180px); overflow-y: auto; max-width: 220px; }
 .hud-lens-panel > *:first-child { margin-top: 0; }
-.hud-lenses { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.35rem; }
+.hud-lenses, .hud-styles { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.35rem; }
 .hud-legend { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.35rem; }
 .hud-legend-row { display: flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; }
 .hud-swatch { width: 0.75rem; height: 0.75rem; border-radius: 2px; border: 1px solid #2a3350; flex: none; }

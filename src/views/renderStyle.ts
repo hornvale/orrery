@@ -55,7 +55,7 @@ export class StylePipeline {
   setStyle(style: RenderStyle): void {
     // Dispose the old effect passes' targets before dropping them.
     for (const p of this.composer.passes) {
-      if (p !== this.renderPass) (p as { dispose?: () => void }).dispose?.();
+      if (p !== this.renderPass) p.dispose();
     }
     this.composer.passes = [this.renderPass];
     for (const p of style.passes(this.tiles)) this.composer.addPass(p);
