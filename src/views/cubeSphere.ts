@@ -159,8 +159,18 @@ export function globeLodLevel(distance: number, radius: number): number {
  * levels, where the freeze-spin toggle holds the set still to inspect. */
 export const LOD_SPLIT_FACTOR = 1.5;
 /** Deepest CDLOD level — only tiles right under the camera reach it, so it can
- * sit deeper than the uniform cap without a whole-globe triangle blow-up. */
-export const LOD_CDLOD_MAX_LEVEL = 4;
+ * sit deeper than the uniform cap without a whole-globe triangle blow-up.
+ * Raised 4→6 (The Massing, Task 6): voxel blocks read coarse at the old
+ * ceiling once the camera could get close (Task 6 also lowers the globe
+ * camera's `minDistance`/near-clip in `main.ts` so this depth is actually
+ * reachable) — reaching level 6 needs the camera within
+ * `LOD_SPLIT_FACTOR × tileEdgeLenM(5, radius)` of a tile centre (≈7.4% of
+ * the globe radius). The region-tile path (`REGION_MIN_LEVEL` in
+ * `globe.ts`, worker-served via `catalog.sceneTilesRegion`) already serves
+ * real higher-res terrain at any requested level/sample count, so it
+ * engages at level 6 with no changes of its own. Task 7's perf/visual pass
+ * may retune this further. */
+export const LOD_CDLOD_MAX_LEVEL = 6;
 
 /** Merge (un-split) hysteresis: a tile that is currently split into its four
  * children only merges back once the camera drifts out past this multiple

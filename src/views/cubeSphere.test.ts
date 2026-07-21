@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  LOD_MAX_LEVEL, LOD_MERGE_FACTOR, LOD_MIN_LEVEL, LOD_SPLIT_FACTOR, TILE_QUADS,
+  LOD_CDLOD_MAX_LEVEL, LOD_MAX_LEVEL, LOD_MERGE_FACTOR, LOD_MIN_LEVEL, LOD_SPLIT_FACTOR, TILE_QUADS,
   children, containingTile, faceUnit,
   globeLodLevel, maxLevel, parent, selectTiles, splitAncestorKeys,
   tileCenterUnit, tileEdgeLenM, tileGrid, tileKey, unitLatLon, type TileId, type V3,
@@ -127,6 +127,23 @@ describe('selectTiles (CDLOD)', () => {
   it('never exceeds maxLevel', () => {
     const t = selectTiles([r * 1.001, 0, 0], r, 3, 2);
     expect(Math.max(...t.map((x) => x.level))).toBeLessThanOrEqual(2);
+  });
+
+  it('LOD_CDLOD_MAX_LEVEL is pinned at the deeper ceiling (The Massing, Task 6)', () => {
+    // Pinned so a future change to the ceiling is deliberate, not incidental.
+    expect(LOD_CDLOD_MAX_LEVEL).toBe(6);
+  });
+
+  it('at a low camera altitude, the default ceiling reaches a tile deeper than the old cap (4)', () => {
+    // r * 1.02 is well within the CDLOD split threshold all the way down to
+    // level 6 (1.5 × the level-5 edge length, ≈ 7.4% of r, vs. this camera's
+    // ~2% altitude) — this is the deeper reach Task 6 unlocks: the old
+    // LOD_CDLOD_MAX_LEVEL=4 ceiling could never be reached at any altitude,
+    // and the old minDistance never let the camera get this close anyway.
+    const near = selectTiles([r * 1.02, 0, 0], r);
+    const maxReached = Math.max(...near.map((t) => t.level));
+    expect(maxReached).toBeGreaterThan(4);
+    expect(maxReached).toBeLessThanOrEqual(LOD_CDLOD_MAX_LEVEL);
   });
 });
 

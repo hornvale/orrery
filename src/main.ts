@@ -17,8 +17,16 @@ import { eclipseInfo, moonInfo, namedTarget, siteInfo, starInfo, worldInfo } fro
 import { clockToDay } from './time/clock';
 import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
 import { createSystemView } from './views/system';
-import { createGlobeView, RELIEF_EXAGGERATION, seasonalSpinZ, type GlobeView } from './views/globe';
-import { containingTile, TILE_QUADS, tileKey, type TileId } from './views/cubeSphere';
+import { createGlobeView, GLOBE_RADIUS, RELIEF_EXAGGERATION, seasonalSpinZ, type GlobeView } from './views/globe';
+import {
+  containingTile,
+  LOD_CDLOD_MAX_LEVEL,
+  LOD_SPLIT_FACTOR,
+  TILE_QUADS,
+  tileEdgeLenM,
+  tileKey,
+  type TileId,
+} from './views/cubeSphere';
 import { createMapView } from './views/mapView';
 import { lensById, naturalLens } from './views/lens';
 import { StylePipeline, styleById } from './views/renderStyle';
@@ -229,7 +237,20 @@ function mountViews(
   const globeView = createGlobeView(tiles, system, eclipses.events, requestRegion);
   globeScene.add(globeView.object3d);
   const globeReach = 6;
-  const globeCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, globeReach * 20);
+  /** Near-clip for the globe camera — lowered alongside `globeControls.minDistance`
+   * below (The Massing, Task 6): reaching the deeper CDLOD tiles
+   * (`LOD_CDLOD_MAX_LEVEL`) means letting the camera get close enough that the
+   * old 0.05 near-clip would start slicing into the surface it's approaching.
+   * Comfortably under the new minimum altitude (`GLOBE_CLOSE_ALTITUDE`, ~3.7%
+   * of `GLOBE_RADIUS`, computed below) even before the usual grazing-angle
+   * slack. */
+  const GLOBE_NEAR = 0.02;
+  const globeCamera = new THREE.PerspectiveCamera(
+    50,
+    window.innerWidth / window.innerHeight,
+    GLOBE_NEAR,
+    globeReach * 20,
+  );
   globeCamera.position.set(0, globeReach * 0.4, globeReach);
   globeCamera.lookAt(0, 0, 0);
 
@@ -251,7 +272,17 @@ function mountViews(
   // is passed, so the arcball gizmo rings are not drawn — a clean globe.
   const globeControls = new ArcballControls(globeCamera, globeCanvas);
   globeControls.enablePan = false;
-  globeControls.minDistance = globeReach * 0.38; // just above the 60x relief
+  // How close the arcball may dolly toward the surface (The Massing, Task 6):
+  // `selectTiles` only recurses to `LOD_CDLOD_MAX_LEVEL` once the camera is
+  // within `LOD_SPLIT_FACTOR × tileEdgeLenM(LOD_CDLOD_MAX_LEVEL - 1, ...)` of a
+  // tile centre — half that margin comfortably clears the threshold (so the
+  // deepest tiles are actually reachable, not just theoretically selectable)
+  // while still clearing the ~8.5% schematic relief bump most places (see
+  // `clouds.ts`'s `SHELL_HEADROOM` comment for that estimate). The very
+  // tallest exotic peaks may still graze the camera at minimum distance —
+  // Task 7's perf/visual pass is where that trade gets revisited.
+  const GLOBE_CLOSE_ALTITUDE = LOD_SPLIT_FACTOR * tileEdgeLenM(LOD_CDLOD_MAX_LEVEL - 1, GLOBE_RADIUS) * 0.5;
+  globeControls.minDistance = GLOBE_RADIUS + GLOBE_CLOSE_ALTITUDE;
   globeControls.maxDistance = globeReach * 2;
 
   // The render-STYLE pipeline (The Idioms, Task 1): screen-space skins over
