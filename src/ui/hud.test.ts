@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildHud, SPEED_STEPS } from './hud';
+import { buildHud, GLOBE_STYLES, SPEED_STEPS } from './hud';
 import { LENSES, moistureLens } from '../views/lens';
 import { photorealStyle } from '../views/renderStyle';
 import type { EclipseEvent } from '../sim/scene';
 import type { ZoomTarget } from '../views/zoom';
+import type { GlobeStyle } from '../views/globe';
 
 describe('buildHud interactions', () => {
-  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onView(_: ZoomTarget) {}, onScrub(_: number) {}, onLens(_: string) {}, onStyle(_: string) {}, onWinds() {}, onCurrents() {}, onClouds() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onDayHold() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
+  const noop = { onPlayPause() {}, onSpeed(_: number) {}, onTrueScale() {}, onReroll() {}, onShare() {}, onDateJump(_: number, __: number) {}, onView(_: ZoomTarget) {}, onScrub(_: number) {}, onLens(_: string) {}, onStyle(_: string) {}, onGlobeStyle(_: GlobeStyle) {}, onWinds() {}, onCurrents() {}, onClouds() {}, onEclipseMark(_: EclipseEvent) {}, onFreezeSpin() {}, onDayHold() {}, onWaves() {}, onGlint() {}, onNightFill() {} };
 
   it('share button fires onShare and flashes', () => {
     const root = document.createElement('div');
@@ -186,6 +187,32 @@ describe('buildHud interactions', () => {
     hud.setStyle(photorealStyle);
     const active = [...root.querySelectorAll('.hud-styles button.active')];
     expect(active.map((b) => b.textContent)).toEqual([photorealStyle.label]);
+  });
+
+  // The Massing's globe geometry/shading style (`GlobeStyle`) picker — a
+  // dropdown, mirroring `view-select`'s construction, kept distinctly named
+  // (`onGlobeStyle`/`setGlobeStyle`/`hud-style`) from the unrelated
+  // post-process `RenderStyle` axis's `onStyle`/`setStyle`/`hud-styles` above.
+  it('globe-style dropdown offers the four styles and reports the chosen id', () => {
+    const root = document.createElement('div');
+    const chosen: GlobeStyle[] = [];
+    buildHud(root, '42', { ...noop, onGlobeStyle: (id: GlobeStyle) => { chosen.push(id); } });
+    const select = root.querySelector('select[name="style-select"]') as HTMLSelectElement;
+    const values = [...select.options].map((o) => o.value);
+    expect(values).toEqual(GLOBE_STYLES.map((s) => s.id));
+    select.value = 'voxel';
+    select.dispatchEvent(new Event('change'));
+    expect(chosen).toEqual(['voxel']);
+  });
+
+  it('setGlobeStyle reflects the current style without firing onGlobeStyle', () => {
+    const root = document.createElement('div');
+    let calls = 0;
+    const hud = buildHud(root, '42', { ...noop, onGlobeStyle: () => { calls++; } });
+    const select = root.querySelector('select[name="style-select"]') as HTMLSelectElement;
+    hud.setGlobeStyle('voxel');
+    expect(select.value).toBe('voxel');
+    expect(calls).toBe(0);
   });
 
   it('winds toggle fires onWinds when available', () => {

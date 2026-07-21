@@ -1,8 +1,21 @@
 import { LENSES, type Lens, type LegendEntry } from '../views/lens';
 import { STYLES, type RenderStyle } from '../views/renderStyle';
+import type { GlobeStyle } from '../views/globe';
 import type { EclipseEvent } from '../sim/scene';
 import { eclipseMarkPositions } from './eclipseMarks';
 import type { ZoomTarget } from '../views/zoom';
+
+/** The Massing's globe geometry/shading styles, offered on the HUD's
+ * `style-select` dropdown — one entry per `GlobeStyle` variant, in the same
+ * order as the type union. A distinct axis from `STYLES`/`RenderStyle`
+ * above (that one is a post-process pipeline over the rendered frame; this
+ * one picks the globe mesh's own geometry and shading). */
+export const GLOBE_STYLES: Array<{ id: GlobeStyle; label: string }> = [
+  { id: 'smooth', label: 'smooth' },
+  { id: 'voxel', label: 'voxel' },
+  { id: 'terraced', label: 'terraced' },
+  { id: 'faceted', label: 'faceted' },
+];
 
 export const SPEED_STEPS: Array<{ label: string; mult: number }> = [
   { label: '1×', mult: 1 },
@@ -30,6 +43,11 @@ export interface HudCallbacks {
   onLens(id: string): void;
   /** The viewer picked a render style (by `RenderStyle.id`). */
   onStyle(id: string): void;
+  /** The viewer picked a globe geometry/shading style (The Massing's
+   * `GlobeStyle`) from the HUD's style-select dropdown. A distinctly named
+   * control from `onStyle` above — that one is the unrelated post-process
+   * `RenderStyle` axis; this one is the globe mesh's own geometry/shading. */
+  onGlobeStyle(id: GlobeStyle): void;
   /** The viewer toggled the prevailing-wind overlay. Never fires while the
    * control is disabled (no circulation bands) — the browser's own
    * `disabled` attribute blocks the click before this callback is reached. */
@@ -87,6 +105,11 @@ export interface Hud {
   setLens(lens: Lens, legend: LegendEntry[]): void;
   /** Show `style` as active: mark its button. */
   setStyle(style: RenderStyle): void;
+  /** Reflects `style` on the globe-style select, without firing
+   * `onGlobeStyle` (the controller driving the style, not the viewer picking
+   * one) — mirrors `setView`'s contract. Distinct from `setStyle` above
+   * (the unrelated post-process `RenderStyle` axis). */
+  setGlobeStyle(style: GlobeStyle): void;
   /** Enables or disables the winds toggle. When unavailable, `reason` names
    * why (a tidally locked world has no circulation bands) — shown next to
    * the disabled button rather than the control silently vanishing. */
@@ -265,6 +288,24 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
     styleRow.appendChild(b);
   }
 
+  // The Massing's globe geometry/shading style picker: a `<select>` (not a
+  // button row like the lens/RenderStyle rows above) — a dropdown scales to
+  // a 5th variant without crowding the panel. Construction mirrors
+  // `viewSelect` above (options built from a list, `change` reports the
+  // chosen id). Shown alongside the lens/style rows with no extra per-view
+  // show/hide: the HUD has no existing mechanism gating those rows by view,
+  // so this control doesn't invent one either — it is visible in every view,
+  // same as its neighbors.
+  const globeStyleSelect = el('select', 'hud-style');
+  globeStyleSelect.name = 'style-select';
+  for (const gs of GLOBE_STYLES) {
+    const o = document.createElement('option');
+    o.value = gs.id;
+    o.textContent = gs.label;
+    globeStyleSelect.appendChild(o);
+  }
+  globeStyleSelect.addEventListener('change', () => cb.onGlobeStyle(globeStyleSelect.value as GlobeStyle));
+
   // The prevailing-wind overlay: an overlay, not a lens (it composes with
   // whichever lens is active), but the lens panel is the one HUD container
   // that already carries the base `hud` positioning class — a loose element
@@ -315,7 +356,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   oceanRow.append(wavesToggle, glintToggle, nightFillToggle);
 
   const lensPanel = el('div', 'hud hud-lens-panel');
-  lensPanel.append(lensRow, styleRow, legendBox, lensCaption, windsRow, currentsRow, cloudsRow, oceanRow);
+  lensPanel.append(lensRow, styleRow, globeStyleSelect, legendBox, lensCaption, windsRow, currentsRow, cloudsRow, oceanRow);
 
   root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
@@ -356,6 +397,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
     setStyle(style) {
       for (const [id, b] of styleButtons) b.classList.toggle('active', id === style.id);
     },
+    setGlobeStyle: (style) => { globeStyleSelect.value = style; },
     setWindsAvailable: (available, reason) => {
       (windsToggle as HTMLButtonElement).disabled = !available;
       windsReason.textContent = available ? '' : (reason ?? '');
