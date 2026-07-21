@@ -16,8 +16,16 @@
  * the flat `shallows` tone (its innermost `FOAM_BAND_PX` dithering between
  * `foam`/`shallows` instead) rather than the open-ocean depth dither —
  * these coastline tones WIN over the base fill/dither wherever they apply.
- * Biome-boundary outlines (Task 4) layer on top of this same fill next —
- * none of these tasks change which class a node resolves to, only how it's
+ * Task 4 (this task) adds INTERNAL biome-boundary outlines: a land pixel
+ * whose nearest node's biome differs from a land neighbor's within 1px
+ * (`hasBiomeBoundaryWithin1`, gated by `OVERWORLD_OUTLINE_BIOME`) also takes
+ * the flat `outline` tone — the "drawn map" tell of a line between two
+ * adjacent biomes, not just at the shore. It reuses Task 3's `oceanMask`
+ * purely to exclude water neighbors (a land/water edge is Task 3's outline,
+ * never this one — biome is only ever compared between two LAND pixels) and
+ * is checked after the coastline outline, so the coastline still wins at
+ * the coast (moot in practice since both paint the same `outline` tone).
+ * None of these tasks change which class a node resolves to, only how it's
  * painted, so the class resolution below mirrors `pixelBase.ts`'s
  * `pixelColorFor` exactly (same priority: inland water, then ocean depth,
  * then biome name) rather than inventing a second read of the same data.
@@ -262,6 +270,62 @@ function hasOceanNeighborWithin1(oceanMask: Uint8Array, dim: number, px: number,
   return false;
 }
 
+/** Gate for the internal biome-boundary outline (Task 4) — the thin
+ * `outline` line painted where two adjacent LAND pixels resolve to
+ * different biomes, distinct from Task 3's land/water coastline outline
+ * (always on). Default `true`; exists so the campaign's mandatory visual
+ * pass (Task 5) can dial the "drawn map" tell off or re-tune it without
+ * touching the coastline logic. */
+export const OVERWORLD_OUTLINE_BIOME = true;
+
+/** This LAND output pixel's nearest node's resolved biome NAME (via
+ * `biomeLegend`), or `undefined` if it isn't resolvable to a biome (ocean,
+ * inland water, or a node with no biome datum) — used only to COMPARE two
+ * land pixels for the biome-boundary outline, never to pick a paint tone
+ * (that's `toneForNode`'s job). Comparing the resolved NAME rather than the
+ * raw `region.biome` index matters: two distinct legend indices can name the
+ * same biome, and since `toneForNode` paints by name, an index-only compare
+ * could draw a boundary line between two pixels that render identically —
+ * the opposite of the "drawn map" tell this task adds. An unresolvable
+ * neighbor just can't trigger a boundary rather than being coerced to some
+ * sentinel value. */
+function biomeNameFor(region: RegionScene, idx: number): string | undefined {
+  return region.biomeLegend?.[region.biome?.[idx] ?? -1];
+}
+
+/** Whether output pixel `(px, py)` — already known to be LAND — sits on an
+ * internal biome/biome boundary: some neighbor within a Chebyshev distance
+ * of 1 is ALSO land (per `oceanMask`) but resolves to a different biome
+ * name. Land/water boundaries are Task 3's outline, not this one, so a
+ * water neighbor is skipped entirely here — comparing biome only ever
+ * happens between two land pixels, the same land/land-only guard the task
+ * brief calls for. Out-of-range neighbors (the texture's own edge) are
+ * skipped, matching `hasOceanNeighborWithin1`. */
+function hasBiomeBoundaryWithin1(
+  region: RegionScene,
+  nodeIdx: Int32Array,
+  oceanMask: Uint8Array,
+  dim: number,
+  px: number,
+  py: number,
+): boolean {
+  const ownBiome = biomeNameFor(region, nodeIdx[py * dim + px]!);
+  if (ownBiome === undefined) return false;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = px + dx;
+      const ny = py + dy;
+      if (nx < 0 || nx >= dim || ny < 0 || ny >= dim) continue;
+      const ni = ny * dim + nx;
+      if (oceanMask[ni] === 1) continue; // land/water is Task 3's outline, not this one
+      const neighborBiome = biomeNameFor(region, nodeIdx[ni]!);
+      if (neighborBiome !== undefined && neighborBiome !== ownBiome) return true;
+    }
+  }
+  return false;
+}
+
 /** The Chebyshev distance (in output pixels) from a WATER pixel `(px, py)`
  * to the nearest LAND pixel, checked ring-by-ring out to `maxK`, or
  * `undefined` if no land lies within `maxK`. Each ring `k` is only the
@@ -358,6 +422,8 @@ export function overworldRGBA(region: RegionScene, dim: number): Uint8Array {
           tone = toneForNode(region, idx, px, py);
         }
       } else if (hasOceanNeighborWithin1(oceanMask, dim, px, py)) {
+        tone = OVERWORLD_PALETTE.outline;
+      } else if (OVERWORLD_OUTLINE_BIOME && hasBiomeBoundaryWithin1(region, nodeIdx, oceanMask, dim, px, py)) {
         tone = OVERWORLD_PALETTE.outline;
       } else {
         tone = toneForNode(region, idx, px, py);

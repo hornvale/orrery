@@ -149,6 +149,53 @@ function columnContains(buf: Uint8Array, dim: number, x: number, tone: readonly 
   return false;
 }
 
+/** An 8x8-node region (samples=7), all LAND (no ocean): the left half of
+ * node columns (0-3) is one biome, the right half (4-7) is a second biome —
+ * a clean vertical biome/biome boundary with no water anywhere, isolating
+ * Task 4's internal biome-boundary outline from Task 3's land/water
+ * coastline outline. Mirrors `splitRegion`'s shape (same node grid, same
+ * boundary math) so the boundary column lands at the same output pixel
+ * (`boundaryCol = 16` at `dim = 32`). */
+function splitBiomeRegion(leftBiome = 'desert', rightBiome = 'temperate-forest'): RegionScene {
+  const samples = 7;
+  const nodesPerSide = samples + 1; // 8
+  const n = nodesPerSide * nodesPerSide; // 64
+  const elevation_m: number[] = [];
+  const biome: number[] = [];
+  for (let row = 0; row < nodesPerSide; row++) {
+    for (let col = 0; col < nodesPerSide; col++) {
+      const isLeft = col < nodesPerSide / 2;
+      elevation_m.push(400);
+      biome.push(isLeft ? 0 : 1);
+    }
+  }
+  return {
+    schema: 'scene/tiles-region/v1',
+    seed: 1,
+    face: 0,
+    level: 3,
+    ix: 0,
+    iy: 0,
+    samples,
+    sea_level_m: 0,
+    season_period_days: 360,
+    circulationBands: 3,
+    biomeLegend: [leftBiome, rightBiome],
+    elevation_m,
+    ocean: Array.from({ length: n }, () => false),
+    biome,
+    plate: Array.from({ length: n }, () => 0),
+    unrest: Array.from({ length: n }, () => 0),
+    t_mean_c: Array.from({ length: n }, () => 10),
+    t_swing_c: Array.from({ length: n }, () => 5),
+    moisture: Array.from({ length: n }, () => 0.5),
+    water: Array.from({ length: n }, () => 0),
+    waterLegend: [],
+    drainage: Array.from({ length: n }, () => 0),
+    waterfalls: [],
+  } as unknown as RegionScene;
+}
+
 describe('overworldRGBA — crafted coastlines', () => {
   // splitRegion's node grid is 8x8 (samples=7); at dim=32 the ocean/land
   // node-column boundary (col 3 vs col 4) falls at output column 16 — the
@@ -286,5 +333,65 @@ describe('overworldRGBA — within-biome Bayer dithering', () => {
     expect(tones.length).toBe(2);
     expect(tones).toContainEqual(desert.light);
     expect(tones).toContainEqual(desert.dark);
+  });
+});
+
+describe('overworldRGBA — biome-boundary outlines', () => {
+  // splitBiomeRegion's node grid is 8x8 (samples=7); at dim=32 the
+  // desert/forest node-column boundary (col 3 vs col 4) falls at output
+  // column 16, same as splitRegion's land/ocean boundary.
+  const dim = 32;
+  const boundaryCol = 16;
+
+  test('the biome/biome boundary column carries the outline tone', () => {
+    const region = splitBiomeRegion();
+    const buf = overworldRGBA(region, dim);
+    expect(columnContains(buf, dim, boundaryCol, OVERWORLD_PALETTE.outline)).toBe(true);
+  });
+
+  test('desert interior, away from the boundary, is never painted with the outline tone', () => {
+    const region = splitBiomeRegion();
+    const buf = overworldRGBA(region, dim);
+    const desertInteriorCol = boundaryCol - 1 - 2; // safely past the boundary column
+    for (let y = 0; y < dim; y++) {
+      expect(pixelAt(buf, dim, desertInteriorCol, y)).not.toEqual(OVERWORLD_PALETTE.outline);
+    }
+  });
+
+  test('forest interior, away from the boundary, is never painted with the outline tone', () => {
+    const region = splitBiomeRegion();
+    const buf = overworldRGBA(region, dim);
+    const forestInteriorCol = boundaryCol + 1 + 2; // safely past the boundary column
+    for (let y = 0; y < dim; y++) {
+      expect(pixelAt(buf, dim, forestInteriorCol, y)).not.toEqual(OVERWORLD_PALETTE.outline);
+    }
+  });
+
+  test('interiors show their own biome tones, not stray colors', () => {
+    const region = splitBiomeRegion();
+    const buf = overworldRGBA(region, dim);
+    const desert = OVERWORLD_PALETTE.biome['desert']!;
+    const forest = OVERWORLD_PALETTE.biome['temperate-forest']!;
+    const desertInteriorCol = boundaryCol - 1 - 2;
+    const forestInteriorCol = boundaryCol + 1 + 2;
+    for (let y = 0; y < dim; y++) {
+      expect([desert.light, desert.dark]).toContainEqual(pixelAt(buf, dim, desertInteriorCol, y));
+      expect([forest.light, forest.dark]).toContainEqual(pixelAt(buf, dim, forestInteriorCol, y));
+    }
+  });
+
+  test('a single-biome land region never paints the outline tone', () => {
+    const region = splitBiomeRegion('desert', 'desert');
+    const buf = overworldRGBA(region, dim);
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        expect(pixelAt(buf, dim, x, y)).not.toEqual(OVERWORLD_PALETTE.outline);
+      }
+    }
+  });
+
+  test('is deterministic — identical output for identical input', () => {
+    const region = splitBiomeRegion();
+    expect(overworldRGBA(region, dim)).toEqual(overworldRGBA(region, dim));
   });
 });
