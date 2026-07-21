@@ -35,19 +35,18 @@ const SYMBOL_CLEARANCE = 1.01;
 
 /** Peak sprite scale bounds, in units of `GLOBE_RADIUS` — a tall peak reads
  * bigger than a modest one, clamped so an extreme elevation never dwarfs the
- * globe. Doubled from the original (0.02 / 0.08) — the visual pass found
- * peaks too faint to read at far/mid zoom; the elevation-proportional term
- * is unchanged. */
-const PEAK_SCALE_MIN = 0.04;
+ * globe. Sized up over the visual pass (the original 0.02–0.08 were too small
+ * to read); the elevation-proportional term is unchanged. */
+const PEAK_SCALE_MIN = 0.055;
 const PEAK_SCALE_ELEVATION_FACTOR = 0.00001;
 const PEAK_SCALE_MAX = 0.16;
 
 /** Tree sprite scale, in units of `GLOBE_RADIUS`. */
-const TREE_SCALE = 0.018;
+const TREE_SCALE = 0.035;
 
 /** Wave-mark sprite scale, in units of `GLOBE_RADIUS` — modest and fixed
  * (unlike peaks, waves don't carry a magnitude to scale against). */
-const WAVE_SCALE = 0.02;
+const WAVE_SCALE = 0.06;
 
 /** Wave marks float closer to the ocean surface than the
  * `SYMBOL_CLEARANCE`-lofted peak/tree sprites — they're a texture accent, not
@@ -66,7 +65,7 @@ const TREE_JITTER_DEG = 1.5;
  * tests here run headless with no canvas 2D renderer, same guard as
  * `../globe`'s `buildLabelSprite`). */
 function buildSymbolMaterial(draw: (ctx: CanvasRenderingContext2D, size: number) => void, fallbackColor: number): THREE.SpriteMaterial {
-  const size = 32;
+  const size = 64;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -119,19 +118,23 @@ function buildTreeMaterial(): THREE.SpriteMaterial {
  * in light cyan, matching the pixel-art-RPG convention for open sea. */
 function buildWaveMaterial(): THREE.SpriteMaterial {
   return buildSymbolMaterial((ctx, size) => {
-    ctx.strokeStyle = 'rgba(200,235,245,0.9)';
-    ctx.lineWidth = size * 0.08;
     ctx.lineCap = 'round';
-    const drawWave = (yBase: number): void => {
+    const drawWave = (yBase: number, style: string, width: number): void => {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = width;
       ctx.beginPath();
-      ctx.moveTo(size * 0.1, yBase);
-      ctx.quadraticCurveTo(size * 0.3, yBase - size * 0.08, size * 0.5, yBase);
-      ctx.quadraticCurveTo(size * 0.7, yBase + size * 0.08, size * 0.9, yBase);
+      ctx.moveTo(size * 0.08, yBase);
+      ctx.quadraticCurveTo(size * 0.3, yBase - size * 0.1, size * 0.5, yBase);
+      ctx.quadraticCurveTo(size * 0.7, yBase + size * 0.1, size * 0.92, yBase);
       ctx.stroke();
     };
-    drawWave(size * 0.4);
-    drawWave(size * 0.62);
-  }, 0xc8ebf5);
+    // A darker halo first, then a bright stroke on top — reads on both the
+    // light shallows and the deep ocean.
+    for (const y of [size * 0.4, size * 0.64]) {
+      drawWave(y, 'rgba(20,52,96,0.55)', size * 0.22);
+      drawWave(y, 'rgba(238,250,255,0.95)', size * 0.12);
+    }
+  }, 0xe8f6ff);
 }
 
 /** A symbol's class, tagged onto its sprite's `userData.kind` so tests (and
