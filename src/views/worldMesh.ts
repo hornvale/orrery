@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import type { RegionScene, TilesScene } from '../sim/scene';
 import type { RGB } from './lens';
 import { TILE_QUADS, faceUnit, tileGrid, unitFromLatLon, unitLatLon, type TileId } from './cubeSphere';
-import { regionPatchUnits, sampleRegionElevationBilinear } from './regionPatch';
+import { nearestRegionNodeIndex, regionPatchUnits, sampleRegionElevationBilinear } from './regionPatch';
 
 /** Reference body radius (Earth's, meters) used only to turn raw elevation
  * meters into a *fraction* of a rendered radius before exaggerating — not a
@@ -185,25 +185,66 @@ export function buildRegionTileGeometry(
  * read as a riser, light enough that the cell's own hue stays recognizable. */
 export const VOXEL_CLIFF_DARKEN = 0.75;
 
-/** Build one cube-sphere tile's geometry as a `cellsPerEdge × cellsPerEdge`
- * grid of extruded, flat-topped blocks — the Voxel style's base-tile
- * geometry, and the campaign's keystone build. Each cell samples its own
- * BANDED elevation (`quantizeBands`, reusing the Terraced style's banding)
- * and renders as a flat-shaded, flat-colored top face at that band's radius;
+/** Per-vertex bookkeeping a voxel builder produces alongside its geometry —
+ * what the Voxel style's living-lens repaint needs to recolor an
+ * already-built block mesh without a full rebuild (Task 4). `index[v]` is
+ * the data-source index `colorAt` was called with to bake vertex `v`'s
+ * color (a cell's top face AND all its wall vertices share one `index` —
+ * the cell's own, since a voxel cell is flat-colored). `darken[v]` is the
+ * flat multiplier repaint applies to the freshly recomputed lens color
+ * (1 for a top vertex, `VOXEL_CLIFF_DARKEN` for a wall) — mirroring the
+ * darkening this same builder bakes into a wall's color at build time, so a
+ * repainted wall stays exactly as dark relative to its cell as the
+ * originally built one. */
+export interface VoxelVertexIndex {
+  /** Data-source index per vertex — length equals the geometry's vertex
+   * count (`position.count`). */
+  index: Int32Array;
+  /** Flat color multiplier per vertex — same length as `index`. */
+  darken: Float32Array;
+}
+
+/** A voxel builder's full result: the renderable geometry plus the
+ * `VoxelVertexIndex` bookkeeping `globe.ts`'s repaint needs. The plain
+ * `buildVoxelTileGeometry`/`buildVoxelRegionTileGeometry` (below) return
+ * just `.geom` — their pre-existing signature, unchanged, for callers (this
+ * file's own tests) that only want a mesh; the `...Indexed` variants return
+ * the full result. */
+export interface VoxelBuildResult extends VoxelVertexIndex {
+  /** The non-indexed, flat-shaded `position`/`normal`/`color` geometry. */
+  geom: THREE.BufferGeometry;
+}
+
+/** Build one cube-face tile's geometry (base OR region — see below) as a
+ * `cellsPerEdge × cellsPerEdge` grid of extruded, flat-topped blocks — the
+ * Voxel style's shared keystone build. Each cell samples its own BANDED
+ * elevation (`quantizeBands`, reusing the Terraced style's banding) and
+ * renders as a flat-shaded, flat-colored top face at that band's radius;
  * wherever an edge-neighbor's banded radius is LOWER, a vertical wall (the
  * "cliff") drops from this cell's radius down to the neighbor's, darkened by
  * `VOXEL_CLIFF_DARKEN`. That wall is what makes this read as blocks stacked
  * on the terrain rather than merely a banded (but still smooth) surface —
  * a voxel build with no walls is a failed voxel.
  *
+ * Generalized over the cube-face address (`face`/`level`/`ix`/`iy`) and the
+ * elevation/index sampling (`sampleElevation`/`indexAt`) so ONE algorithm
+ * serves both the tiles-export base tile (`buildVoxelTileGeometryIndexed`,
+ * sampling `sampleElevationBilinear`/`tileIndex`) and a `RegionScene` patch
+ * (`buildVoxelRegionTileGeometryIndexed`, sampling
+ * `sampleRegionElevationBilinear`/`nearestRegionNodeIndex`) — the wall/top
+ * emission logic (the actual voxel algorithm) is written exactly once.
+ *
  * Algorithm:
- * 1. Sub-sample the tile into `cellsPerEdge`² cells. Each cell's center
- *    (lat, lon) comes from the SAME cube-sphere mapping `tileGrid` uses
- *    (`faceUnit`/`unitLatLon`), just parameterized by `cellsPerEdge` instead
- *    of `TILE_QUADS` — so corners land exactly on the sphere, not on an
- *    interpolation of the `TILE_QUADS` lattice. `cellsPerEdge` is
+ * 1. Sub-sample the face address into `cellsPerEdge`² cells. Each cell's
+ *    center (lat, lon) comes from the SAME cube-sphere mapping `tileGrid`
+ *    uses (`faceUnit`/`unitLatLon`), just parameterized by `cellsPerEdge`
+ *    instead of `TILE_QUADS` — so corners land exactly on the sphere, not on
+ *    an interpolation of the `TILE_QUADS` lattice. `cellsPerEdge` is
  *    independent of and typically far coarser than that lattice (voxels
- *    read chunky by design — 48-96 is a reasonable range).
+ *    read chunky by design — 48-96 is a reasonable range) and, for a region
+ *    patch, independent of the patch's own `samples` node count too (a
+ *    region always arrives at a fixed `samples` — see `globe.ts` — decoupled
+ *    from the voxel granularity).
  * 2. Top face: the cell's four corners at its own banded radius, two
  *    triangles, one flat per-cell normal (the corner average, i.e. the
  *    outward direction at the cell's own center) and one flat per-cell
@@ -216,8 +257,7 @@ export const VOXEL_CLIFF_DARKEN = 0.75;
  *    that neighbor's value — i.e. no wall is built at a tile boundary. A
  *    real adjacent tile's true edge cell can differ by up to one band, so
  *    that boundary can show a seam at most one `bandM` tall; closing it
- *    needs the neighbor tile's own data (multi-tile/region wiring — not
- *    this task).
+ *    needs the neighbor tile's own data.
  * 4. No skirt: the walls seal the silhouette on their own.
  *
  * Built in two passes over the `cellsPerEdge`² cells — every cell's top
@@ -226,26 +266,31 @@ export const VOXEL_CLIFF_DARKEN = 0.75;
  * layout stays simple and predictable (and cheap to test) rather than
  * interleaving a cell's top with its own walls. Non-indexed (flat shading
  * needs unshared per-triangle vertices) with `position`/`normal`/`color`
- * attributes; typed arrays are sized up front from the algorithm's own
- * worst case (`cells × (6 top + 4 edges × 6 wall)` vertices) and trimmed
- * with `subarray` to the vertex count actually used — no push()-driven
+ * attributes (plus the parallel `index`/`darken` bookkeeping above); typed
+ * arrays are sized up front from the algorithm's own worst case
+ * (`cells × (6 top + 4 edges × 6 wall)` vertices) and trimmed with
+ * `subarray` to the vertex count actually used — no push()-driven
  * reallocation. */
-export function buildVoxelTileGeometry(
-  tiles: TilesScene,
-  tile: TileId,
+function buildVoxelBlocks(
+  face: number,
+  level: number,
+  ix: number,
+  iy: number,
+  N: number,
   radius: number,
   reliefScale: number,
+  bandM: number,
+  sampleElevation: (latDeg: number, lonDeg: number) => number,
+  indexAt: (latDeg: number, lonDeg: number) => number,
   colorAt: (i: number) => RGB,
-  opts: { cellsPerEdge: number; bandM: number },
-): THREE.BufferGeometry {
-  const { cellsPerEdge: N, bandM } = opts;
-  const scale = 1 << tile.level;
+): VoxelBuildResult {
+  const scale = 1 << level;
 
   // Face params for the (N+1)-wide corner lattice, denominated in N
   // (cellsPerEdge) rather than TILE_QUADS — otherwise the SAME dyadic
   // mapping `tileGrid`'s internal `param` helper uses.
-  const aAt = (col: number): number => -1 + (2 * (tile.ix + col / N)) / scale;
-  const bAt = (row: number): number => -1 + (2 * (tile.iy + row / N)) / scale;
+  const aAt = (col: number): number => -1 + (2 * (ix + col / N)) / scale;
+  const bAt = (row: number): number => -1 + (2 * (iy + row / N)) / scale;
 
   // Corner unit vectors, computed once: (N+1)×(N+1), row-major over row (b)
   // then col (a) — matching `tileGrid`'s own row/col convention.
@@ -256,7 +301,7 @@ export function buildVoxelTileGeometry(
   for (let row = 0; row <= N; row++) {
     const b = bAt(row);
     for (let col = 0; col <= N; col++) {
-      const [ux, uy, uz] = faceUnit(tile.face, aAt(col), b);
+      const [ux, uy, uz] = faceUnit(face, aAt(col), b);
       const k = row * cn + col;
       cornerX[k] = ux;
       cornerY[k] = uy;
@@ -268,22 +313,25 @@ export function buildVoxelTileGeometry(
     return [cornerX[k]!, cornerY[k]!, cornerZ[k]!];
   };
 
-  // Per-cell banded radius, color, and center unit vector, computed once
-  // (N×N) — the wall pass below reads a neighbor's radius without
-  // resampling elevation, and reuses the same cell's own center.
+  // Per-cell banded radius, color index, color, and center unit vector,
+  // computed once (N×N) — the wall pass below reads a neighbor's radius
+  // without resampling elevation, and reuses the same cell's own center.
   const cellRadius = new Float64Array(N * N);
   const cellCenter: [number, number, number][] = new Array(N * N);
+  const cellDataIdx = new Int32Array(N * N);
   const cellColor: RGB[] = new Array(N * N);
   for (let row = 0; row < N; row++) {
     for (let col = 0; col < N; col++) {
       const idx = row * N + col;
-      const u = faceUnit(tile.face, aAt(col + 0.5), bAt(row + 0.5));
+      const u = faceUnit(face, aAt(col + 0.5), bAt(row + 0.5));
       const { latDeg, lonDeg } = unitLatLon(u);
-      const elev = sampleElevationBilinear(tiles, latDeg, lonDeg);
+      const elev = sampleElevation(latDeg, lonDeg);
       const banded = quantizeBands(elev, bandM);
       cellRadius[idx] = radius * (1 + (reliefScale * banded) / REFERENCE_RADIUS_M);
       cellCenter[idx] = u;
-      cellColor[idx] = colorAt(tileIndex(tiles, latDeg, lonDeg));
+      const dataIdx = indexAt(latDeg, lonDeg);
+      cellDataIdx[idx] = dataIdx;
+      cellColor[idx] = colorAt(dataIdx);
     }
   }
   // A cell just outside [0, N) (the tile's own boundary) has no in-tile
@@ -296,12 +344,16 @@ export function buildVoxelTileGeometry(
   const pos = new Float32Array(maxVerts * 3);
   const nrm = new Float32Array(maxVerts * 3);
   const colArr = new Float32Array(maxVerts * 3);
+  const vertIndex = new Int32Array(maxVerts);
+  const vertDarken = new Float32Array(maxVerts);
   let vi = 0;
 
   const pushVertex = (
     p: readonly [number, number, number],
     n: readonly [number, number, number],
     rgb: RGB,
+    dataIdx: number,
+    darken: number,
   ): void => {
     const o = vi * 3;
     pos[o] = p[0];
@@ -313,6 +365,8 @@ export function buildVoxelTileGeometry(
     colArr[o] = rgb[0] / 255;
     colArr[o + 1] = rgb[1] / 255;
     colArr[o + 2] = rgb[2] / 255;
+    vertIndex[vi] = dataIdx;
+    vertDarken[vi] = darken;
     vi++;
   };
 
@@ -323,6 +377,7 @@ export function buildVoxelTileGeometry(
       const idx = row * N + col;
       const r = cellRadius[idx]!;
       const rgb = cellColor[idx]!;
+      const dataIdx = cellDataIdx[idx]!;
       const u00 = corner(row, col);
       const u10 = corner(row, col + 1);
       const u01 = corner(row + 1, col);
@@ -345,12 +400,12 @@ export function buildVoxelTileGeometry(
       const topNormal: [number, number, number] = [nx, ny, nz];
       // Same CCW-in-(a,b) winding as `buildGridGeometry` — outward on every
       // face without a per-face special case.
-      pushVertex(p00, topNormal, rgb);
-      pushVertex(p10, topNormal, rgb);
-      pushVertex(p11, topNormal, rgb);
-      pushVertex(p00, topNormal, rgb);
-      pushVertex(p11, topNormal, rgb);
-      pushVertex(p01, topNormal, rgb);
+      pushVertex(p00, topNormal, rgb, dataIdx, 1);
+      pushVertex(p10, topNormal, rgb, dataIdx, 1);
+      pushVertex(p11, topNormal, rgb, dataIdx, 1);
+      pushVertex(p00, topNormal, rgb, dataIdx, 1);
+      pushVertex(p11, topNormal, rgb, dataIdx, 1);
+      pushVertex(p01, topNormal, rgb, dataIdx, 1);
     }
   }
 
@@ -370,6 +425,7 @@ export function buildVoxelTileGeometry(
     rBot: number,
     center: readonly [number, number, number],
     rgb: RGB,
+    dataIdx: number,
   ): void => {
     const topA: [number, number, number] = [cA[0] * rTop, cA[1] * rTop, cA[2] * rTop];
     const topB: [number, number, number] = [cB[0] * rTop, cB[1] * rTop, cB[2] * rTop];
@@ -404,13 +460,13 @@ export function buildVoxelTileGeometry(
       // Swapping the last two vertices flips the triangle's winding (and so
       // its front-facing side) without recomputing the normal.
       if (!flip) {
-        pushVertex(v0, wallNormal, wallColor);
-        pushVertex(v1, wallNormal, wallColor);
-        pushVertex(v2, wallNormal, wallColor);
+        pushVertex(v0, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
+        pushVertex(v1, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
+        pushVertex(v2, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
       } else {
-        pushVertex(v0, wallNormal, wallColor);
-        pushVertex(v2, wallNormal, wallColor);
-        pushVertex(v1, wallNormal, wallColor);
+        pushVertex(v0, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
+        pushVertex(v2, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
+        pushVertex(v1, wallNormal, wallColor, dataIdx, VOXEL_CLIFF_DARKEN);
       }
     };
     pushTri(topA, topB, botA);
@@ -425,18 +481,19 @@ export function buildVoxelTileGeometry(
       const rOwn = cellRadius[idx]!;
       const rgb = cellColor[idx]!;
       const center = cellCenter[idx]!;
+      const dataIdx = cellDataIdx[idx]!;
       const u00 = corner(row, col);
       const u10 = corner(row, col + 1);
       const u01 = corner(row + 1, col);
       const u11 = corner(row + 1, col + 1);
       const rUp = neighborRadius(idx, row - 1, col);
-      if (rUp < rOwn) emitWall(u00, u10, rOwn, rUp, center, rgb);
+      if (rUp < rOwn) emitWall(u00, u10, rOwn, rUp, center, rgb, dataIdx);
       const rDown = neighborRadius(idx, row + 1, col);
-      if (rDown < rOwn) emitWall(u01, u11, rOwn, rDown, center, rgb);
+      if (rDown < rOwn) emitWall(u01, u11, rOwn, rDown, center, rgb, dataIdx);
       const rLeft = neighborRadius(idx, row, col - 1);
-      if (rLeft < rOwn) emitWall(u00, u01, rOwn, rLeft, center, rgb);
+      if (rLeft < rOwn) emitWall(u00, u01, rOwn, rLeft, center, rgb, dataIdx);
       const rRight = neighborRadius(idx, row, col + 1);
-      if (rRight < rOwn) emitWall(u10, u11, rOwn, rRight, center, rgb);
+      if (rRight < rOwn) emitWall(u10, u11, rOwn, rRight, center, rgb, dataIdx);
     }
   }
 
@@ -444,7 +501,99 @@ export function buildVoxelTileGeometry(
   geom.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, vi * 3), 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(nrm.subarray(0, vi * 3), 3));
   geom.setAttribute('color', new THREE.BufferAttribute(colArr.subarray(0, vi * 3), 3));
-  return geom;
+  return { geom, index: vertIndex.subarray(0, vi), darken: vertDarken.subarray(0, vi) };
+}
+
+/** Build one cube-sphere tile's geometry (from `scene/tiles/v1`) as extruded,
+ * flat-topped blocks — the Voxel style's base-tile geometry, and the
+ * campaign's keystone build. See `buildVoxelBlocks` for the full algorithm;
+ * this wrapper supplies the tiles-export sampling
+ * (`sampleElevationBilinear`/`tileIndex`). Returns just the geometry — for
+ * the per-vertex index/darken bookkeeping a living-lens repaint needs, see
+ * `buildVoxelTileGeometryIndexed`. */
+export function buildVoxelTileGeometry(
+  tiles: TilesScene,
+  tile: TileId,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+  opts: { cellsPerEdge: number; bandM: number },
+): THREE.BufferGeometry {
+  return buildVoxelTileGeometryIndexed(tiles, tile, radius, reliefScale, colorAt, opts).geom;
+}
+
+/** `buildVoxelTileGeometry`'s full result — geometry plus the per-vertex
+ * `index`/`darken` bookkeeping `globe.ts`'s repaint path reads. */
+export function buildVoxelTileGeometryIndexed(
+  tiles: TilesScene,
+  tile: TileId,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+  opts: { cellsPerEdge: number; bandM: number },
+): VoxelBuildResult {
+  return buildVoxelBlocks(
+    tile.face,
+    tile.level,
+    tile.ix,
+    tile.iy,
+    opts.cellsPerEdge,
+    radius,
+    reliefScale,
+    opts.bandM,
+    (lat, lon) => sampleElevationBilinear(tiles, lat, lon),
+    (lat, lon) => tileIndex(tiles, lat, lon),
+    colorAt,
+  );
+}
+
+/** Build a `scene/tiles-region/v1` patch's geometry as extruded, flat-topped
+ * blocks — the Voxel style's region-tile geometry (Task 4), the counterpart
+ * of `buildVoxelTileGeometry` for the producer's true higher-res terrain.
+ * Sources elevation from `region.elevation_m` via `sampleRegionElevationBilinear`
+ * (continuous, exactly as `buildRegionTileGeometry` samples for its own
+ * analytic-normal probe) and each cell's color index from
+ * `nearestRegionNodeIndex` (a region node index IS its color index, per
+ * `buildRegionTileGeometry`'s convention) — deliberately re-sampled at the
+ * voxel's own `cellsPerEdge` granularity rather than reusing the region's
+ * `samples` node grid directly, since a region patch arrives at a fixed
+ * `samples` (the producer's own contract — see `globe.ts`) independent of
+ * the voxel style's granularity constant. See `buildVoxelBlocks` for the
+ * shared algorithm (top faces, cliff walls, banding) — not re-implemented
+ * here. Returns just the geometry; see `buildVoxelRegionTileGeometryIndexed`
+ * for the repaint bookkeeping. */
+export function buildVoxelRegionTileGeometry(
+  region: RegionScene,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+  opts: { cellsPerEdge: number; bandM: number },
+): THREE.BufferGeometry {
+  return buildVoxelRegionTileGeometryIndexed(region, radius, reliefScale, colorAt, opts).geom;
+}
+
+/** `buildVoxelRegionTileGeometry`'s full result — geometry plus the
+ * per-vertex `index`/`darken` bookkeeping `globe.ts`'s repaint path reads. */
+export function buildVoxelRegionTileGeometryIndexed(
+  region: RegionScene,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+  opts: { cellsPerEdge: number; bandM: number },
+): VoxelBuildResult {
+  return buildVoxelBlocks(
+    region.face,
+    region.level,
+    region.ix,
+    region.iy,
+    opts.cellsPerEdge,
+    radius,
+    reliefScale,
+    opts.bandM,
+    (lat, lon) => sampleRegionElevationBilinear(region, lat, lon),
+    (lat, lon) => nearestRegionNodeIndex(region, lat, lon),
+    colorAt,
+  );
 }
 
 /** Fixed lat/lon step (degrees) for the analytic-normal gradient probe —

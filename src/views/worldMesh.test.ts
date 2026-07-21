@@ -6,7 +6,10 @@ import {
   buildFaceGeometry,
   buildRegionTileGeometry,
   buildTileGeometry,
+  buildVoxelRegionTileGeometry,
+  buildVoxelRegionTileGeometryIndexed,
   buildVoxelTileGeometry,
+  buildVoxelTileGeometryIndexed,
   quantizeBands,
   sampleElevationBilinear,
   sampleTile,
@@ -19,6 +22,8 @@ import { elevationColor } from '../sim/palette';
 import { biomeColorForName } from './biomePalette';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import type { TilesScene } from '../sim/scene';
+import { regionPatchUnits } from './regionPatch';
+import { unitLatLon } from './cubeSphere';
 
 /** A colorizer these geometry-shape tests don't care about — they assert
  * positions and normals, not colors, so any deterministic RGB stands in. */
@@ -445,6 +450,198 @@ describe('buildVoxelTileGeometry', () => {
       expect(col.getY(v) * 255).toBeCloseTo(100 * VOXEL_CLIFF_DARKEN, 3);
       expect(col.getZ(v) * 255).toBeCloseTo(40 * VOXEL_CLIFF_DARKEN, 3);
     }
+  });
+
+  it("top-face normals are ~radial and wall normals are ~tangential (FrontSide-culling guard)", () => {
+    // A voxel wall rendered with three.js's default FrontSide material shows
+    // NOTHING if its winding/normal is backwards — Task 3 flagged this as the
+    // highest-risk visual-pass concern for Task 4 to inherit. This is the
+    // cheap proxy the brief asks for in place of that deferred visual pass:
+    // a top face's flat normal should point almost exactly along its own
+    // radial (outward) direction (dot ≈ 1), while a wall's flat normal
+    // should be almost exactly PERPENDICULAR to radial (dot ≈ 0) — a
+    // vertical cliff face's normal has no radial component.
+    //
+    // cellsPerEdge here is the campaign's REAL voxel granularity (~48), not
+    // the other tests' minimal `cellsPerEdge: 2` fixture: the top-face
+    // normal is only an APPROXIMATION (the average of a cell's 4 corner unit
+    // vectors, not the true tangent-plane normal at the cell's exact
+    // center), and that approximation's error grows with the cell's
+    // angular size — at `cellsPerEdge: 2` (a whole 90°-wide face split into
+    // 2), each cell spans tens of degrees and the approximation error alone
+    // exceeds this test's tolerance (~23° off, confirmed while writing this
+    // test), which would be a false positive on a fixture no real voxel tile
+    // ever uses. At the real ~48-cell granularity a cell spans under 2°,
+    // where the same approximation is accurate to a small fraction of a
+    // degree — the actual regime this guard needs to check.
+    const N = 48;
+    const stepTilesFixture = stepTiles();
+    const geom = buildVoxelTileGeometry(stepTilesFixture, tile0, 1, 1, () => [200, 100, 40], {
+      cellsPerEdge: N,
+      bandM: 100,
+    });
+    const pos = geom.getAttribute('position');
+    const nrm = geom.getAttribute('normal');
+    const topVerts = N * N * 6;
+    for (let v = 0; v < topVerts; v++) {
+      const r = radiusOf(pos, v);
+      const radial: [number, number, number] = [pos.getX(v) / r, pos.getY(v) / r, pos.getZ(v) / r];
+      const dot = radial[0] * nrm.getX(v) + radial[1] * nrm.getY(v) + radial[2] * nrm.getZ(v);
+      expect(dot).toBeGreaterThan(0.99);
+    }
+    expect(pos.count).toBeGreaterThan(topVerts); // at least one wall exists to check
+    for (let v = topVerts; v < pos.count; v++) {
+      const r = radiusOf(pos, v);
+      const radial: [number, number, number] = [pos.getX(v) / r, pos.getY(v) / r, pos.getZ(v) / r];
+      const dot = radial[0] * nrm.getX(v) + radial[1] * nrm.getY(v) + radial[2] * nrm.getZ(v);
+      expect(Math.abs(dot)).toBeLessThan(0.1);
+    }
+  });
+
+  it('buildVoxelTileGeometryIndexed exposes a per-vertex data index and darken multiplier', () => {
+    const stepTilesFixture = stepTiles();
+    const { geom, index, darken } = buildVoxelTileGeometryIndexed(stepTilesFixture, tile0, 1, 1, () => [200, 100, 40], {
+      cellsPerEdge: 2,
+      bandM: 100,
+    });
+    const count = geom.getAttribute('position').count;
+    expect(index.length).toBe(count);
+    expect(darken.length).toBe(count);
+    const topVerts = 4 * 6;
+    for (let v = 0; v < topVerts; v++) expect(darken[v]).toBe(1);
+    for (let v = topVerts; v < count; v++) expect(darken[v]).toBe(VOXEL_CLIFF_DARKEN);
+    // Every one of a cell's 6 top vertices shares that cell's data index.
+    for (let c = 0; c < 4; c++) {
+      const base = c * 6;
+      const i0 = index[base];
+      for (let v = base + 1; v < base + 6; v++) expect(index[v]).toBe(i0);
+    }
+  });
+});
+
+/** A region-patch counterpart of `stepTiles`: elevation is defined per NODE
+ * (not per equirect pixel) as a clean quadrant step — 5000 m wherever the
+ * node's own (lat, lon) has BOTH lat>0 and lon>0, else 0 m — evaluated
+ * through the region's own `regionPatchUnits`/`unitLatLon` projection, so it
+ * lines up with whatever face/level/ix/iy address is passed rather than
+ * assuming face 0's equatorial centering the way `stepTiles` does. `samples:
+ * 32` gives a node grid fine enough that `buildVoxelRegionTileGeometry`'s
+ * `cellsPerEdge: 2` cell centers (at 25%/75% across the patch) land solidly
+ * inside one quadrant each, away from the lat=0/lon=0 seam — mirroring
+ * `stepTiles`' own fineness rationale. */
+function stepRegion(face: number, level: number, ix: number, iy: number, samples: number): RegionScene {
+  const probe = { face, level, ix, iy, samples, elevation_m: [] } as unknown as RegionScene;
+  const units = regionPatchUnits(probe);
+  const elevation_m = units.map((u) => {
+    const { latDeg, lonDeg } = unitLatLon(u);
+    return latDeg > 0 && lonDeg > 0 ? 5000 : 0;
+  });
+  return { face, level, ix, iy, samples, elevation_m } as unknown as RegionScene;
+}
+
+describe('buildVoxelRegionTileGeometry', () => {
+  const face = 0, level = 0, ix = 0, iy = 0; // the whole equatorial face, matching worldMesh's tile0
+
+  /** Non-indexed flat-shaded geometry: one triangle per 3 position entries. */
+  function triangleCount(geom: THREE.BufferGeometry): number {
+    return geom.getAttribute('position').count / 3;
+  }
+  function radiusOf(pos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number): number {
+    return Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i));
+  }
+
+  it('emits a top face per cell and a wall ONLY where a cell is higher than a neighbor — same shape as the base builder', () => {
+    const region = stepRegion(face, level, ix, iy, 32);
+    const geom = buildVoxelRegionTileGeometry(region, 1, 1, () => [1, 1, 1], { cellsPerEdge: 2, bandM: 100 });
+    const pos = geom.getAttribute('position');
+    // Same fixture shape as `buildVoxelTileGeometry`'s equivalent test: one
+    // high cell (lat>0, lon>0), three low — 8 top tris + 2 interior wall
+    // quads (the high cell's other two edges are the tile boundary, no wall).
+    expect(triangleCount(geom)).toBe(8 + 2 * 2);
+    const radii = new Set<number>();
+    for (let i = 0; i < 4 * 6; i++) radii.add(Number(radiusOf(pos, i).toFixed(5)));
+    expect(radii.size).toBe(2); // one high band, one low band among the 4 tops
+  });
+
+  it("colors each cell flat via colorAt(node) — a region node index IS its color index", () => {
+    const region = stepRegion(face, level, ix, iy, 32);
+    const palette: Record<number, [number, number, number]> = {};
+    const colorAt = (i: number): [number, number, number] => {
+      palette[i] ??= [(i * 37) % 250, (i * 59) % 250, (i * 83) % 250];
+      return palette[i]!;
+    };
+    const geom = buildVoxelRegionTileGeometry(region, 1, 1, colorAt, { cellsPerEdge: 2, bandM: 100 });
+    const col = geom.getAttribute('color');
+    for (let c = 0; c < 4; c++) {
+      const base = c * 6;
+      const r0 = col.getX(base), g0 = col.getY(base), b0 = col.getZ(base);
+      for (let v = base + 1; v < base + 6; v++) {
+        expect(col.getX(v)).toBeCloseTo(r0, 6);
+        expect(col.getY(v)).toBeCloseTo(g0, 6);
+        expect(col.getZ(v)).toBeCloseTo(b0, 6);
+      }
+    }
+  });
+
+  it('a wall is darkened relative to its cell\'s top color by VOXEL_CLIFF_DARKEN', () => {
+    const region = stepRegion(face, level, ix, iy, 32);
+    const geom = buildVoxelRegionTileGeometry(region, 1, 1, () => [200, 100, 40], { cellsPerEdge: 2, bandM: 100 });
+    const pos = geom.getAttribute('position');
+    const col = geom.getAttribute('color');
+    const topVerts = 4 * 6;
+    expect(pos.count).toBeGreaterThan(topVerts);
+    for (let v = topVerts; v < pos.count; v++) {
+      expect(col.getX(v) * 255).toBeCloseTo(200 * VOXEL_CLIFF_DARKEN, 3);
+      expect(col.getY(v) * 255).toBeCloseTo(100 * VOXEL_CLIFF_DARKEN, 3);
+      expect(col.getZ(v) * 255).toBeCloseTo(40 * VOXEL_CLIFF_DARKEN, 3);
+    }
+  });
+
+  it('top-face normals are ~radial and wall normals are ~tangential (FrontSide-culling guard)', () => {
+    // Real voxel granularity (~48), not the other tests' minimal
+    // `cellsPerEdge: 2` fixture — see the base builder's identical test for
+    // why: the top-face normal approximation's error grows with cell
+    // angular size, and only shrinks below this test's tolerance at
+    // production-realistic granularity. `samples: 64` matches the region
+    // producer's real fixed contract (`TILE_QUADS`, per globe.test.ts).
+    const N = 48;
+    const region = stepRegion(face, level, ix, iy, 64);
+    const geom = buildVoxelRegionTileGeometry(region, 1, 1, () => [200, 100, 40], { cellsPerEdge: N, bandM: 100 });
+    const pos = geom.getAttribute('position');
+    const nrm = geom.getAttribute('normal');
+    const topVerts = N * N * 6;
+    for (let v = 0; v < topVerts; v++) {
+      const r = radiusOf(pos, v);
+      const radial: [number, number, number] = [pos.getX(v) / r, pos.getY(v) / r, pos.getZ(v) / r];
+      const dot = radial[0] * nrm.getX(v) + radial[1] * nrm.getY(v) + radial[2] * nrm.getZ(v);
+      expect(dot).toBeGreaterThan(0.99);
+    }
+    expect(pos.count).toBeGreaterThan(topVerts); // at least one wall exists to check
+    for (let v = topVerts; v < pos.count; v++) {
+      const r = radiusOf(pos, v);
+      const radial: [number, number, number] = [pos.getX(v) / r, pos.getY(v) / r, pos.getZ(v) / r];
+      const dot = radial[0] * nrm.getX(v) + radial[1] * nrm.getY(v) + radial[2] * nrm.getZ(v);
+      expect(Math.abs(dot)).toBeLessThan(0.1);
+    }
+  });
+
+  it('buildVoxelRegionTileGeometryIndexed exposes a per-vertex data index (a region node id) and darken multiplier', () => {
+    const region = stepRegion(face, level, ix, iy, 32);
+    const { geom, index, darken } = buildVoxelRegionTileGeometryIndexed(region, 1, 1, () => [200, 100, 40], {
+      cellsPerEdge: 2,
+      bandM: 100,
+    });
+    const count = geom.getAttribute('position').count;
+    expect(index.length).toBe(count);
+    expect(darken.length).toBe(count);
+    const nodeCount = (region.samples + 1) * (region.samples + 1);
+    for (const i of index) {
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(nodeCount);
+    }
+    const topVerts = 4 * 6;
+    for (let v = 0; v < topVerts; v++) expect(darken[v]).toBe(1);
+    for (let v = topVerts; v < count; v++) expect(darken[v]).toBe(VOXEL_CLIFF_DARKEN);
   });
 });
 

@@ -14,6 +14,8 @@ import {
   REFERENCE_RADIUS_M,
   buildRegionTileGeometry,
   buildTileGeometry,
+  buildVoxelRegionTileGeometryIndexed,
+  buildVoxelTileGeometryIndexed,
   sampleTile,
   stitchNormals,
   tileIndex,
@@ -65,6 +67,23 @@ export const MARKER_CLEARANCE = 0.006;
  * "rice-terrace" contour. A tunable constant, not derived from the data;
  * start ~250m per the campaign brief, retune in the visual pass. */
 const TERRACE_BAND_M = 250;
+
+/** The Voxel style's block granularity — cells per tile edge, passed to
+ * `buildVoxelTileGeometryIndexed`/`buildVoxelRegionTileGeometryIndexed`.
+ * Deliberately bounded, NOT the full `TILE_QUADS` (64) lattice: a voxel
+ * cell emits 6 (top) + up to 24 (walls) unshared vertices, so this directly
+ * multiplies a mounted tile's vertex cost — start ~48 (chunky, and close to
+ * the smooth path's own 65×65-shared-vertex budget); the perf/LOD ceiling
+ * is Task 6's concern, not this wiring task's. */
+const VOXEL_CELLS_PER_EDGE = 48;
+
+/** The Voxel style's elevation band width, in metres — reuses
+ * `quantizeBands` exactly like `TERRACE_BAND_M` (Task 2) does. A distinct
+ * constant (not literally `TERRACE_BAND_M`) since a voxel "block" and a
+ * terrace "contour" may want to read at different step heights once the
+ * visual pass (Task 5) compares them side by side; same starting value for
+ * now. */
+const VOXEL_BAND_M = TERRACE_BAND_M;
 
 /** Distance of the directional "sun" light from the globe center, in world
  * units — far enough to read as parallel light across the whole sphere. */
@@ -254,12 +273,16 @@ function placeMarker(m: Marker, reliefScale: number): void {
 
 /** The globe's render style — geometry + shading, orthogonal to the data
  * `Lens` (which only recolors). `smooth` is today's cube-sphere mesh;
- * `voxel` lands in a later task (still smooth-geometry-for-now, never
- * throwing); `faceted` flat-shades the existing mesh, the cheapest style —
- * just a material flag; `terraced` (Task 2) quantizes elevation into
- * discrete bands (`TERRACE_BAND_M`, `quantizeBands` in `./worldMesh.ts`)
- * before displacement, flat-shaded, producing a stepped "rice-terrace"
- * contour on the same shared-vertex mesh. */
+ * `faceted` flat-shades the existing mesh, the cheapest style — just a
+ * material flag; `terraced` (Task 2) quantizes elevation into discrete bands
+ * (`TERRACE_BAND_M`, `quantizeBands` in `./worldMesh.ts`) before
+ * displacement, flat-shaded, producing a stepped "rice-terrace" contour on
+ * the same shared-vertex mesh; `voxel` (Task 3/4) rebuilds each tile as
+ * extruded, flat-topped blocks (`buildVoxelBlocks` in `./worldMesh.ts`,
+ * `VOXEL_CELLS_PER_EDGE`/`VOXEL_BAND_M` below) — the base or region variant
+ * depending on whether a region patch is already cached for that tile — with
+ * per-cell cliff walls where a neighbor's band is lower. Selecting it is
+ * exposed on the HUD by a later task; the switch itself never throws. */
 export type GlobeStyle = 'smooth' | 'voxel' | 'terraced' | 'faceted';
 
 /** The globe view's public surface: a mountable object graph plus the
@@ -488,6 +511,13 @@ export function createGlobeView(
      * a base tile. Region patches need a scoped normal stitch across their
      * shared edges (`stitchMountedRegions`); base tiles never do. */
     isRegion: boolean;
+    /** The Voxel style's per-vertex color multiplier (`undefined` for every
+     * other style): 1 for a top-face vertex, `VOXEL_CLIFF_DARKEN` for a
+     * wall (cliff) vertex — `paintSlot` applies it as the last step so a
+     * living-lens repaint keeps a cell's wall exactly as dark relative to
+     * its own top as the geometry was originally built, without a full
+     * geometry rebuild on every repaint. */
+    darken?: Float32Array;
   }
   const tileSlots = new Map<string, TileSlot>();
 
@@ -543,7 +573,42 @@ export function createGlobeView(
     let geom: THREE.BufferGeometry;
     let colorSrc: TilesScene;
     let idx: Int32Array;
-    if (region) {
+    let darken: Float32Array | undefined;
+    if (activeStyle === 'voxel') {
+      // Extruded flat-topped blocks (worldMesh.ts's shared `buildVoxelBlocks`
+      // algorithm) instead of the shared-vertex smooth/terraced mesh — the
+      // region variant when a higher-res patch is already cached for this
+      // tile, the base (tiles-export) variant otherwise, exactly mirroring
+      // the smooth/terraced branch below. No skirt (voxel walls seal the
+      // silhouette on their own — see `buildVoxelBlocks`'s doc comment).
+      const voxelOpts = { cellsPerEdge: VOXEL_CELLS_PER_EDGE, bandM: VOXEL_BAND_M };
+      if (region) {
+        const built = buildVoxelRegionTileGeometryIndexed(
+          region,
+          GLOBE_RADIUS,
+          scale,
+          (node) => activeLens.colorAt(region as unknown as TilesScene, node, lastDay ?? 0, seasonalCtx),
+          voxelOpts,
+        );
+        geom = built.geom;
+        idx = built.index;
+        darken = built.darken;
+        colorSrc = region as unknown as TilesScene;
+      } else {
+        const built = buildVoxelTileGeometryIndexed(tiles, t, GLOBE_RADIUS, scale, colorAt, voxelOpts);
+        geom = built.geom;
+        idx = built.index;
+        darken = built.darken;
+        colorSrc = tiles;
+        // Ask for the region if it would sharpen this tile and isn't in flight
+        // — the same request path the smooth/terraced branch uses below, so a
+        // deep voxel tile still upgrades to true higher-res terrain.
+        if (wantsRegion && !regionPending.has(key)) {
+          regionPending.add(key);
+          requestRegion!(t);
+        }
+      }
+    } else if (region) {
       // True higher-res terrain, coloured by the lens on the region's own
       // nodes (RegionScene carries the fields colorAt reads).
       geom = buildRegionTileGeometry(
@@ -573,7 +638,16 @@ export function createGlobeView(
     const mesh = new THREE.Mesh(geom, material);
     mesh.name = `globe-tile-${key}`;
     spinGroup.add(mesh);
-    return { id: t, mesh, geom, idx, colorSrc, baseColor: computeBaseColor(idx, colorSrc), isRegion: region !== undefined };
+    return {
+      id: t,
+      mesh,
+      geom,
+      idx,
+      colorSrc,
+      baseColor: computeBaseColor(idx, colorSrc),
+      isRegion: region !== undefined,
+      darken,
+    };
   }
 
   /** Reconcile normals across the mounted REGION patches so their shared
@@ -581,8 +655,19 @@ export function createGlobeView(
    * for why base tiles don't need this and region tiles do). Scoped to the
    * handful of region tiles on screen at deep zoom — never the whole globe.
    * Idempotent for a fixed set; both sides of every shared edge come out
-   * with the identical normal, which is what removes the crease. */
+   * with the identical normal, which is what removes the crease.
+   *
+   * A no-op under the Voxel style: `stitchNormals` averages the normals of
+   * every geometry's vertices at a shared 3D position, which is exactly
+   * right for the smooth/terraced builders' per-VERTEX analytic normals but
+   * wrong for voxel's per-CELL flat normals — two adjacent tiles' boundary
+   * cells share their corner *positions* (same cube-sphere addressing) but
+   * are different blocks with deliberately different flat normals; blending
+   * them would smear the blocky look Task 3 built voxel to have. Voxel
+   * accepts the same bounded per-tile-boundary seam its base builder already
+   * documents, rather than smoothing across it. */
   function stitchMountedRegions(): void {
+    if (activeStyle === 'voxel') return;
     const regionGeoms: THREE.BufferGeometry[] = [];
     for (const slot of tileSlots.values()) if (slot.isRegion) regionGeoms.push(slot.geom);
     if (regionGeoms.length > 1) stitchNormals(regionGeoms);
@@ -601,7 +686,14 @@ export function createGlobeView(
   }
 
   /** Paint one slot's vertex colours for `day`: the active lens (living or
-   * `slot.baseColor`'s snapshot), ice-blended only under `natural`. Shared by
+   * `slot.baseColor`'s snapshot), ice-blended only under `natural`, darkened
+   * last for a voxel wall vertex (`slot.darken`, `undefined` for every other
+   * style — see `TileSlot`'s doc comment). Applying `darken` AFTER the ice
+   * blend (rather than baking it into `base`) is what lets a voxel slot's
+   * repaint recolor a wall correctly without a full geometry rebuild: the
+   * SAME per-vertex loop that already recolors a smooth/terraced tile's
+   * vertices also recolors a voxel tile's, it just additionally scales a
+   * wall vertex's final colour by its cell's darken multiplier. Shared by
    * the full `repaint` below and the incremental path's targeted repaint of
    * just-built slots. */
   function paintSlot(slot: TileSlot, day: number, icy: boolean): void {
@@ -609,6 +701,7 @@ export function createGlobeView(
     const idx = slot.idx;
     const base = slot.baseColor;
     const src = slot.colorSrc;
+    const darken = slot.darken;
     for (let v = 0; v < idx.length; v++) {
       let r: number, g: number, b: number;
       if (activeLens.dependsOnDay) {
@@ -626,6 +719,12 @@ export function createGlobeView(
         r += (ICE_COLOR[0] - r) * frac;
         g += (ICE_COLOR[1] - g) * frac;
         b += (ICE_COLOR[2] - b) * frac;
+      }
+      if (darken) {
+        const d = darken[v]!;
+        r *= d;
+        g *= d;
+        b *= d;
       }
       color.setXYZ(v, r, g, b);
     }
@@ -987,25 +1086,35 @@ export function createGlobeView(
     nightFill.intensity = on ? NIGHT_FILL_INTENSITY : 0;
   }
 
+  /** Which geometry a style's tiles are built from — `buildTileSlot` reads
+   * `activeStyle` directly, but `setStyle` only needs to know whether the
+   * OLD and NEW styles share a geometry family: `faceted` reuses `smooth`'s
+   * mesh (material-only difference), while `terraced` and `voxel` each bake
+   * their own distinct vertex layout at build time. */
+  const geometryFamilyOf = (s: GlobeStyle): 'smooth' | 'terraced' | 'voxel' =>
+    s === 'terraced' ? 'terraced' : s === 'voxel' ? 'voxel' : 'smooth';
+
   // The render-style axis (The Massing): `material` is one object shared
   // across every tile slot (`buildTileSlot`, above), so flipping its
   // `flatShading` flag here repaints every already-built tile without a
   // rebuild — flat shading only recomputes per-face normals from the
-  // existing geometry. `voxel` has no geometry of its own yet (a later
-  // task), so it falls through to today's smooth build; the switch never
-  // throws. `terraced` (this task) DOES change geometry — banding is baked
-  // into each tile's vertex positions at build time (`bandM`, declared with
-  // `activeStyle` above) — so entering or leaving it needs a full rebuild,
-  // unlike the material-only faceted switch. Terraced also flat-shades: a
-  // stepped surface reads as terraces only without smooth-shaded normals
-  // blurring the risers.
+  // existing geometry. `terraced` and `voxel` DO change geometry — banding
+  // (terraced) or the whole block layout (voxel) is baked into each tile's
+  // vertex positions at build time — so entering or leaving either needs a
+  // full rebuild, unlike the material-only faceted switch (`buildTileSlot`
+  // branches on `activeStyle`, so the rebuild below picks up the right
+  // builder). Both also flat-shade: a stepped/blocky surface reads as such
+  // only without smooth-shaded normals blurring the risers/cliffs — voxel's
+  // own per-cell flat normal attribute (`buildVoxelBlocks`) already agrees
+  // with this, so `flatShading` and the geometry's own normals reinforce
+  // rather than fight each other.
   function setStyle(style: GlobeStyle): void {
-    const wasBanded = activeStyle === 'terraced';
+    const prevFamily = geometryFamilyOf(activeStyle);
     activeStyle = style;
-    const isBanded = activeStyle === 'terraced';
-    material.flatShading = activeStyle === 'faceted' || activeStyle === 'terraced';
+    const nextFamily = geometryFamilyOf(activeStyle);
+    material.flatShading = activeStyle === 'faceted' || activeStyle === 'terraced' || activeStyle === 'voxel';
     material.needsUpdate = true;
-    if (wasBanded !== isBanded) rebuildAllTiles(currentSelected);
+    if (prevFamily !== nextFamily) rebuildAllTiles(currentSelected);
   }
 
   let selectedGroup: string | null = null;

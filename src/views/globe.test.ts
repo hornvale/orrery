@@ -726,10 +726,130 @@ test('setStyle("faceted") flat-shades the surface material; "smooth" restores sm
   expect(mat.flatShading).toBe(false);
 });
 
-test('setStyle never throws for voxel (still smooth-geometry-for-now)', () => {
-  const view = createGlobeView(markerTiles([]), spinningSys());
-  expect(() => view.setStyle('voxel')).not.toThrow();
-  expect(() => view.setStyle('smooth')).not.toThrow();
+test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff walls; "smooth" restores the shared-vertex mesh', () => {
+  const globe = makeGlobe(); // real seed-42 terrain — enough relief to produce at least one voxel wall
+  const mat = surfaceMaterial(globe);
+  expect(mat.flatShading).toBe(false);
+
+  const firstTileMesh = (): THREE.Mesh => {
+    let mesh: THREE.Mesh | null = null;
+    globe.object3d.traverse((o) => {
+      if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
+    });
+    return mesh as unknown as THREE.Mesh;
+  };
+  const beforeGeom = firstTileMesh().geometry;
+  const beforeCount = beforeGeom.getAttribute('position').count;
+  expect(beforeGeom.getIndex()).not.toBeNull(); // the smooth path is a shared-vertex, indexed mesh
+
+  expect(() => globe.setStyle('voxel')).not.toThrow();
+  expect(mat.flatShading).toBe(true);
+  const afterGeom = firstTileMesh().geometry;
+  expect(afterGeom).not.toBe(beforeGeom); // a genuine rebuild, not a material-only flip
+  // Voxel geometry is non-indexed (flat shading needs unshared per-triangle
+  // vertices) — structurally distinct from the smooth builder's indexed mesh.
+  expect(afterGeom.getIndex()).toBeNull();
+  const afterCount = afterGeom.getAttribute('position').count;
+  expect(afterCount).not.toBe(beforeCount);
+  // VOXEL_CELLS_PER_EDGE (globe.ts, not exported) is 48 — mirrored here so
+  // this test doesn't silently stop checking for walls if that constant
+  // changes. A walls-free voxel build would have exactly N²×6 vertices (top
+  // faces only); real terrain's relief variation across a mounted tile
+  // guarantees at least one neighbor pair crosses a band, so the true count
+  // must exceed that floor.
+  const N = 48;
+  expect(afterCount).toBeGreaterThan(N * N * 6);
+
+  expect(() => globe.setStyle('smooth')).not.toThrow();
+  expect(mat.flatShading).toBe(false);
+  const smoothGeom = firstTileMesh().geometry;
+  expect(smoothGeom).not.toBe(afterGeom);
+  expect(smoothGeom.getIndex()).not.toBeNull(); // back to the shared-vertex indexed mesh
+  expect(smoothGeom.getAttribute('position').count).toBe(beforeCount);
+});
+
+test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for a new day, without a full rebuild", () => {
+  const globe = makeGlobe();
+  globe.setStyle('voxel');
+  globe.setLens(temperatureLens); // a living (dependsOnDay) lens — every update recomputes color
+
+  const firstTileMesh = (): THREE.Mesh => {
+    let mesh: THREE.Mesh | null = null;
+    globe.object3d.traverse((o) => {
+      if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
+    });
+    return mesh as unknown as THREE.Mesh;
+  };
+  const geom = firstTileMesh().geometry;
+  const col = geom.getAttribute('color');
+  const N = 48; // VOXEL_CELLS_PER_EDGE, mirrored — see the setStyle test above
+  const topVerts = N * N * 6;
+  expect(col.count).toBeGreaterThan(topVerts); // real terrain: at least one wall to check below
+
+  const before = Array.from({ length: col.count }, (_, v) => [col.getX(v), col.getY(v), col.getZ(v)] as const);
+
+  // A day far enough out that the temperature lens' diurnal+seasonal terms
+  // have moved; `update` repaints in place (no camera → no LOD reselect, so
+  // the SAME geometry object is repainted, not rebuilt).
+  expect(() => globe.update(200)).not.toThrow();
+  expect(firstTileMesh().geometry).toBe(geom); // repainted in place, not rebuilt
+
+  const after = Array.from({ length: col.count }, (_, v) => [col.getX(v), col.getY(v), col.getZ(v)] as const);
+  expect(after).not.toEqual(before); // the living lens actually repainted something
+
+  // The wall-darkening relationship survives the repaint: averaged over all
+  // wall vertices vs all top vertices, the walls must still read darker —
+  // confirming `paintSlot`'s per-vertex `darken` multiplier is applied on
+  // every repaint, not just at the original build.
+  const avgLuminance = (lo: number, hi: number): number => {
+    let sum = 0;
+    for (let v = lo; v < hi; v++) sum += col.getX(v) + col.getY(v) + col.getZ(v);
+    return sum / (hi - lo);
+  };
+  expect(avgLuminance(topVerts, col.count)).toBeLessThan(avgLuminance(0, topVerts));
+});
+
+test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region variant when a patch is cached', () => {
+  const tiles = markerTiles([]);
+  tiles.moisture = tiles.moisture.map(() => 0.1); // uniform BASE moisture
+  const view = createGlobeView(tiles, spinningSys(), [], () => {});
+  view.setLens(moistureLens); // sidesteps the ice blend's TilesScene-only field, per regionFixture's doc
+  view.setStyle('voxel');
+
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  pump(view, camera);
+
+  const before = tileMeshesByKey(view);
+  let targetKey: string | null = null;
+  for (const key of before.keys()) {
+    if (Number(key.split(':')[1]) >= 3) {
+      targetKey = key;
+      break;
+    }
+  }
+  expect(targetKey).not.toBeNull(); // deep zoom reached REGION_MIN_LEVEL under voxel too
+  const beforeGeom = before.get(targetKey!)!.geometry;
+  const beforeColor = beforeGeom.getAttribute('color');
+  const beforeSample: [number, number, number] = [beforeColor.getX(0), beforeColor.getY(0), beforeColor.getZ(0)];
+
+  const [face, level, ix, iy] = targetKey!.split(':').map(Number) as [number, number, number, number];
+  const samples = TILE_QUADS; // the real producer contract, per the base onRegion test above
+  const region = regionFixture(face, level, ix, iy, samples);
+  region.moisture = Array((samples + 1) * (samples + 1)).fill(0.9); // distinctly different from the base's 0.1
+  view.onRegion(targetKey!, region);
+  pump(view, camera); // the swap enqueues and drains in over frames
+
+  const after = tileMeshesByKey(view);
+  const afterGeom = after.get(targetKey!)!.geometry;
+  expect(afterGeom).not.toBe(beforeGeom); // the region-voxel swap actually rebuilt this slot
+  expect(afterGeom.getIndex()).toBeNull(); // still voxel geometry (non-indexed), not a smooth fallback
+  const afterColor = afterGeom.getAttribute('color');
+  const afterSample: [number, number, number] = [afterColor.getX(0), afterColor.getY(0), afterColor.getZ(0)];
+  // Recolored from the REGION's own (different) moisture, not the base
+  // tiles' 0.1 — confirms `buildTileSlot`'s voxel branch took the region
+  // path (`buildVoxelRegionTileGeometryIndexed`), not the base one.
+  expect(afterSample).not.toEqual(beforeSample);
 });
 
 test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded elevation', () => {
