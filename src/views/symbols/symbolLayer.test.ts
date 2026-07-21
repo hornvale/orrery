@@ -40,3 +40,20 @@ test('symbol positions are stable across identical updates (no shimmer)', () => 
   const second = layer.group.children.map((c) => c.position.toArray().join(','));
   expect(second).toEqual(first);
 });
+
+test('ocean wave-marks appear on the sea, spaced and budget-capped', () => {
+  const w = 20, h = 12;
+  const ocean = Array.from({ length: w * h }, () => true); // all sea
+  const tiles = {
+    schema: 'scene/tiles/v1', width: w, height: h, sea_level_m: 0,
+    elevation_m: Array.from({ length: w * h }, () => -1000),
+    ocean, biome: Array.from({ length: w * h }, () => 0),
+    biomeLegend: ['deep-ocean'], plate: [], unrest: [], features: [],
+  } as unknown as TilesScene;
+  const layer = buildSymbolLayer(tiles);
+  const cam = new THREE.Vector3(0, 0, 100);
+  layer.update('near', cam);
+  const waves = layer.group.children.filter((c) => c.userData.kind === 'wave');
+  expect(waves.length).toBeGreaterThan(0);
+  expect(waves.length).toBeLessThanOrEqual(160); // near cap
+});

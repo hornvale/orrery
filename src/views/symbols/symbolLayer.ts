@@ -1,10 +1,10 @@
 /** The symbol layer: a `THREE.Group` of sprites (mountain peaks, forest
- * tree-clusters) placed on the globe, selected per zoom rung against the
- * salience budget (`./budget`), culled to the near hemisphere (`../globe`'s
- * `onNearSide`). This is the visible payoff of The Cartographer. Settlements
- * are NOT drawn here — the globe's own always-on markers (`../globe`'s
- * `buildSiteMarker`) already cover them, so this layer stays peaks+forests
- * only to avoid doubling up.
+ * tree-clusters, ocean wave-marks) placed on the globe, selected per zoom
+ * rung against the salience budget (`./budget`), culled to the near
+ * hemisphere (`../globe`'s `onNearSide`). This is the visible payoff of The
+ * Cartographer. Settlements are NOT drawn here — the globe's own always-on
+ * markers (`../globe`'s `buildSiteMarker`) already cover them, so this layer
+ * stays peaks+forests+waves only to avoid doubling up.
  *
  * Extraction (`./extract`) runs once at build time — the tile data doesn't
  * change under a mounted layer, only the camera does — so `update` only
@@ -45,6 +45,15 @@ const PEAK_SCALE_MAX = 0.16;
 /** Tree sprite scale, in units of `GLOBE_RADIUS`. */
 const TREE_SCALE = 0.018;
 
+/** Wave-mark sprite scale, in units of `GLOBE_RADIUS` — modest and fixed
+ * (unlike peaks, waves don't carry a magnitude to scale against). */
+const WAVE_SCALE = 0.02;
+
+/** Wave marks float closer to the ocean surface than the
+ * `SYMBOL_CLEARANCE`-lofted peak/tree sprites — they're a texture accent, not
+ * a landmark. */
+const WAVE_CLEARANCE = 1.004;
+
 /** Max tree sprites drawn per forest region (also clamps the log2(area)
  * placement count below). */
 const MAX_TREES_PER_FOREST = 8;
@@ -72,14 +81,29 @@ function buildSymbolMaterial(draw: (ctx: CanvasRenderingContext2D, size: number)
 
 function buildPeakMaterial(): THREE.SpriteMaterial {
   return buildSymbolMaterial((ctx, size) => {
-    ctx.fillStyle = '#8c8c96';
+    // Body: dark slate triangle — bolder than the original mid-grey so it
+    // reads clearly against land (visual pass: peaks too faint to read).
+    ctx.fillStyle = 'rgb(70,74,86)';
     ctx.beginPath();
     ctx.moveTo(size / 2, size * 0.12);
     ctx.lineTo(size * 0.88, size * 0.88);
     ctx.lineTo(size * 0.12, size * 0.88);
     ctx.closePath();
     ctx.fill();
-  }, 0x8c8c96);
+    // Subtle darker outline for edge contrast.
+    ctx.strokeStyle = 'rgb(34,36,44)';
+    ctx.lineWidth = size * 0.04;
+    ctx.stroke();
+    // Pale snow cap at the apex.
+    ctx.fillStyle = 'rgb(242,245,248)';
+    ctx.beginPath();
+    ctx.moveTo(size / 2, size * 0.12);
+    ctx.lineTo(size * 0.63, size * 0.34);
+    ctx.lineTo(size * 0.5, size * 0.4);
+    ctx.lineTo(size * 0.37, size * 0.34);
+    ctx.closePath();
+    ctx.fill();
+  }, 0x464a56);
 }
 
 function buildTreeMaterial(): THREE.SpriteMaterial {
@@ -91,15 +115,49 @@ function buildTreeMaterial(): THREE.SpriteMaterial {
   }, 0x3f7d3f);
 }
 
+/** Stylized `~~` wave-mark texture for ocean tiles — two short wavy strokes
+ * in light cyan, matching the pixel-art-RPG convention for open sea. */
+function buildWaveMaterial(): THREE.SpriteMaterial {
+  return buildSymbolMaterial((ctx, size) => {
+    ctx.strokeStyle = 'rgba(200,235,245,0.9)';
+    ctx.lineWidth = size * 0.08;
+    ctx.lineCap = 'round';
+    const drawWave = (yBase: number): void => {
+      ctx.beginPath();
+      ctx.moveTo(size * 0.1, yBase);
+      ctx.quadraticCurveTo(size * 0.3, yBase - size * 0.08, size * 0.5, yBase);
+      ctx.quadraticCurveTo(size * 0.7, yBase + size * 0.08, size * 0.9, yBase);
+      ctx.stroke();
+    };
+    drawWave(size * 0.4);
+    drawWave(size * 0.62);
+  }, 0xc8ebf5);
+}
+
+/** A symbol's class, tagged onto its sprite's `userData.kind` so tests (and
+ * any future per-kind styling) can select without re-deriving it from the
+ * material. */
+export type SymbolKind = 'peak' | 'tree' | 'wave';
+
 /** A built sprite tagged with the unit "up" direction it was placed at, so
  * the near-side cull (`onNearSide`) doesn't need to re-derive it from
- * position/GLOBE_RADIUS each frame. */
-function placedSprite(material: THREE.SpriteMaterial, lat: number, lon: number, scale: number): THREE.Sprite {
+ * position/GLOBE_RADIUS each frame, plus its symbol kind. `clearance`
+ * defaults to the peak/tree float height; wave marks pass `WAVE_CLEARANCE`
+ * to sit closer to the ocean surface. */
+function placedSprite(
+  material: THREE.SpriteMaterial,
+  lat: number,
+  lon: number,
+  scale: number,
+  kind: SymbolKind,
+  clearance: number = SYMBOL_CLEARANCE,
+): THREE.Sprite {
   const sprite = new THREE.Sprite(material);
   const up = latLonToUnit(lat, lon);
-  sprite.position.copy(up).multiplyScalar(GLOBE_RADIUS * SYMBOL_CLEARANCE);
+  sprite.position.copy(up).multiplyScalar(GLOBE_RADIUS * clearance);
   sprite.scale.set(GLOBE_RADIUS * scale, GLOBE_RADIUS * scale, 1);
   sprite.userData.up = up;
+  sprite.userData.kind = kind;
   return sprite;
 }
 
@@ -127,6 +185,7 @@ export function buildSymbolLayer(tiles: TilesScene): SymbolLayer {
 
   const peakMaterial = buildPeakMaterial();
   const treeMaterial = buildTreeMaterial();
+  const waveMaterial = buildWaveMaterial();
 
   const group = new THREE.Group();
   group.name = 'symbol-layer';
@@ -140,7 +199,7 @@ export function buildSymbolLayer(tiles: TilesScene): SymbolLayer {
     const chosenPeaks = selectByBudget(peaks.filter((p) => p.elevationM >= b.peakMinElevationM), b.peaks);
     for (const p of chosenPeaks) {
       const scale = Math.min(PEAK_SCALE_MAX, PEAK_SCALE_MIN + PEAK_SCALE_ELEVATION_FACTOR * p.elevationM);
-      group.add(placedSprite(peakMaterial, p.lat, p.lon, scale));
+      group.add(placedSprite(peakMaterial, p.lat, p.lon, scale, 'peak'));
     }
 
     const chosenForests = selectByBudget(forests.filter((f) => f.area >= b.forestMinArea), b.forests);
@@ -151,7 +210,22 @@ export function buildSymbolLayer(tiles: TilesScene): SymbolLayer {
         const hLon = hash01(f.tileIndex * 8 + k + 4);
         const lat = f.lat + (hLat * 2 - 1) * TREE_JITTER_DEG;
         const lon = f.lon + (hLon * 2 - 1) * TREE_JITTER_DEG;
-        group.add(placedSprite(treeMaterial, lat, lon, TREE_SCALE));
+        group.add(placedSprite(treeMaterial, lat, lon, TREE_SCALE, 'tree'));
+      }
+    }
+
+    // Wave marks: sparse cartographic sea-texture, gated by the rung's
+    // stride/cap. Deterministic grid walk — no jitter, no Math.random.
+    const { width, height } = tiles;
+    let waveCount = 0;
+    waveScan: for (let y = 0; y < height; y += b.waveStride) {
+      for (let x = 0; x < width; x += b.waveStride) {
+        if (waveCount >= b.waves) break waveScan;
+        if (!tiles.ocean[y * width + x]) continue;
+        const lat = 90 - ((y + 0.5) / height) * 180;
+        const lon = -180 + ((x + 0.5) / width) * 360;
+        group.add(placedSprite(waveMaterial, lat, lon, WAVE_SCALE, 'wave', WAVE_CLEARANCE));
+        waveCount++;
       }
     }
   }
@@ -169,7 +243,7 @@ export function buildSymbolLayer(tiles: TilesScene): SymbolLayer {
 
   function dispose(): void {
     while (group.children.length > 0) group.remove(group.children[0]!);
-    for (const material of [peakMaterial, treeMaterial]) {
+    for (const material of [peakMaterial, treeMaterial, waveMaterial]) {
       material.map?.dispose();
       material.dispose();
     }

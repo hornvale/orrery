@@ -11,14 +11,19 @@ export interface RungBudget {
   peakMinElevationM: number;
   /** Minimum area a forest patch must have to be eligible at this rung. */
   forestMinArea: number;
+  /** Tile-grid stride between candidate ocean wave-marks at this rung (bigger
+   * = sparser scatter). */
+  waveStride: number;
+  /** Max number of wave-mark symbols to show at this rung. */
+  waves: number;
 }
 
 // Visual-pass-tuned. Thresholds fall and budgets rise as we zoom in, so finer
 // features emerge. Angular radius (rad) of the visible cap drives the rung.
 export const RUNG_BUDGETS: Record<Rung, RungBudget> = {
-  far: { peaks: 12, forests: 8, peakMinElevationM: 3000, forestMinArea: 60 },
-  mid: { peaks: 40, forests: 30, peakMinElevationM: 1500, forestMinArea: 15 },
-  near: { peaks: 120, forests: 90, peakMinElevationM: 500, forestMinArea: 3 },
+  far: { peaks: 12, forests: 8, peakMinElevationM: 3000, forestMinArea: 60, waveStride: 14, waves: 40 },
+  mid: { peaks: 40, forests: 30, peakMinElevationM: 1500, forestMinArea: 15, waveStride: 10, waves: 90 },
+  near: { peaks: 120, forests: 90, peakMinElevationM: 500, forestMinArea: 3, waveStride: 7, waves: 160 },
 };
 
 /** Coarser rung when more of the sphere is visible. Boundaries visual-tuned. */
