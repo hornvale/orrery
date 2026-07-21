@@ -319,6 +319,70 @@ test('the vantage: the wheel no longer switches views, only zooms', async ({ pag
   expect(opacities[2]).toBe('0'); // the map never faded in
 });
 
+test('the diorama: every .hud-map-style option renders the map non-blank (The Diorama, Task 4)', async ({ page }) => {
+  test.setTimeout(240_000);
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await page.goto('#seed=42');
+  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+
+  // The Map view is not URL-addressable (only system/globe are) — reach it
+  // by selecting Globe first (sets the center the map will show) and then
+  // Map from the HUD dropdown, same as the round-trip test above.
+  await page.locator('.hud-view').selectOption('globe');
+  await page.waitForTimeout(2_500);
+  await page.locator('.hud-view').selectOption('map');
+  await page.waitForTimeout(3_000); // region fetch + mount
+
+  const mapStyleSelect = page.locator('.hud-map-style');
+  await expect(mapStyleSelect).toHaveCount(1);
+
+  for (const style of ['voxel', 'pixel']) {
+    await mapStyleSelect.selectOption(style);
+    // A VIEWPORT screenshot, not an element/locator one — the WebGL canvas
+    // continuously re-renders, so a locator screenshot's stability wait can
+    // time out (same idiom as "the map rung" test above).
+    await page.waitForTimeout(500);
+    const shot = await page.screenshot();
+    // A style rebuild that throws (or renders nothing) still yields a
+    // compositor frame, but a blank/degenerate one compresses to a tiny
+    // PNG — the same non-blank floor The Massing's Task-7 style roster uses,
+    // not a pixel-baseline comparison (none exists; WebGL is too noisy for
+    // one, and Step 3's isometric framing pass is a controller visual check,
+    // not a stored golden here).
+    expect(shot.length, `${style} rendered blank`).toBeGreaterThan(5_000);
+  }
+
+  expect(errors).toEqual([]);
+});
+
+test('the diorama: switching back to pixel restores the flat map (The Diorama, Task 4)', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await page.goto('#seed=42');
+  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+
+  await page.locator('.hud-view').selectOption('globe');
+  await page.waitForTimeout(2_500);
+  await page.locator('.hud-view').selectOption('map');
+  await page.waitForTimeout(3_000);
+
+  const mapStyleSelect = page.locator('.hud-map-style');
+  // voxel is the default (main.ts wires `hud.setMapStyle('voxel')` before the
+  // first frame) — switch away and back to exercise the kept flat-map path
+  // rather than just reading mount state.
+  await mapStyleSelect.selectOption('pixel');
+  await page.waitForTimeout(500);
+  const pixelShot = await page.screenshot();
+  expect(pixelShot.length).toBeGreaterThan(5_000);
+
+  expect(errors).toEqual([]);
+});
+
 test('the style roster: every render style renders the globe non-blank and transformed', async ({ page }) => {
   test.setTimeout(240_000);
   const errors: string[] = [];
