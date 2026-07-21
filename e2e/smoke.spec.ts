@@ -11,8 +11,8 @@ test('seed 42 boots, renders, and stays console-clean', async ({ page }) => {
   await expect(page.locator('canvas.view-canvas')).toHaveCount(3); // system, globe, map
   await expect(page.locator('.scale-caption')).toContainText('schematic scale');
 
-  // The view toggle is the zoom ladder's discrete control.
-  await page.getByRole('button', { name: /view: globe/ }).click();
+  // The Vantage: view switching is explicit via the HUD dropdown.
+  await page.locator('.hud-view').selectOption('globe');
   await expect(page.locator('.scale-caption')).toContainText('relief is exaggerated', { timeout: 10_000 });
 
   expect(errors).toEqual([]);
@@ -134,7 +134,69 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   expect(errors).toEqual([]);
 });
 
-test('the map rung: zooming into the globe crosses to the flat map and back', async ({ page }) => {
+/** Polls the three view canvases' opacities until `predicate` passes or the
+ * timeout elapses — the crossfade is ~1.5s, so a plain read racing that
+ * transition would catch it mid-fade rather than settled. */
+async function waitForOpacities(
+  page: import('@playwright/test').Page,
+  predicate: (opacities: string[]) => boolean,
+  timeoutMs = 5_000,
+): Promise<string[]> {
+  const start = Date.now();
+  for (;;) {
+    const opacities = await page.evaluate(() =>
+      [...document.querySelectorAll('canvas.view-canvas')].map((c) => (c as HTMLElement).style.opacity),
+    );
+    if (predicate(opacities)) return opacities;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`opacities did not settle in time: ${JSON.stringify(opacities)}`);
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+test('the map rung: the dropdown crosses to the flat map and back', async ({ page }) => {
+  await page.goto('#seed=42&view=globe&day=0.1');
+  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await page.waitForTimeout(800);
+  // pause the clock (same idiom as the other tests)
+  await page.locator('.hud-bottom button').first().click();
+
+  // The Vantage: view switching is explicit via the HUD dropdown — the wheel
+  // no longer crosses views, it only zooms within the active one.
+  await page.locator('.hud-view').selectOption('map');
+
+  // Let the region fetch + ~1.5s crossfade settle: the map canvas (nth 2)
+  // reaches full opacity.
+  await waitForOpacities(page, (opacities) => opacities[2] === '1');
+
+  // The map canvas renders non-blank (the placeholder quad). Use a VIEWPORT
+  // screenshot, NOT an element/locator one — the WebGL canvas continuously
+  // re-renders, so `locator.screenshot()`'s stability wait can time out.
+  await page.waitForTimeout(500); // let the region fetch settle
+  const mapShot = await page.screenshot();
+  expect(mapShot.length).toBeGreaterThan(5000);
+
+  // Select back to the globe.
+  await page.locator('.hud-view').selectOption('globe');
+  await waitForOpacities(page, (opacities) => opacities[1] === '1');
+});
+
+test('the vantage: a full round-trip through the dropdown', async ({ page }) => {
+  await page.goto('#seed=42&view=system');
+  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+
+  await page.locator('.hud-view').selectOption('globe');
+  await waitForOpacities(page, (opacities) => opacities[1] === '1');
+
+  await page.locator('.hud-view').selectOption('map');
+  await waitForOpacities(page, (opacities) => opacities[2] === '1');
+
+  await page.locator('.hud-view').selectOption('system');
+  await waitForOpacities(page, (opacities) => opacities[0] === '1');
+});
+
+test('the vantage: the wheel no longer switches views, only zooms', async ({ page }) => {
   await page.goto('#seed=42&view=globe&day=0.1');
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
   await page.waitForTimeout(800);
@@ -147,35 +209,21 @@ test('the map rung: zooming into the globe crosses to the flat map and back', as
   const cy = box.y + box.height / 2;
   await page.mouse.move(cx, cy);
 
-  // Wheel INTO the globe hard: cross its dolly floor, then hand off to the map
-  // rung. (~26 steps clears OrbitControls' damping down to minDistance.)
-  for (let i = 0; i < 26; i++) {
+  // Wheel INTO the globe hard — hard enough that, under the old
+  // wheel-handoff behavior, this would have crossed the dolly floor into the
+  // map rung (~26 steps used to clear it).
+  for (let i = 0; i < 30; i++) {
     await page.mouse.wheel(0, -120);
     await page.waitForTimeout(80);
   }
-  // Let the region fetch + 1.5s crossfade settle.
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(1_800); // longer than the ~1.5s crossfade, so a
+  // handoff (if one wrongly fired) would have finished by now.
 
-  // The three view canvases: system, globe, map. On the map rung the map
-  // canvas (last) is opaque and the other two are faded out.
   const opacities = await page.evaluate(() =>
     [...document.querySelectorAll('canvas.view-canvas')].map((c) => (c as HTMLElement).style.opacity),
   );
-  expect(opacities[2]).toBe('1'); // map canvas fully faded in
-
-  // The map canvas renders non-blank (the placeholder quad). Use an ELEMENT
-  // screenshot, NOT a full-page one — headless WebGL full-page capture is
-  // flaky, but a direct element capture is reliable.
-  const mapShot = await page.locator('canvas.view-canvas').nth(2).screenshot();
-  expect(mapShot.length).toBeGreaterThan(5000);
-
-  // Wheel back OUT of the map: return to the globe.
-  await page.mouse.wheel(0, 120);
-  await page.waitForTimeout(2500);
-  const after = await page.evaluate(() =>
-    [...document.querySelectorAll('canvas.view-canvas')].map((c) => (c as HTMLElement).style.opacity),
-  );
-  expect(after[1]).toBe('1'); // globe canvas fully faded back in
+  expect(opacities[1]).toBe('1'); // still the globe
+  expect(opacities[2]).toBe('0'); // the map never faded in
 });
 
 test('the style roster: every render style renders the globe non-blank and transformed', async ({ page }) => {
