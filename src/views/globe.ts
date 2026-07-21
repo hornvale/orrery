@@ -624,7 +624,10 @@ export function createGlobeView(
         g = base[3 * v + 1]!;
         b = base[3 * v + 2]!;
       }
-      if (icy) {
+      // The dynamic snow/ice blend is a photoreal decoration: under the flat
+      // unlit pixel base it washes cold regions to white (the biome palette's
+      // own `ice` colour already represents ice), so suppress it there.
+      if (icy && !activeBaseTreatment?.unlit) {
         const frac = iceFraction(src, idx[v]!, day, seasonalCtx);
         r += (ICE_COLOR[0] - r) * frac;
         g += (ICE_COLOR[1] - g) * frac;
@@ -907,6 +910,17 @@ export function createGlobeView(
     // via `buildTileSlot`.
     activeMaterial = treatment?.unlit ? flatMaterial : litMaterial;
     for (const slot of tileSlots.values()) slot.mesh.material = activeMaterial;
+    // The ocean's sun-glint and wave motion are photoreal decorations; a flat
+    // pixel-art map wants still, glint-free water (the specular glint blooms to
+    // a white wash over water at near zoom). Suppress both while unlit; restore
+    // on the way back to a lit style.
+    const lit = !treatment?.unlit;
+    setGlint(lit);
+    setWaves(lit);
+    // The translucent water sphere is a photoreal sea surface; on the flat map
+    // the blue ocean TILES already are the sea, and at near zoom the water
+    // sphere's haze washes the view pale. Hide it while unlit.
+    ocean.object3d.visible = lit;
     rebuildBase();
     repaint(lastDay ?? 0, true);
   }
