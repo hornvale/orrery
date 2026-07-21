@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import type { RegionScene } from '../sim/scene';
 import { pixelColorFor } from './styles/pixelBase';
+import { overworldRGBA, OVERWORLD_TEXTURE_DIM } from './styles/overworld';
 
 /** RGBA bytes (4 per node, row-major, length 4·(samples+1)²) for `region`,
  * each node coloured by the curated flat pixel palette. Pure — no GPU. */
@@ -38,6 +39,23 @@ export function regionPixelTexture(region: RegionScene): THREE.DataTexture {
   // symbol overlay (`mapSymbols` `gridToWorld`) places gy=0 at the quad's TOP.
   // DataTexture's default `flipY:false` would draw row 0 at the BOTTOM, mirroring
   // the base against the symbols. Flip so both agree — symbols land on their terrain.
+  tex.flipY = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** The procedural 16-bit-RPG-style overworld texture (campaign "The
+ * Overworld"): a higher-resolution replacement for `regionPixelTexture`,
+ * built from `overworldRGBA` at `OVERWORLD_TEXTURE_DIM`. Same wrapper shape
+ * as `regionPixelTexture` (crisp `NearestFilter`, `flipY:true` so the base
+ * agrees with the symbol overlay) — only the pixel source differs. */
+export function overworldTexture(region: RegionScene): THREE.DataTexture {
+  const dim = OVERWORLD_TEXTURE_DIM;
+  const tex = new THREE.DataTexture(overworldRGBA(region, dim), dim, dim, THREE.RGBAFormat);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  // Same rationale as `regionPixelTexture`'s flip: row 0 of `overworldRGBA`
+  // is region gy=0, and the symbol overlay expects gy=0 at the quad's top.
   tex.flipY = true;
   tex.needsUpdate = true;
   return tex;

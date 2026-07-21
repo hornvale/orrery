@@ -9,8 +9,10 @@ const quant = (c: number): number => Math.min(255, Math.round(c / PIXEL_STEP) * 
  * reference-map look. */
 const OCEAN_DEEP: readonly [number, number, number] = [26, 66, 132];
 const OCEAN_SHALLOW: readonly [number, number, number] = [58, 138, 200];
-/** How far below sea level (m) a tile must be to read as "deep". Visual-tuned. */
-const OCEAN_DEEP_THRESHOLD_M = 1200;
+/** How far below sea level (m) a tile must be to read as "deep". Visual-tuned.
+ * Exported so `overworld.ts` (The Overworld) can reuse the exact deep/shallow
+ * split instead of re-tuning a second threshold. */
+export const OCEAN_DEEP_THRESHOLD_M = 1200;
 
 /** River base colour (The Freshwater): a flowing blue, distinct from both
  * ocean tones (brighter/more saturated cyan than `OCEAN_SHALLOW`) so a river
@@ -35,7 +37,7 @@ const RIVER_DRAINAGE_LIGHTEN = 0.12;
  * critically — ice/alpine are NOT near-white (unlit, a near-white biome reads
  * as a blown-out blob), so every biome stays legible on a flat globe. Names
  * are hornvale's kebab-case `Biome::name`. Visual-pass-tuned. */
-const PIXEL_LAND_RGB: Readonly<Record<string, readonly [number, number, number]>> = {
+export const PIXEL_LAND_RGB: Readonly<Record<string, readonly [number, number, number]>> = {
   ice: [206, 230, 242], // light cyan, deliberately not white
   tundra: [160, 172, 138],
   taiga: [46, 110, 74], // richer boreal green

@@ -9,7 +9,7 @@
  * here. */
 import * as THREE from "three";
 import type { RegionScene } from "../sim/scene";
-import { regionPixelTexture } from "./mapTexture";
+import { overworldTexture } from "./mapTexture";
 import type { MapSymbols } from "./mapSymbols";
 import { buildMapSymbols } from "./mapSymbols";
 import { buildVoxelHeightfieldGeometry } from "./worldMesh";
@@ -203,8 +203,10 @@ export function createMapView(): MapView {
     mesh = null;
   }
 
-  /** `'pixel'`: today's exact path, verbatim — a flat quad textured with
-   * `regionPixelTexture`, plus the symbol overlay. */
+  /** `'pixel'`: a flat quad textured with the procedural overworld renderer
+   * (`overworldTexture`, campaign "The Overworld"), plus the symbol
+   * overlay. Plane/camera/symbols are otherwise unchanged from the original
+   * flat pixel-art path. */
   function mountPixel(region: RegionScene): void {
     // Regions are square face-tiles (same sample count on both axes), so a
     // unit square reads at the right aspect regardless of `samples`.
@@ -213,7 +215,7 @@ export function createMapView(): MapView {
       2 * FRUSTUM_HALF_EXTENT,
     );
     const material = new THREE.MeshBasicMaterial({
-      map: regionPixelTexture(region),
+      map: overworldTexture(region),
     });
     mesh = new THREE.Mesh(geometry, material);
     mesh.name = `map-region-${region.face}:${region.level}:${region.ix}:${region.iy}`;
