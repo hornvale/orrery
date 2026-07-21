@@ -1,21 +1,27 @@
 /** The flat "map" rung's procedural 16-bit-RPG-style overworld texture
  * (campaign "The Overworld"): a higher-resolution replacement for
- * `mapTexture.ts`'s one-flat-color-per-node `regionPixelTexture`. This task
- * establishes the pipeline and a palette fill only — every output pixel
- * takes its NEAREST region node's class (ocean depth, inland water, or
- * biome) and colors it from `OVERWORLD_PALETTE`. Later tasks in this
- * campaign layer within-biome dithering (Task 2), crafted coastlines (Task
- * 3), and outlines (Task 4) on top of this same fill — none of those change
+ * `mapTexture.ts`'s one-flat-color-per-node `regionPixelTexture`. Task 1
+ * established the pipeline and a palette fill: every output pixel takes its
+ * NEAREST region node's class (ocean depth, inland water, or biome) from
+ * `OVERWORLD_PALETTE`. Task 2 (this task) adds within-biome/within-ocean
+ * ordered (Bayer) dithering — a land or ocean pixel now alternates between
+ * its class's `light`/`dark` tone pair by a fixed 4x4 threshold matrix
+ * (`BAYER_4`), biased by the node's elevation relative to sea level so the
+ * dither also reads as coarse relief shading (higher land / shallower water
+ * leans `light`). Later tasks (crafted coastlines, Task 3; biome-boundary
+ * outlines, Task 4) layer on top of this same fill — none of those change
  * which class a node resolves to, only how it's painted, so the class
  * resolution below mirrors `pixelBase.ts`'s `pixelColorFor` exactly (same
  * priority: inland water, then ocean depth, then biome name) rather than
- * inventing a second read of the same data. The pixel math
- * (`overworldRGBA`) is split from the `THREE.DataTexture` wrapper
+ * inventing a second read of the same data. River/lake/shallows/foam/outline
+ * tones are NOT dithered (coastlines/outlines are later tasks). The pixel
+ * math (`overworldRGBA`) is split from the `THREE.DataTexture` wrapper
  * (`overworldTexture`, in `mapTexture.ts`), same split as
  * `regionPixelRGBA`/`regionPixelTexture` and `./moonTexture.ts`, so it is
  * unit-testable without constructing a three.js texture. Pure — no
  * `Math.random`; determinism is a hard constraint (same region + dim always
- * paints the same bytes). */
+ * paints the same bytes) — the dither is a fixed function of `(px, py)` and
+ * the node's own fields, never wall-clock or random state. */
 import type { RegionScene } from '../../sim/scene';
 import { OCEAN_DEEP_THRESHOLD_M, PIXEL_LAND_RGB } from './pixelBase';
 
@@ -99,11 +105,71 @@ export const OVERWORLD_PALETTE = {
   outline: OVERWORLD_OUTLINE,
 } as const;
 
-/** Resolve region node `idx`'s overworld tone. Mirrors `pixelColorFor`'s
- * class-resolution priority exactly (inland water class, then ocean depth,
- * then biome name) so this renderer never disagrees with the flat pixel map
- * about WHICH class a node is — only how it's painted. */
-function toneForNode(region: RegionScene, idx: number): RGB {
+/** Ordered (Bayer) dither threshold matrix, the classic 4x4 index matrix
+ * normalized so each of its 16 cells owns a distinct, evenly-spaced
+ * threshold in `[0, 1)` (`(rawIndex + 0.5) / 16`) — tiled across the output
+ * texture: pixel `(px, py)`'s threshold is `BAYER_4[py % 4][px % 4]`. At a
+ * neutral (unbiased) threshold of 0.5, exactly half of the 16 cells fall
+ * below it and half at-or-above, so a uniform bias still paints BOTH tones
+ * of a pair — the ordered-dither "base texture" — rather than a flat fill. */
+const BAYER_4_RAW: readonly (readonly number[])[] = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+];
+export const BAYER_4: readonly (readonly number[])[] = BAYER_4_RAW.map((row) =>
+  row.map((v) => (v + 0.5) / 16),
+);
+
+/** How strongly a node's elevation (relative to sea level) shifts the
+ * dither's light/dark threshold away from neutral (0.5) — 0 would disable
+ * the elevation bias entirely (a pure 50/50 Bayer texture); 1 lets an
+ * elevation at or beyond its relief/depth scale (see `OVERWORLD_RELIEF_SCALE_M`,
+ * `OCEAN_DEEP_THRESHOLD_M`) saturate the threshold to 0 or 1, painting a
+ * single flat tone (matching the old hard ocean deep/shallow cutoff at the
+ * threshold's boundary). Visual-tuned. */
+export const OVERWORLD_DITHER_STRENGTH = 0.5;
+
+/** Elevation delta (meters, above/below sea level) at which a LAND node's
+ * dither bias reaches its full `OVERWORLD_DITHER_STRENGTH` swing toward the
+ * `light` tone — a relief-reading knob, not a physical constant (real-world
+ * mountain elevations run well past this, so land rarely fully saturates,
+ * keeping the base dither texture visible even on high ground).
+ * Visual-tuned. */
+const OVERWORLD_RELIEF_SCALE_M = 2000;
+
+/** This node's dither bias in `[-1, 1]`: how far `elevationM` sits above (+)
+ * or below (-) `referenceM`, scaled by `scaleM` and clamped. Shared by land
+ * (relative to sea level, `OVERWORLD_RELIEF_SCALE_M`) and ocean (relative to
+ * sea level, `OCEAN_DEEP_THRESHOLD_M`) so both read "higher/shallower leans
+ * light, lower/deeper leans dark" the same way. */
+function elevationBias(elevationM: number, referenceM: number, scaleM: number): number {
+  return Math.max(-1, Math.min(1, (elevationM - referenceM) / scaleM));
+}
+
+/** Pick `tones.light` or `tones.dark` for output pixel `(px, py)` given a
+ * `bias` in `[-1, 1]` from `elevationBias` (positive biases toward `light`).
+ * The Bayer threshold at this pixel is compared against a threshold shifted
+ * by `bias * OVERWORLD_DITHER_STRENGTH` off its neutral 0.5 — `bias === 0`
+ * reproduces the unbiased 50/50 dither texture; `bias === ±1` can saturate
+ * to a single flat tone once the shifted threshold clears 0 or 1. */
+function ditherTone(tones: { light: RGB; dark: RGB }, px: number, py: number, bias: number): RGB {
+  const n = BAYER_4.length;
+  const bayerValue = BAYER_4[py % n]![px % n]!;
+  const threshold = Math.max(0, Math.min(1, 0.5 + OVERWORLD_DITHER_STRENGTH * bias));
+  return bayerValue < threshold ? tones.light : tones.dark;
+}
+
+/** Resolve region node `idx`'s overworld tone at output pixel `(px, py)`.
+ * Mirrors `pixelColorFor`'s class-resolution priority exactly (inland water
+ * class, then ocean depth, then biome name) so this renderer never disagrees
+ * with the flat pixel map about WHICH class a node is — only how it's
+ * painted. Inland water (river/lake) stays a flat tone (no dither, matching
+ * Task 2's scope — coastlines are Task 3); ocean and biome land both dither
+ * between their tone pair's `light`/`dark`, biased by the node's elevation
+ * relative to sea level. */
+function toneForNode(region: RegionScene, idx: number, px: number, py: number): RGB {
   // Defensive optional chaining throughout, same rationale as
   // `pixelColorFor`: unit fixtures commonly cast a partial object through
   // `unknown` into `RegionScene`, so a field the interface marks required
@@ -115,18 +181,28 @@ function toneForNode(region: RegionScene, idx: number): RGB {
     const saltBasinIndex = region.waterLegend.indexOf('salt-basin');
     if (saltBasinIndex >= 0 && waterClass === saltBasinIndex) return OVERWORLD_PALETTE.lake;
   }
+  const seaLevel = region.sea_level_m ?? 0;
+  const elevation = region.elevation_m?.[idx] ?? 0;
   if (region.ocean?.[idx]) {
-    const deep = (region.elevation_m?.[idx] ?? 0) < (region.sea_level_m ?? 0) - OCEAN_DEEP_THRESHOLD_M;
-    return deep ? OVERWORLD_PALETTE.ocean.deep : OVERWORLD_PALETTE.ocean.shallow;
+    const bias = elevationBias(elevation, seaLevel, OCEAN_DEEP_THRESHOLD_M);
+    return ditherTone(
+      { light: OVERWORLD_PALETTE.ocean.shallow, dark: OVERWORLD_PALETTE.ocean.deep },
+      px,
+      py,
+      bias,
+    );
   }
   const name = region.biomeLegend?.[region.biome?.[idx] ?? -1];
-  const tone = name ? OVERWORLD_PALETTE.biome[name] : undefined;
-  return tone ? tone.light : OVERWORLD_UNKNOWN;
+  const tones = name ? OVERWORLD_PALETTE.biome[name] : undefined;
+  if (!tones) return OVERWORLD_UNKNOWN;
+  const bias = elevationBias(elevation, seaLevel, OVERWORLD_RELIEF_SCALE_M);
+  return ditherTone(tones, px, py, bias);
 }
 
 /** RGBA bytes (4 per output texel, row-major, length `dim*dim*4`) for
  * `region`, rendered at `dim x dim`: each output pixel takes its NEAREST
- * region node's class/tone (palette fill only — no dither/coast/outline
+ * region node's class, dithered between that class's `light`/`dark` tone
+ * pair by the Bayer matrix and the node's elevation (no coastlines/outlines
  * yet, see this module's doc comment). Row-major top-down (row 0 = region
  * gy=0), matching `regionPixelRGBA`'s convention so `overworldTexture` can
  * flip the same way (`flipY:true`) to agree with the symbol overlay. Pure —
@@ -140,7 +216,7 @@ export function overworldRGBA(region: RegionScene, dim: number): Uint8Array {
     const rowBase = nodeRow * nodesPerSide;
     for (let px = 0; px < dim; px++) {
       const nodeCol = Math.min(region.samples, Math.floor((px / dim) * nodesPerSide));
-      const [r, g, b] = toneForNode(region, rowBase + nodeCol);
+      const [r, g, b] = toneForNode(region, rowBase + nodeCol, px, py);
       const o = (py * dim + px) * 4;
       out[o] = r;
       out[o + 1] = g;

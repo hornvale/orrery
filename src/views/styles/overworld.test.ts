@@ -48,6 +48,51 @@ function alphaAt(buf: Uint8Array, dim: number, x: number, y: number): number {
   return buf[(y * dim + x) * 4 + 3]!;
 }
 
+/** A uniform-biome, uniform-elevation region (all 4 nodes the same land
+ * biome at the same elevation) — isolates the Bayer dither's own texture
+ * from any node-to-node variation, so a test can assert the dither alone
+ * produces both the biome's light and dark tones. */
+function flatBiomeRegion(biomeName: string, elevationM = 400): RegionScene {
+  const samples = 1;
+  const n = (samples + 1) * (samples + 1); // 4 nodes
+  return {
+    schema: 'scene/tiles-region/v1',
+    seed: 1,
+    face: 0,
+    level: 3,
+    ix: 0,
+    iy: 0,
+    samples,
+    sea_level_m: 0,
+    season_period_days: 360,
+    circulationBands: 3,
+    biomeLegend: [biomeName],
+    elevation_m: Array.from({ length: n }, () => elevationM),
+    ocean: Array.from({ length: n }, () => false),
+    biome: Array.from({ length: n }, () => 0),
+    plate: Array.from({ length: n }, () => 0),
+    unrest: Array.from({ length: n }, () => 0),
+    t_mean_c: Array.from({ length: n }, () => 10),
+    t_swing_c: Array.from({ length: n }, () => 5),
+    moisture: Array.from({ length: n }, () => 0.5),
+    water: Array.from({ length: n }, () => 0),
+    waterLegend: [],
+    drainage: Array.from({ length: n }, () => 0),
+    waterfalls: [],
+  } as unknown as RegionScene;
+}
+
+/** The set of distinct `(r,g,b)` colors present anywhere in a `dim x dim`
+ * RGBA buffer (alpha ignored). */
+function distinctColors(buf: Uint8Array): Array<[number, number, number]> {
+  const seen = new Map<string, [number, number, number]>();
+  for (let i = 0; i < buf.length; i += 4) {
+    const key = `${buf[i]},${buf[i + 1]},${buf[i + 2]}`;
+    if (!seen.has(key)) seen.set(key, [buf[i]!, buf[i + 1]!, buf[i + 2]!]);
+  }
+  return Array.from(seen.values());
+}
+
 describe('overworldRGBA — palette fill', () => {
   test('colors each output pixel by its nearest region node biome', () => {
     const region = miniRegion();
@@ -89,5 +134,30 @@ describe('overworldRGBA — palette fill', () => {
   test('OVERWORLD_PALETTE biome tones have a light/dark pair that differ', () => {
     const forest = OVERWORLD_PALETTE.biome['temperate-forest']!;
     expect(forest.light).not.toEqual(forest.dark);
+  });
+});
+
+describe('overworldRGBA — within-biome Bayer dithering', () => {
+  test('dithers each biome between its light/dark tones by the Bayer matrix', () => {
+    const region = flatBiomeRegion('temperate-forest'); // uniform biome + elevation
+    const buf = overworldRGBA(region, 16);
+    const tones = distinctColors(buf); // should contain BOTH light and dark forest tones
+    expect(tones).toContainEqual(OVERWORLD_PALETTE.biome['temperate-forest']!.light);
+    expect(tones).toContainEqual(OVERWORLD_PALETTE.biome['temperate-forest']!.dark);
+  });
+
+  test('the dither is deterministic in (px, py) — identical output for identical input', () => {
+    const region = flatBiomeRegion('temperate-forest');
+    expect(overworldRGBA(region, 16)).toEqual(overworldRGBA(region, 16));
+  });
+
+  test('a flat-elevation biome shows only its own two tones (no stray colors)', () => {
+    const region = flatBiomeRegion('desert');
+    const buf = overworldRGBA(region, 16);
+    const tones = distinctColors(buf);
+    const desert = OVERWORLD_PALETTE.biome['desert']!;
+    expect(tones.length).toBe(2);
+    expect(tones).toContainEqual(desert.light);
+    expect(tones).toContainEqual(desert.dark);
   });
 });
