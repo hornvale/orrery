@@ -895,6 +895,14 @@ describe('buildVoxelHeightfieldGeometry', () => {
     const ys = new Set<number>();
     for (let i = 0; i < pos.count; i++) ys.add(Number(pos.getY(i).toFixed(6)));
     expect(ys.size).toBe(1);
+    // `ys.size === 1` alone doesn't prove no walls: a `<`→`<=` regression on
+    // the emission guard would emit degenerate equal-height wall quads whose
+    // top and bottom Y are identical, which would still pass that check. Nail
+    // it down directly — samples=4 → 16 cells × 2 top tris each, no walls —
+    // and confirm no wall triangle (degenerate at an equal-height boundary)
+    // exists at all.
+    expect(triangleCount(geom)).toBe(4 * 4 * 2 /* top faces only, no walls */);
+    expect(hasWallBetweenEqualCells(geom)).toBe(false);
   });
 
   it("colors each cell flat via colorAt(node) — a region node index IS its color index", () => {
