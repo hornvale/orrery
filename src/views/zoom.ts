@@ -125,25 +125,3 @@ export function dollyPosition(
 export function dollyLookAt(worldPos: THREE.Vector3, value: number): THREE.Vector3 {
   return lerpVector3(new THREE.Vector3(0, 0, 0), worldPos, value);
 }
-
-/** What a wheel event at the camera's current dolly distance means for the
- * altitude ladder: wheeling INTO the system rung's floor is a request to
- * descend to the globe; wheeling OUT past the globe's ceiling is a request
- * to ascend to the system. Anywhere else it is just a zoom. `deltaY` uses
- * DOM convention (negative = zoom in). The 1% tolerance absorbs
- * OrbitControls' damping never quite parking exactly on its limit. */
-export type HandoffIntent = 'to-globe' | 'to-system' | 'to-map' | 'to-globe-from-map' | null;
-
-export function wheelHandoff(
-  view: ZoomTarget,
-  deltaY: number,
-  distance: number,
-  minDistance: number,
-  maxDistance: number,
-): HandoffIntent {
-  if (view === 'system' && deltaY < 0 && distance <= minDistance * 1.01) return 'to-globe';
-  if (view === 'globe' && deltaY > 0 && distance >= maxDistance * 0.99) return 'to-system';
-  if (view === 'globe' && deltaY < 0 && distance <= minDistance * 1.01) return 'to-map';
-  if (view === 'map' && deltaY > 0 && distance >= maxDistance * 0.99) return 'to-globe-from-map';
-  return null;
-}

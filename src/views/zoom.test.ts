@@ -7,7 +7,6 @@ import {
   lerp,
   lerpVector3,
   opacitiesFor,
-  wheelHandoff,
   ZoomController,
 } from './zoom';
 
@@ -111,12 +110,6 @@ describe('three-rung ladder (map)', () => {
     expect(mid.mapOpacity).toBeCloseTo(0.5);
     expect(mid.systemOpacity).toBe(0);
   });
-
-  test('wheelHandoff crosses globe<->map at the dolly limits', () => {
-    expect(wheelHandoff('globe', -1, 1.0, 1.0, 10)).toBe('to-map');
-    expect(wheelHandoff('map', 1, 9.99, 1.0, 10)).toBe('to-globe-from-map');
-    expect(wheelHandoff('system', -1, 1.0, 1.0, 10)).toBe('to-globe');
-  });
 });
 
 describe('dollyPosition / dollyLookAt', () => {
@@ -137,22 +130,5 @@ describe('dollyPosition / dollyLookAt', () => {
   it('looks at the star at value=0 and the world at value=1', () => {
     expect(dollyLookAt(worldPos, 0).equals(new THREE.Vector3(0, 0, 0))).toBe(true);
     expect(dollyLookAt(worldPos, 1).equals(worldPos)).toBe(true);
-  });
-});
-
-describe('wheelHandoff', () => {
-  it('zooming in at the system floor asks for the globe', () => {
-    expect(wheelHandoff('system', -1, 0.301, 0.3, 40)).toBe('to-globe');
-  });
-  it('zooming out at the globe ceiling asks for the system', () => {
-    expect(wheelHandoff('globe', +1, 11.99, 2.3, 12)).toBe('to-system');
-  });
-  it('mid-range wheel is just a zoom — no handoff', () => {
-    expect(wheelHandoff('system', -1, 5, 0.3, 40)).toBeNull();
-    expect(wheelHandoff('globe', +1, 6, 2.3, 12)).toBeNull();
-  });
-  it('wheeling away from the limit never hands off', () => {
-    expect(wheelHandoff('system', +1, 0.301, 0.3, 40)).toBeNull();
-    expect(wheelHandoff('globe', -1, 11.99, 2.3, 12)).toBeNull();
   });
 });
