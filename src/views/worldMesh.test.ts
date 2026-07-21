@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   REFERENCE_RADIUS_M,
+  VOXEL_CLIFF_DARKEN,
   buildFaceGeometry,
   buildRegionTileGeometry,
   buildTileGeometry,
+  buildVoxelTileGeometry,
   quantizeBands,
   sampleElevationBilinear,
   sampleTile,
@@ -79,6 +81,42 @@ function flatZeroTiles(): TilesScene {
 function slopedTiles(): TilesScene {
   const width = 1440, height = 2, n = width * height;
   const elevation_m = Array.from({ length: n }, (_, i) => 3000 * (((i % width) % 4) / 4));
+  return {
+    schema: 'scene/tiles/v1', width, height, sea_level_m: 0,
+    elevation_m, ocean: Array(n).fill(false),
+    biome: Array(n).fill(0), biomeLegend: ['steppe'], features: [],
+    t_mean_c: Array(n).fill(15), t_swing_c: Array(n).fill(5), tDiurnalAmpC: Array(n).fill(8),
+    currentEast: Array(n).fill(0), currentNorth: Array(n).fill(0),
+    season_period_days: 365, circulationBands: null, moisture: Array(n).fill(0.5),
+    plate: Array(n).fill(0), unrest: Array(n).fill(0), locked: false,
+    precipMmYr: Array(n).fill(800), snowFraction: Array(n).fill(0.1),
+    precipRegime: Array(n).fill(0), cloudFraction: Array(n).fill(0.4),
+    weatherPropensity: Array(n).fill(0.6), cloudType: Array(n).fill(0),
+    water: Array(n).fill(3), waterLegend: ['ocean', 'salt-basin', 'river', 'dry-land'],
+    drainage: Array(n).fill(0), waterfalls: [],
+  };
+}
+
+/** A fine (1°/cell) equirect world whose elevation is a clean quadrant step:
+ * 5000 m wherever BOTH lat>0 and lon>0, 0 m everywhere else. `face: 0` is the
+ * equatorial face (centered at lat=0, lon=0 — see `cubeSphere.ts`'s `FACES`
+ * table), so a level-0 tile's four `cellsPerEdge: 2` cell centers land near
+ * (±24°, ±26°) — one in each quadrant, comfortably away from the lat=0/lon=0
+ * seams (1° pixels either side), so `sampleElevationBilinear` reads a clean
+ * step at each center rather than blending across a quadrant boundary. Used
+ * by `buildVoxelTileGeometry`'s tests below: with `{face:0,level:0,ix:0,iy:0}`
+ * and `cellsPerEdge: 2`, exactly the (lat>0,lon>0) cell reads high — the
+ * "one cell high, three low" fixture the task brief calls for. */
+function stepTiles(): TilesScene {
+  const width = 360, height = 180, n = width * height;
+  const elevation_m: number[] = new Array(n);
+  for (let row = 0; row < height; row++) {
+    const lat = 90 - (row + 0.5) * (180 / height);
+    for (let col = 0; col < width; col++) {
+      const lon = -180 + (col + 0.5) * (360 / width);
+      elevation_m[row * width + col] = lat > 0 && lon > 0 ? 5000 : 0;
+    }
+  }
   return {
     schema: 'scene/tiles/v1', width, height, sea_level_m: 0,
     elevation_m, ocean: Array(n).fill(false),
@@ -301,6 +339,112 @@ describe('buildRegionTileGeometry (terraced banding)', () => {
     // to 200m steps, at most 3000/200 + 1 = 16 band floors are reachable.
     expect(radii.size).toBeGreaterThan(1);
     expect(radii.size).toBeLessThanOrEqual(16);
+  });
+});
+
+describe('buildVoxelTileGeometry', () => {
+  const tile0 = { face: 0, level: 0, ix: 0, iy: 0 };
+
+  /** Non-indexed flat-shaded geometry: one triangle per 3 position entries. */
+  function triangleCount(geom: THREE.BufferGeometry): number {
+    return geom.getAttribute('position').count / 3;
+  }
+
+  /** Distance from the sphere's center — used to tell a "top" vertex (all 4
+   * corners of a cell's top face share one radius) from a "wall" vertex
+   * (mixes its cell's radius with a lower neighbor's). */
+  function radiusOf(pos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number): number {
+    return Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i));
+  }
+
+  /** True if any two of a triangle's 3 vertices sit at the EXACT same 3D
+   * position. A wall quad between two equal-radius cells would be built
+   * from a top corner and a bottom corner at the identical radius along the
+   * identical unit vector — i.e. the identical point — so its two triangles
+   * would be degenerate (zero area, a duplicated vertex). A correct
+   * implementation never emits a wall for an equal-height neighbor, so a
+   * degenerate triangle here means the emission rule regressed to `<=`. */
+  function hasWallBetweenEqualCells(geom: THREE.BufferGeometry): boolean {
+    const pos = geom.getAttribute('position');
+    const same = (i: number, j: number): boolean =>
+      Math.abs(pos.getX(i) - pos.getX(j)) < 1e-9 &&
+      Math.abs(pos.getY(i) - pos.getY(j)) < 1e-9 &&
+      Math.abs(pos.getZ(i) - pos.getZ(j)) < 1e-9;
+    for (let t = 0; t < pos.count; t += 3) {
+      if (same(t, t + 1) || same(t + 1, t + 2) || same(t, t + 2)) return true;
+    }
+    return false;
+  }
+
+  it('emits a top face per cell and a wall ONLY where a cell is higher than a neighbor', () => {
+    const stepTilesFixture = stepTiles();
+    const geom = buildVoxelTileGeometry(stepTilesFixture, tile0, 1, 1, () => [1, 1, 1], {
+      cellsPerEdge: 2,
+      bandM: 100,
+    });
+    const pos = geom.getAttribute('position');
+    // 4 cells × 2 top tris = 8 top tris minimum; the single high cell
+    // (lat>0, lon>0) has walls only toward its LOWER neighbors — its other
+    // two edges are the tile boundary (no in-tile neighbor, so no wall) —
+    // giving exactly 2 interior wall quads (4 tris).
+    expect(triangleCount(geom)).toBe(8 /* tops */ + 2 * 2 /* two wall quads */);
+    // No wall between two equal-height (both-low) cells.
+    expect(hasWallBetweenEqualCells(geom)).toBe(false);
+
+    // The high cell's top sits at a strictly greater radius than every low
+    // cell's top — confirming the "8 tops" aren't all flat/degenerate too.
+    // toFixed(5) (not more): positions are a Float32Array, so two vertices
+    // at the exact same pre-quantization radius can still land a few ULPs
+    // apart depending on their (different) unit-vector direction — the same
+    // rounding-tolerance rationale as `buildTileGeometry`'s banding test above.
+    const radii = new Set<number>();
+    for (let i = 0; i < 4 * 6; i++) radii.add(Number(radiusOf(pos, i).toFixed(5)));
+    expect(radii.size).toBe(2); // exactly one high band, one low band among the 4 tops
+  });
+
+  it("colors each cell flat (all of a cell's top verts share one color)", () => {
+    const stepTilesFixture = stepTiles();
+    const palette: Record<number, [number, number, number]> = {};
+    const colorAt = (i: number): [number, number, number] => {
+      palette[i] ??= [(i * 37) % 250, (i * 59) % 250, (i * 83) % 250];
+      return palette[i]!;
+    };
+    const geom = buildVoxelTileGeometry(stepTilesFixture, tile0, 1, 1, colorAt, {
+      cellsPerEdge: 2,
+      bandM: 100,
+    });
+    const col = geom.getAttribute('color');
+    // Pass 1 emits every cell's 6 top vertices contiguously, in row-major
+    // (row*cellsPerEdge+col) order, before any wall — so cell `c`'s top
+    // face is exactly vertices [c*6, c*6+6).
+    for (let c = 0; c < 4; c++) {
+      const base = c * 6;
+      const r0 = col.getX(base), g0 = col.getY(base), b0 = col.getZ(base);
+      for (let v = base + 1; v < base + 6; v++) {
+        expect(col.getX(v)).toBeCloseTo(r0, 6);
+        expect(col.getY(v)).toBeCloseTo(g0, 6);
+        expect(col.getZ(v)).toBeCloseTo(b0, 6);
+      }
+    }
+  });
+
+  it('a wall is darkened relative to its cell\'s top color by VOXEL_CLIFF_DARKEN', () => {
+    const stepTilesFixture = stepTiles();
+    const geom = buildVoxelTileGeometry(stepTilesFixture, tile0, 1, 1, () => [200, 100, 40], {
+      cellsPerEdge: 2,
+      bandM: 100,
+    });
+    const pos = geom.getAttribute('position');
+    const col = geom.getAttribute('color');
+    // Past the 4×6=24 top vertices, every remaining vertex belongs to a
+    // wall triangle and should carry the darkened color.
+    const topVerts = 4 * 6;
+    expect(pos.count).toBeGreaterThan(topVerts);
+    for (let v = topVerts; v < pos.count; v++) {
+      expect(col.getX(v) * 255).toBeCloseTo(200 * VOXEL_CLIFF_DARKEN, 3);
+      expect(col.getY(v) * 255).toBeCloseTo(100 * VOXEL_CLIFF_DARKEN, 3);
+      expect(col.getZ(v) * 255).toBeCloseTo(40 * VOXEL_CLIFF_DARKEN, 3);
+    }
   });
 });
 

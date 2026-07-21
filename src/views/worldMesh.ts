@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import type { RegionScene, TilesScene } from '../sim/scene';
 import type { RGB } from './lens';
-import { TILE_QUADS, tileGrid, unitFromLatLon, unitLatLon, type TileId } from './cubeSphere';
+import { TILE_QUADS, faceUnit, tileGrid, unitFromLatLon, unitLatLon, type TileId } from './cubeSphere';
 import { regionPatchUnits, sampleRegionElevationBilinear } from './regionPatch';
 
 /** Reference body radius (Earth's, meters) used only to turn raw elevation
@@ -176,6 +176,275 @@ export function buildRegionTileGeometry(
     },
     radiusAtLatLon,
   );
+}
+
+/** Darkening multiplier applied to a wall (cliff) face's color relative to
+ * its cell's top-face color — a fixed, flat multiplier (not a lighting
+ * calculation), so a cliff reads as a distinct vertical face at a glance
+ * regardless of the scene's actual light direction. ~0.75: dark enough to
+ * read as a riser, light enough that the cell's own hue stays recognizable. */
+export const VOXEL_CLIFF_DARKEN = 0.75;
+
+/** Build one cube-sphere tile's geometry as a `cellsPerEdge × cellsPerEdge`
+ * grid of extruded, flat-topped blocks — the Voxel style's base-tile
+ * geometry, and the campaign's keystone build. Each cell samples its own
+ * BANDED elevation (`quantizeBands`, reusing the Terraced style's banding)
+ * and renders as a flat-shaded, flat-colored top face at that band's radius;
+ * wherever an edge-neighbor's banded radius is LOWER, a vertical wall (the
+ * "cliff") drops from this cell's radius down to the neighbor's, darkened by
+ * `VOXEL_CLIFF_DARKEN`. That wall is what makes this read as blocks stacked
+ * on the terrain rather than merely a banded (but still smooth) surface —
+ * a voxel build with no walls is a failed voxel.
+ *
+ * Algorithm:
+ * 1. Sub-sample the tile into `cellsPerEdge`² cells. Each cell's center
+ *    (lat, lon) comes from the SAME cube-sphere mapping `tileGrid` uses
+ *    (`faceUnit`/`unitLatLon`), just parameterized by `cellsPerEdge` instead
+ *    of `TILE_QUADS` — so corners land exactly on the sphere, not on an
+ *    interpolation of the `TILE_QUADS` lattice. `cellsPerEdge` is
+ *    independent of and typically far coarser than that lattice (voxels
+ *    read chunky by design — 48-96 is a reasonable range).
+ * 2. Top face: the cell's four corners at its own banded radius, two
+ *    triangles, one flat per-cell normal (the corner average, i.e. the
+ *    outward direction at the cell's own center) and one flat per-cell
+ *    color (`colorAt`, nearest — never blended).
+ * 3. Walls: for each of the 4 edge-neighbors, if the neighbor's banded
+ *    radius is strictly lower, emit a vertical quad along the shared edge
+ *    from this radius down to the neighbor's, one flat (outward-facing)
+ *    normal, darkened color. A cell at this tile's own edge whose neighbor
+ *    would fall outside the tile uses this tile's OWN edge-cell radius as
+ *    that neighbor's value — i.e. no wall is built at a tile boundary. A
+ *    real adjacent tile's true edge cell can differ by up to one band, so
+ *    that boundary can show a seam at most one `bandM` tall; closing it
+ *    needs the neighbor tile's own data (multi-tile/region wiring — not
+ *    this task).
+ * 4. No skirt: the walls seal the silhouette on their own.
+ *
+ * Built in two passes over the `cellsPerEdge`² cells — every cell's top
+ * face first (`cells × 6` vertices, contiguous per cell in row-major
+ * `row*cellsPerEdge+col` order), then every cell's walls — so the vertex
+ * layout stays simple and predictable (and cheap to test) rather than
+ * interleaving a cell's top with its own walls. Non-indexed (flat shading
+ * needs unshared per-triangle vertices) with `position`/`normal`/`color`
+ * attributes; typed arrays are sized up front from the algorithm's own
+ * worst case (`cells × (6 top + 4 edges × 6 wall)` vertices) and trimmed
+ * with `subarray` to the vertex count actually used — no push()-driven
+ * reallocation. */
+export function buildVoxelTileGeometry(
+  tiles: TilesScene,
+  tile: TileId,
+  radius: number,
+  reliefScale: number,
+  colorAt: (i: number) => RGB,
+  opts: { cellsPerEdge: number; bandM: number },
+): THREE.BufferGeometry {
+  const { cellsPerEdge: N, bandM } = opts;
+  const scale = 1 << tile.level;
+
+  // Face params for the (N+1)-wide corner lattice, denominated in N
+  // (cellsPerEdge) rather than TILE_QUADS — otherwise the SAME dyadic
+  // mapping `tileGrid`'s internal `param` helper uses.
+  const aAt = (col: number): number => -1 + (2 * (tile.ix + col / N)) / scale;
+  const bAt = (row: number): number => -1 + (2 * (tile.iy + row / N)) / scale;
+
+  // Corner unit vectors, computed once: (N+1)×(N+1), row-major over row (b)
+  // then col (a) — matching `tileGrid`'s own row/col convention.
+  const cn = N + 1;
+  const cornerX = new Float64Array(cn * cn);
+  const cornerY = new Float64Array(cn * cn);
+  const cornerZ = new Float64Array(cn * cn);
+  for (let row = 0; row <= N; row++) {
+    const b = bAt(row);
+    for (let col = 0; col <= N; col++) {
+      const [ux, uy, uz] = faceUnit(tile.face, aAt(col), b);
+      const k = row * cn + col;
+      cornerX[k] = ux;
+      cornerY[k] = uy;
+      cornerZ[k] = uz;
+    }
+  }
+  const corner = (row: number, col: number): [number, number, number] => {
+    const k = row * cn + col;
+    return [cornerX[k]!, cornerY[k]!, cornerZ[k]!];
+  };
+
+  // Per-cell banded radius, color, and center unit vector, computed once
+  // (N×N) — the wall pass below reads a neighbor's radius without
+  // resampling elevation, and reuses the same cell's own center.
+  const cellRadius = new Float64Array(N * N);
+  const cellCenter: [number, number, number][] = new Array(N * N);
+  const cellColor: RGB[] = new Array(N * N);
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const idx = row * N + col;
+      const u = faceUnit(tile.face, aAt(col + 0.5), bAt(row + 0.5));
+      const { latDeg, lonDeg } = unitLatLon(u);
+      const elev = sampleElevationBilinear(tiles, latDeg, lonDeg);
+      const banded = quantizeBands(elev, bandM);
+      cellRadius[idx] = radius * (1 + (reliefScale * banded) / REFERENCE_RADIUS_M);
+      cellCenter[idx] = u;
+      cellColor[idx] = colorAt(tileIndex(tiles, latDeg, lonDeg));
+    }
+  }
+  // A cell just outside [0, N) (the tile's own boundary) has no in-tile
+  // neighbor — fall back to `ownIdx`'s own radius (see the doc comment: a
+  // deliberate, bounded seam, not a bug).
+  const neighborRadius = (ownIdx: number, row: number, col: number): number =>
+    row < 0 || row >= N || col < 0 || col >= N ? cellRadius[ownIdx]! : cellRadius[row * N + col]!;
+
+  const maxVerts = N * N * (6 + 4 * 6);
+  const pos = new Float32Array(maxVerts * 3);
+  const nrm = new Float32Array(maxVerts * 3);
+  const colArr = new Float32Array(maxVerts * 3);
+  let vi = 0;
+
+  const pushVertex = (
+    p: readonly [number, number, number],
+    n: readonly [number, number, number],
+    rgb: RGB,
+  ): void => {
+    const o = vi * 3;
+    pos[o] = p[0];
+    pos[o + 1] = p[1];
+    pos[o + 2] = p[2];
+    nrm[o] = n[0];
+    nrm[o + 1] = n[1];
+    nrm[o + 2] = n[2];
+    colArr[o] = rgb[0] / 255;
+    colArr[o + 1] = rgb[1] / 255;
+    colArr[o + 2] = rgb[2] / 255;
+    vi++;
+  };
+
+  // Pass 1: every cell's top face, row-major — keeps a cell's 6 top
+  // vertices at a fixed, predictable offset (`(row*N+col)*6`).
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const idx = row * N + col;
+      const r = cellRadius[idx]!;
+      const rgb = cellColor[idx]!;
+      const u00 = corner(row, col);
+      const u10 = corner(row, col + 1);
+      const u01 = corner(row + 1, col);
+      const u11 = corner(row + 1, col + 1);
+      const p00: [number, number, number] = [u00[0] * r, u00[1] * r, u00[2] * r];
+      const p10: [number, number, number] = [u10[0] * r, u10[1] * r, u10[2] * r];
+      const p01: [number, number, number] = [u01[0] * r, u01[1] * r, u01[2] * r];
+      const p11: [number, number, number] = [u11[0] * r, u11[1] * r, u11[2] * r];
+      // Flat per-cell normal: the outward direction at the cell's own
+      // center (the average of its 4 corner unit vectors, renormalized) —
+      // a flat-topped block's top face is perpendicular to ITS OWN local
+      // "up", not a cross-tile-smoothed normal.
+      let nx = u00[0] + u10[0] + u01[0] + u11[0];
+      let ny = u00[1] + u10[1] + u01[1] + u11[1];
+      let nz = u00[2] + u10[2] + u01[2] + u11[2];
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      const topNormal: [number, number, number] = [nx, ny, nz];
+      // Same CCW-in-(a,b) winding as `buildGridGeometry` — outward on every
+      // face without a per-face special case.
+      pushVertex(p00, topNormal, rgb);
+      pushVertex(p10, topNormal, rgb);
+      pushVertex(p11, topNormal, rgb);
+      pushVertex(p00, topNormal, rgb);
+      pushVertex(p11, topNormal, rgb);
+      pushVertex(p01, topNormal, rgb);
+    }
+  }
+
+  // A vertical quad from this cell's own radius (`rTop`) down to a lower
+  // neighbor's (`rBot`), along the shared edge's two corner unit vectors
+  // (`cA`, `cB`). One flat normal for both triangles (the wall reads as one
+  // cliff face, matching the top face's per-cell-flat treatment): the
+  // actual quad geometry's own cross-product normal, flipped (both
+  // triangles together, via `pushTri`'s vertex swap) if needed to agree in
+  // sign with an approximate outward reference — the direction from this
+  // cell's own center toward the shared edge's midpoint — so the wall
+  // faces away from its cell regardless of which of the 4 edges it is.
+  const emitWall = (
+    cA: readonly [number, number, number],
+    cB: readonly [number, number, number],
+    rTop: number,
+    rBot: number,
+    center: readonly [number, number, number],
+    rgb: RGB,
+  ): void => {
+    const topA: [number, number, number] = [cA[0] * rTop, cA[1] * rTop, cA[2] * rTop];
+    const topB: [number, number, number] = [cB[0] * rTop, cB[1] * rTop, cB[2] * rTop];
+    const botA: [number, number, number] = [cA[0] * rBot, cA[1] * rBot, cA[2] * rBot];
+    const botB: [number, number, number] = [cB[0] * rBot, cB[1] * rBot, cB[2] * rBot];
+    const e1x = topB[0] - topA[0], e1y = topB[1] - topA[1], e1z = topB[2] - topA[2];
+    const e2x = botA[0] - topA[0], e2y = botA[1] - topA[1], e2z = botA[2] - topA[2];
+    let nx = e1y * e2z - e1z * e2y;
+    let ny = e1z * e2x - e1x * e2z;
+    let nz = e1x * e2y - e1y * e2x;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    const midLen = Math.hypot(cA[0] + cB[0], cA[1] + cB[1], cA[2] + cB[2]) || 1;
+    const outX = (cA[0] + cB[0]) / midLen - center[0];
+    const outY = (cA[1] + cB[1]) / midLen - center[1];
+    const outZ = (cA[2] + cB[2]) / midLen - center[2];
+    const flip = nx * outX + ny * outY + nz * outZ < 0;
+    if (flip) {
+      nx = -nx;
+      ny = -ny;
+      nz = -nz;
+    }
+    const wallNormal: [number, number, number] = [nx, ny, nz];
+    const wallColor: RGB = [rgb[0] * VOXEL_CLIFF_DARKEN, rgb[1] * VOXEL_CLIFF_DARKEN, rgb[2] * VOXEL_CLIFF_DARKEN];
+    const pushTri = (
+      v0: readonly [number, number, number],
+      v1: readonly [number, number, number],
+      v2: readonly [number, number, number],
+    ): void => {
+      // Swapping the last two vertices flips the triangle's winding (and so
+      // its front-facing side) without recomputing the normal.
+      if (!flip) {
+        pushVertex(v0, wallNormal, wallColor);
+        pushVertex(v1, wallNormal, wallColor);
+        pushVertex(v2, wallNormal, wallColor);
+      } else {
+        pushVertex(v0, wallNormal, wallColor);
+        pushVertex(v2, wallNormal, wallColor);
+        pushVertex(v1, wallNormal, wallColor);
+      }
+    };
+    pushTri(topA, topB, botA);
+    pushTri(topB, botB, botA);
+  };
+
+  // Pass 2: every cell's walls (0-4 quads each, only where a lower
+  // neighbor exists).
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const idx = row * N + col;
+      const rOwn = cellRadius[idx]!;
+      const rgb = cellColor[idx]!;
+      const center = cellCenter[idx]!;
+      const u00 = corner(row, col);
+      const u10 = corner(row, col + 1);
+      const u01 = corner(row + 1, col);
+      const u11 = corner(row + 1, col + 1);
+      const rUp = neighborRadius(idx, row - 1, col);
+      if (rUp < rOwn) emitWall(u00, u10, rOwn, rUp, center, rgb);
+      const rDown = neighborRadius(idx, row + 1, col);
+      if (rDown < rOwn) emitWall(u01, u11, rOwn, rDown, center, rgb);
+      const rLeft = neighborRadius(idx, row, col - 1);
+      if (rLeft < rOwn) emitWall(u00, u01, rOwn, rLeft, center, rgb);
+      const rRight = neighborRadius(idx, row, col + 1);
+      if (rRight < rOwn) emitWall(u10, u11, rOwn, rRight, center, rgb);
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, vi * 3), 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(nrm.subarray(0, vi * 3), 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colArr.subarray(0, vi * 3), 3));
+  return geom;
 }
 
 /** Fixed lat/lon step (degrees) for the analytic-normal gradient probe —
