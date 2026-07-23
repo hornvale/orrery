@@ -14,6 +14,15 @@ import type { MapSymbols } from "./mapSymbols";
 import { buildMapSymbols } from "./mapSymbols";
 import { buildVoxelHeightfieldGeometry } from "./worldMesh";
 import { pixelColorFor } from "./styles/pixelBase";
+import type { TileId } from "./cubeSphere";
+import { tileKey } from "./cubeSphere";
+import {
+  panBoundsInTiles,
+  recenterTarget,
+  ringAddresses,
+  sameFaceOffset,
+  withinChebyshev,
+} from "./mapRing";
 
 /** Half-extent of the PIXEL style's orthographic frustum (world units) —
  * unchanged from the original flat map: the camera frames a roughly
@@ -94,6 +103,26 @@ const VOXEL_LIGHT_POSITION: readonly [number, number, number] = [1, 3, 1.5];
  * fall to pure black under the single directional light above. */
 const VOXEL_AMBIENT_INTENSITY = 0.55;
 
+/** How many same-face/same-level neighbor tiles are mounted around the
+ * center at once, in each of the four directions — radius 1 is a 3×3 grid
+ * (9 tiles). First-pass value (The Excursion); a visual pass may retune it
+ * if "zoom out pretty handily" wants a wider ring. */
+export const MAP_RING_RADIUS = 1;
+
+/** How far (in the same units as `MAP_RING_RADIUS`) a tile's `RegionScene`
+ * stays cached after it's unmounted from the ring, before being dropped for
+ * real. Must be ≥ `MAP_RING_RADIUS` (the "hot" mounted ring is always inside
+ * the "warm" cached halo) — bounds a long roaming session's memory instead
+ * of letting `regionCache` grow forever. */
+export const MAP_CACHE_HALO_RADIUS = 2;
+
+/** Extra margin (a fraction of one tile width) the camera must drift past a
+ * tile's boundary before the ring recenters — without this, a camera sitting
+ * near a tile edge would thrash the ring back and forth every time it
+ * jitters across the line. The spatial equivalent of `cubeSphere.ts`'s
+ * `LOD_MERGE_FACTOR` split/merge hysteresis. */
+export const RECENTER_HYSTERESIS_FRACTION = 0.1;
+
 /** The map view's public surface: a mountable scene graph plus the per-frame
  * driver a caller (the app's render loop, Task 4) needs. */
 export interface MapView {
@@ -102,24 +131,49 @@ export interface MapView {
   /** The map's shared camera. Under `'pixel'` it looks down the +z axis at
    * the origin; under `'voxel'` it sits at the fixed isometric offset. */
   camera: THREE.OrthographicCamera;
-  /** Show `region` under the active `MapStyle`; `null` clears it. Replaces
-   * any prior region's mesh, so the scene never carries more than one
-   * mounted map mesh at a time. */
+  /** Show `region` under the active `MapStyle`, mounted alone at the local
+   * origin with no ring/network involvement; `null` clears it. This is the
+   * synchronous, data-already-in-hand path (used directly by tests and by
+   * any caller that already has a `RegionScene` in hand) — it resets the
+   * ring's origin/center to this one tile and populates the cache with just
+   * it. Replaces any prior mounted tiles. */
   setRegion(region: RegionScene | null): void;
-  /** Switch the active style: swaps the camera pose immediately, and — if a
-   * region is currently mounted — rebuilds its mesh under the new style (a
-   * full rebuild; the map is a static snapshot, not a per-frame repaint).
-   * Default is `'voxel'`. */
+  /** Start a fresh, network-backed region visit at `tile`: clears every
+   * previously mounted/cached tile, then eagerly requests (via the
+   * `requestRegion` this view was constructed with) the full
+   * `MAP_RING_RADIUS` ring around `tile` — including `tile` itself. Meshes
+   * mount as `onRegion` replies arrive. Throws if this view was constructed
+   * without a `requestRegion` callback. */
+  beginRegion(tile: TileId): void;
+  /** Route a worker reply for `key` to this view: caches it (if it's within
+   * the current warm halo), and mounts/rebuilds its mesh (if it's within the
+   * current hot ring). A reply for a key this view isn't tracking (a stray
+   * or stale arrival) is a no-op — mirrors `globe.ts`'s own `onRegion`
+   * tolerance for arrivals it no longer wants. */
+  onRegion(key: string, region: RegionScene): void;
+  /** Switch the active style: swaps the camera pose immediately, and
+   * rebuilds every currently-mounted ring tile from cache under the new
+   * style (no new requests — every mounted tile's data is already
+   * resident). Default is `'voxel'`. */
   setStyle(style: MapStyle): void;
   /** Render this view with the shared renderer. */
   render(renderer: THREE.WebGLRenderer): void;
-  /** Dispose the mounted mesh's geometry and material, and empty the scene. */
+  /** Dispose every mounted tile's geometry and material, and empty the
+   * scene. */
   dispose(): void;
 }
 
 /** Build the map view: an orthographic scene, already posed for the default
  * `'voxel'` style, ready to mount a region via `setRegion`. */
-export function createMapView(): MapView {
+export interface CreateMapViewOptions {
+  /** How to fetch a region tile for `beginRegion`/recenter — the same
+   * function `main.ts` already passes to `createGlobeView`. Omit only for
+   * tests/callers that exclusively use the synchronous `setRegion` path. */
+  requestRegion?: (tile: TileId) => void;
+}
+
+export function createMapView(options: CreateMapViewOptions = {}): MapView {
+  const { requestRegion } = options;
   const scene = new THREE.Scene();
   scene.name = "map-root";
 
@@ -148,10 +202,32 @@ export function createMapView(): MapView {
   const ambient = new THREE.AmbientLight(0xffffff, VOXEL_AMBIENT_INTENSITY);
   scene.add(ambient);
 
-  let mesh: THREE.Mesh | null = null;
-  let symbols: MapSymbols | null = null;
+  /** One ring member's mounted state: its mesh (positioned at its
+   * origin-relative offset) and, for the center tile only, its symbol
+   * overlay. */
+  interface MountedTile {
+    mesh: THREE.Mesh;
+    symbols: MapSymbols | null;
+    /** This tile's own address — stored directly (not reverse-derived from
+     * `mesh.position`) so ring/halo membership checks never depend on
+     * rounding a world-space float back to an integer tile index. */
+    addr: TileId;
+  }
+  const mounted = new Map<string, MountedTile>();
+  const regionCache = new Map<string, RegionScene>();
+  const regionPending = new Set<string>();
   let activeStyle: MapStyle = "voxel";
-  let currentRegion: RegionScene | null = null;
+  /** The tile every mounted mesh's position is anchored to — set once per
+   * region visit (by `setRegion` or `beginRegion`) and NEVER re-zeroed
+   * afterward. Recentering (below) only ever changes `centerAddr`; it never
+   * moves this, and therefore never moves the camera or any existing mesh
+   * (a floating-origin frame would fight `MapControls`' in-progress drag
+   * deltas — see The Excursion's design doc §4). */
+  let originAddr: TileId | null = null;
+  /** The ring's current nominal center, for ring/halo MEMBERSHIP tests only
+   * (never for mesh positioning — that's always relative to `originAddr`).
+   * Moves on every recenter. */
+  let centerAddr: TileId | null = null;
 
   /** The `'pixel'` style's camera pose — today's exact top-down setup,
    * verbatim. */
@@ -189,60 +265,50 @@ export function createMapView(): MapView {
   }
   applyIsoCamera(); // default style is 'voxel'
 
-  function clearMesh(): void {
-    if (symbols) {
-      scene.remove(symbols.group);
-      symbols.dispose();
-      symbols = null;
+  /** Dispose and unmount every currently-mounted ring tile (meshes AND, for
+   * the center, its symbol overlay) — does not touch `regionCache`. */
+  function clearAllMounted(): void {
+    for (const key of [...mounted.keys()]) unmountTile(key);
+  }
+
+  /** Dispose and unmount one ring tile by key — does not touch
+   * `regionCache` (a tile leaving the hot ring stays cached in the warm
+   * halo; see `recenterTo`). No-op if `key` isn't currently mounted. */
+  function unmountTile(key: string): void {
+    const entry = mounted.get(key);
+    if (!entry) return;
+    if (entry.symbols) {
+      scene.remove(entry.symbols.group);
+      entry.symbols.dispose();
     }
-    if (!mesh) return;
-    scene.remove(mesh);
-    mesh.geometry.dispose();
-    (mesh.material as THREE.MeshBasicMaterial).map?.dispose();
-    (mesh.material as THREE.Material).dispose();
-    mesh = null;
+    scene.remove(entry.mesh);
+    entry.mesh.geometry.dispose();
+    (entry.mesh.material as THREE.MeshBasicMaterial).map?.dispose();
+    (entry.mesh.material as THREE.Material).dispose();
+    mounted.delete(key);
   }
 
   /** `'pixel'`: a flat quad textured with the procedural overworld renderer
-   * (`overworldTexture`, campaign "The Overworld"), plus the symbol
-   * overlay. Plane/camera/symbols are otherwise unchanged from the original
-   * flat pixel-art path. */
-  function mountPixel(region: RegionScene): void {
-    // Regions are square face-tiles (same sample count on both axes), so a
-    // unit square reads at the right aspect regardless of `samples`.
-    const geometry = new THREE.PlaneGeometry(
-      2 * FRUSTUM_HALF_EXTENT,
-      2 * FRUSTUM_HALF_EXTENT,
-    );
-    const material = new THREE.MeshBasicMaterial({
-      map: overworldTexture(region),
-    });
-    mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `map-region-${region.face}:${region.level}:${region.ix}:${region.iy}`;
-    scene.add(mesh);
-
-    // Symbol overlay: peaks/forests/waves on top of the textured quad. The
-    // rung will be driven from the map camera's zoom in a later task; for
-    // now it's fixed at 'near' (the finest rung).
-    symbols = buildMapSymbols(region);
-    symbols.update("near");
-    scene.add(symbols.group);
+   * (`overworldTexture`, campaign "The Overworld"). Plane geometry is
+   * unchanged from the original flat pixel-art path; only *mounting*
+   * (position, scene membership) moved to `mountTileAt`, shared by every
+   * ring member. */
+  function buildPixelMesh(region: RegionScene): THREE.Mesh {
+    const geometry = new THREE.PlaneGeometry(2 * FRUSTUM_HALF_EXTENT, 2 * FRUSTUM_HALF_EXTENT);
+    const material = new THREE.MeshBasicMaterial({ map: overworldTexture(region) });
+    const m = new THREE.Mesh(geometry, material);
+    m.name = `map-region-${region.face}:${region.level}:${region.ix}:${region.iy}`;
+    return m;
   }
 
   /** `'voxel'`: the relief diorama — an extruded-block heightfield colored
-   * by the SAME per-node source `mountPixel`'s texture uses
-   * (`pixelColorFor`), so Style ⟂ Lens holds. No symbol overlay yet (a 3D
-   * diorama prop set for peaks/forests/waves is a followup, not this
-   * campaign — see `.superpowers/sdd/followups.md`). */
-  function mountVoxel(region: RegionScene): void {
+   * by the SAME per-node source `buildPixelMesh`'s texture uses
+   * (`pixelColorFor`), so Style ⟂ Lens holds. */
+  function buildVoxelMesh(region: RegionScene): THREE.Mesh {
     const geometry = buildVoxelHeightfieldGeometry(
       region,
       (nodeIndex) => pixelColorFor([0, 0, 0], region, nodeIndex),
-      {
-        extent: MAP_VOXEL_EXTENT,
-        heightScale: MAP_VOXEL_HEIGHT_SCALE,
-        bandM: MAP_VOXEL_BAND_M,
-      },
+      { extent: MAP_VOXEL_EXTENT, heightScale: MAP_VOXEL_HEIGHT_SCALE, bandM: MAP_VOXEL_BAND_M },
     );
     const material = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -250,32 +316,151 @@ export function createMapView(): MapView {
       roughness: 1,
       metalness: 0,
     });
-    mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `map-region-voxel-${region.face}:${region.level}:${region.ix}:${region.iy}`;
-    scene.add(mesh);
+    const m = new THREE.Mesh(geometry, material);
+    m.name = `map-region-voxel-${region.face}:${region.level}:${region.ix}:${region.iy}`;
+    return m;
   }
 
-  function mountRegion(region: RegionScene): void {
-    clearMesh();
-    if (activeStyle === "voxel") mountVoxel(region);
-    else mountPixel(region);
+  function buildTileMesh(region: RegionScene): THREE.Mesh {
+    return activeStyle === "voxel" ? buildVoxelMesh(region) : buildPixelMesh(region);
+  }
+
+  /** Positions `mesh` (and, if given, `symbolsGroup`) at `(dx, dy)` tiles
+   * from `originAddr` — the SAME formula for every ring member, center
+   * included (the center's own offset is `(0, 0)` only immediately after
+   * `setRegion`/`beginRegion`; after any number of recenters it can be
+   * anywhere). `'voxel'`'s ground plane is X–Z (Y is height, see
+   * `MAP_VOXEL_EXTENT`'s doc comment); `'pixel'`'s flat quad is X–Y (Z is
+   * depth-only). `dy` maps to the NEGATIVE second axis in both styles,
+   * extending `mapSymbols.ts`'s existing within-tile convention (increasing
+   * row/iy → decreasing world Y) across tile boundaries too, so a tile's
+   * own row ordering and the ring's tile ordering agree. */
+  function positionAt(object: THREE.Object3D, dx: number, dy: number): void {
+    if (activeStyle === "voxel") {
+      object.position.set(dx * MAP_VOXEL_EXTENT, 0, -dy * MAP_VOXEL_EXTENT);
+    } else {
+      object.position.set(dx * MAP_VOXEL_EXTENT, -dy * MAP_VOXEL_EXTENT, 0);
+    }
+  }
+
+  /** Mount (or remount, replacing any existing mesh at `key`) one ring
+   * tile's `region` at its `originAddr`-relative offset. `isCenter` gates
+   * the symbol overlay — see The Excursion's design doc §5: budgets were
+   * tuned for one tile's worth of symbols, so only the center ever carries
+   * them. */
+  function mountTileAt(key: string, region: RegionScene, isCenter: boolean): void {
+    unmountTile(key);
+    const addr: TileId = { face: region.face, level: region.level, ix: region.ix, iy: region.iy };
+    const offset = sameFaceOffset(addr, originAddr!)!;
+    const m = buildTileMesh(region);
+    positionAt(m, offset.dx, offset.dy);
+    scene.add(m);
+    let tileSymbols: MapSymbols | null = null;
+    if (isCenter && activeStyle === "pixel") {
+      tileSymbols = buildMapSymbols(region);
+      tileSymbols.update("near"); // Task 6 wires this to the real camera zoom
+      positionAt(tileSymbols.group, offset.dx, offset.dy);
+      scene.add(tileSymbols.group);
+    }
+    mounted.set(key, { mesh: m, symbols: tileSymbols, addr });
+  }
+
+  /** Request every not-yet-cached, not-yet-pending address in `addresses`
+   * via the `requestRegion` this view was constructed with. Throws if this
+   * view has none (a real app always supplies one; only `setRegion`'s
+   * synchronous, data-in-hand path works without it). */
+  function requestMissing(addresses: TileId[]): void {
+    if (!requestRegion) {
+      throw new Error("mapView: beginRegion/recenter needs a requestRegion callback");
+    }
+    for (const addr of addresses) {
+      const key = tileKey(addr);
+      if (regionCache.has(key) || regionPending.has(key)) continue;
+      regionPending.add(key);
+      requestRegion(addr);
+    }
+  }
+
+  /** Mount every address in the current ring that's already cached (used
+   * right after a recenter, when some ring members may already be resident
+   * from the warm halo — no need to wait for a fresh reply). */
+  function mountCachedRing(): void {
+    if (!centerAddr) return;
+    for (const addr of ringAddresses(centerAddr, MAP_RING_RADIUS)) {
+      const key = tileKey(addr);
+      const cached = regionCache.get(key);
+      if (cached) mountTileAt(key, cached, key === tileKey(centerAddr));
+    }
+  }
+
+  function beginRegion(tile: TileId): void {
+    clearAllMounted();
+    regionCache.clear();
+    regionPending.clear();
+    originAddr = tile;
+    centerAddr = tile;
+    requestMissing(ringAddresses(tile, MAP_RING_RADIUS));
+  }
+
+  function onRegion(key: string, region: RegionScene): void {
+    regionPending.delete(key);
+    if (!originAddr || !centerAddr) return; // no active region visit
+    const addr: TileId = { face: region.face, level: region.level, ix: region.ix, iy: region.iy };
+    if (!withinChebyshev(addr, centerAddr, MAP_CACHE_HALO_RADIUS)) return; // stale/irrelevant
+    regionCache.set(key, region);
+    if (withinChebyshev(addr, centerAddr, MAP_RING_RADIUS)) {
+      mountTileAt(key, region, key === tileKey(centerAddr));
+    }
+  }
+
+  /** Recenter the ring to `newCenter`: unmount (but keep cached, within the
+   * warm halo) tiles that fall outside the new hot ring, drop from the
+   * cache entirely anything now outside the warm halo, mount anything
+   * already cached that's newly in-ring, and request whatever's still
+   * missing. Never touches `originAddr`, any mesh's position, or the
+   * camera. */
+  function recenterTo(newCenter: TileId): void {
+    centerAddr = newCenter;
+    for (const [key, entry] of [...mounted.entries()]) {
+      if (!withinChebyshev(entry.addr, newCenter, MAP_RING_RADIUS)) unmountTile(key);
+    }
+    for (const key of [...regionCache.keys()]) {
+      const cached = regionCache.get(key)!;
+      const addr: TileId = { face: cached.face, level: cached.level, ix: cached.ix, iy: cached.iy };
+      if (!withinChebyshev(addr, newCenter, MAP_CACHE_HALO_RADIUS)) regionCache.delete(key);
+    }
+    mountCachedRing();
+    requestMissing(ringAddresses(newCenter, MAP_RING_RADIUS));
   }
 
   function setRegion(region: RegionScene | null): void {
-    currentRegion = region;
+    clearAllMounted();
+    regionCache.clear();
+    regionPending.clear();
     if (!region) {
-      clearMesh();
+      originAddr = null;
+      centerAddr = null;
       return;
     }
-    mountRegion(region);
+    const addr: TileId = { face: region.face, level: region.level, ix: region.ix, iy: region.iy };
+    originAddr = addr;
+    centerAddr = addr;
+    const key = tileKey(addr);
+    regionCache.set(key, region);
+    mountTileAt(key, region, true);
   }
 
   function setStyle(style: MapStyle): void {
     activeStyle = style;
     if (style === "voxel") applyIsoCamera();
     else applyPixelCamera();
-    if (currentRegion) mountRegion(currentRegion);
-    else clearMesh();
+    if (!centerAddr) return;
+    const centerKey = tileKey(centerAddr);
+    for (const key of [...mounted.keys()]) {
+      const cached = regionCache.get(key);
+      if (!cached) continue; // shouldn't happen (a mounted tile is always cached) but stay defensive
+      mountTileAt(key, cached, key === centerKey); // replaces the old style's mesh internally
+    }
   }
 
   function render(renderer: THREE.WebGLRenderer): void {
@@ -283,8 +468,10 @@ export function createMapView(): MapView {
   }
 
   function dispose(): void {
-    clearMesh();
+    clearAllMounted();
+    regionCache.clear();
+    regionPending.clear();
   }
 
-  return { scene, camera, setRegion, setStyle, render, dispose };
+  return { scene, camera, setRegion, beginRegion, onRegion, setStyle, render, dispose };
 }
