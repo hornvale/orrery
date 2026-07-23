@@ -283,4 +283,62 @@ describe("camera pan/zoom (The Excursion)", () => {
     // beginRegion alone issued.
     expect(requested.length).toBeGreaterThan(requestedAfterBegin);
   });
+
+  // `positionAt` maps a tile's second-axis offset `dy` to world `-dy * extent`
+  // on whichever axis the active style uses (Z for 'voxel', Y for 'pixel');
+  // `clampPan`/`maybeRecenter` undo that same negation on that same axis. The
+  // two tests above only ever move `target.x` under the default 'voxel'
+  // style, which never exercises that negation or the 'pixel' branch at all.
+  test("voxel style: pan clamp and recenter also operate on the world Z axis (second axis)", () => {
+    const center: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
+
+    // Clamp: an extreme Z target is pulled back within the ring's bound,
+    // mirroring "panning the camera target past the ring's edge is clamped
+    // on render" above but on Z instead of X.
+    const vClamp = createMapView({ requestRegion: () => {} });
+    vClamp.beginRegion(center);
+    vClamp.controls.target.set(0, 0, -1000);
+    vClamp.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
+    const maxWorldDz = (MAP_RING_RADIUS + 0.5) * MAP_VOXEL_EXTENT;
+    expect(Math.abs(vClamp.controls.target.z)).toBeLessThanOrEqual(maxWorldDz);
+
+    // Recenter: moving solidly past the +Z-mapped tile boundary (the
+    // negative-Z direction, since positionAt negates this axis) triggers a
+    // recenter, mirroring "panning solidly past a tile boundary triggers a
+    // recenter" above but on Z instead of X.
+    const requested: TileId[] = [];
+    const vRecenter = createMapView({ requestRegion: (t) => requested.push(t) });
+    vRecenter.beginRegion(center);
+    const requestedAfterBegin = requested.length;
+    vRecenter.controls.target.set(0, 0, -0.7 * MAP_VOXEL_EXTENT);
+    vRecenter.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
+    expect(requested.length).toBeGreaterThan(requestedAfterBegin);
+  });
+
+  test("pixel style: pan clamp and recenter operate on the world Y axis (second axis)", () => {
+    const center: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
+
+    // Clamp, under 'pixel': same shape as the voxel/Z case above, but the
+    // second axis is Y (pixel's flat quad is X–Y; see positionAt's doc
+    // comment) and the style is switched before the region visit begins.
+    const vClamp = createMapView({ requestRegion: () => {} });
+    vClamp.setStyle("pixel");
+    vClamp.beginRegion(center);
+    vClamp.controls.target.set(0, 1000, 0);
+    vClamp.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
+    const maxWorldDy = (MAP_RING_RADIUS + 0.5) * MAP_VOXEL_EXTENT;
+    expect(Math.abs(vClamp.controls.target.y)).toBeLessThanOrEqual(maxWorldDy);
+
+    // Recenter, under 'pixel': moving solidly past the Y-mapped tile
+    // boundary (negative-Y, same negation convention as voxel's Z) triggers
+    // a recenter.
+    const requested: TileId[] = [];
+    const vRecenter = createMapView({ requestRegion: (t) => requested.push(t) });
+    vRecenter.setStyle("pixel");
+    vRecenter.beginRegion(center);
+    const requestedAfterBegin = requested.length;
+    vRecenter.controls.target.set(0, -0.7 * MAP_VOXEL_EXTENT, 0);
+    vRecenter.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
+    expect(requested.length).toBeGreaterThan(requestedAfterBegin);
+  });
 });
