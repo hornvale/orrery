@@ -189,10 +189,6 @@ function mountViews(
   const mapRenderer = new THREE.WebGLRenderer({ canvas: mapCanvas, antialias: true });
   mapRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-  // The map view: the flat pixel-art rung below the globe (Task 4 wires it
-  // in; the region quad itself is still a placeholder, Stage 3).
-  const mapView = createMapView();
-
   // The system view: the schematic AU-scale orrery (Task 8).
   const systemScene = new THREE.Scene();
   systemScene.background = new THREE.Color(0x03050a);
@@ -219,10 +215,11 @@ function mountViews(
   // side, not just during the ~1.5s transition.
   const globeScene = new THREE.Scene();
   globeScene.background = new THREE.Color(0x000000);
-  // Region-tile request bridge (LOD stage 4): the globe asks for a tile's true
-  // higher-res patch; the worker serves it from the persisted catalog and the
-  // reply routes back to `globe.onRegion` (see boot's onmessage). `samples` is
-  // the tile grid resolution (TILE_QUADS), `key` matches reply to request.
+  // Region-tile request bridge (LOD stage 4): the globe (and, since The
+  // Excursion, the map's own neighbor ring) ask for a tile's true higher-res
+  // patch; the worker serves it from the persisted catalog and the reply
+  // routes back via `deliverRegion` below. `samples` is the tile grid
+  // resolution (TILE_QUADS), `key` matches reply to request.
   const requestRegion = (tile: TileId): void => {
     worker.postMessage({
       type: 'region',
@@ -234,6 +231,12 @@ function mountViews(
       key: tileKey(tile),
     });
   };
+
+  // The map view: the flat rung below the globe, backed by a same-face
+  // neighbor-tile ring (The Excursion) fetched through the same worker
+  // bridge the globe's own region tiles use.
+  const mapView = createMapView({ requestRegion });
+
   const globeView = createGlobeView(tiles, system, eclipses.events, requestRegion);
   globeScene.add(globeView.object3d);
   const globeReach = 6;
@@ -301,12 +304,6 @@ function mountViews(
   let view: ZoomTarget = state.view;
   zoom.jumpTo(view); // the initial view from a deep link never animates in
   setCanvasPointerEvents(view); // initial view never passes through applyView
-
-  // The region key the map rung is waiting on (set by the globe->map
-  // handoff's requestRegion call, consumed by deliverRegion below) — null
-  // when the map isn't expecting a reply (e.g. a repeat visit already
-  // holding a cached region).
-  let pendingMapKey: string | null = null;
 
   // Per-rung true-scale state (Task 8): each rung remembers its own toggle
   // independently, so switching rungs re-presents whichever state that rung
@@ -436,8 +433,7 @@ function mountViews(
     } else {
       tile = containingTile([0, 0, 1], 3);
     }
-    pendingMapKey = tileKey(tile);
-    requestRegion(tile); // reply routes via boot -> deliverRegion
+    mapView.beginRegion(tile); // fetches the whole ring; replies route via boot -> deliverRegion
   }
 
   const hudRoot = document.createElement('div');
@@ -830,17 +826,11 @@ function mountViews(
 
   /** Routes a worker region reply to whichever mounted view(s) are waiting on
    * it: the globe always (its own tile-refinement bookkeeping), and the map
-   * additionally when the reply is the one it's currently pending on
-   * (`pendingMapKey`, set by the globe->map handoff above). */
+   * whenever the key belongs to a tile its own neighbor ring is tracking —
+   * each view now decides internally whether a reply is one it cares about. */
   function deliverRegion(key: string, region: RegionScene): void {
     globeView.onRegion(key, region);
-    if (key === pendingMapKey) {
-      mapView.setRegion(region);
-      // Consume it: the globe's own LOD re-requests this same level-3 tile as
-      // it reselects, and a stale match would rebuild the (invisible) map quad
-      // + sprite materials while on the globe rung. The next handoff re-sets it.
-      pendingMapKey = null;
-    }
+    mapView.onRegion(key, region); // no-ops if `key` isn't one the map's ring is tracking
   }
 
   return { globe: globeView, deliverRegion };
