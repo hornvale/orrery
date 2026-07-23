@@ -2,7 +2,7 @@
 
 **Ticket:** hornvale/orrery MAP-70 (idea-registry row added at close, following MAP-65..68's convention)
 **Date:** 2026-07-23
-**Status:** Awaiting G3 review
+**Status:** Shipped 2026-07-23 (campaign *The Excursion*, registry MAP-70)
 **Parent contracts:** hornvale-repo idea-registry rows MAP-65 (The Vantage — Map region addressing, `#view=map` not URL-addressable), MAP-67 (The Diorama — the `MapStyle` switch, fixed-isometric camera), MAP-68 (The Overworld — the pixel renderer this leaves untouched) — `book/src/frontier/idea-registry.md` in the `hornvale` repo, not this one; their own orrery-repo spec files were pruned from this worktree post-merge, per this project's convention. Also hornvale-repo `book/src/chronicle/the-region.md` + `windows/scene/src/region.rs` (`tiles_region_scene`, `RegionAddr`) for the tile-addressing contract this consumes unchanged (both verified present).
 **Upstream work required: none.** `tiles_region_scene` already accepts arbitrary `(face, level, ix, iy)`; every neighbor tile this campaign fetches uses the same existing wasm export.
 
