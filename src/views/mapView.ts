@@ -46,6 +46,68 @@ export type MapStyle = "voxel" | "pixel";
  * below) so the two styles stay independently readable and tunable. */
 export const MAP_VOXEL_EXTENT = 2 * FRUSTUM_HALF_EXTENT;
 
+/** Which way `+dy` (increasing `iy`, the ring's second tile axis) runs along
+ * a style's own second world axis: `+1` for `'voxel'`, `-1` for `'pixel'`.
+ *
+ * The two styles legitimately disagree, and the reason is worth stating
+ * because getting it wrong is exactly the bug The Selvage fixed. The
+ * producer builds a region's `(samples+1)²` nodes with
+ * `b = param(iy, row/N, level)` (`windows/scene/src/region.rs`), so WITHIN a
+ * tile, increasing `row` moves in the INCREASING-`iy` direction. Any
+ * consistent layout must therefore run a tile's own `row` axis and the
+ * ring's `dy` axis the same way in world space.
+ *
+ * `'voxel'` lays corner `(row, col)` at `cornerZ = (row/N)*extent - extent/2`
+ * (`worldMesh.ts`'s `buildVoxelHeightfieldGeometry`) — increasing `row` runs
+ * toward `+z`, so `+dy` must too. `'pixel'` uploads its texture with
+ * `flipY = true` (`mapTexture.ts`), putting node row 0 at the TOP — so
+ * increasing `row` runs toward `-y`, and `+dy` must too. Same invariant,
+ * opposite signs, because the two styles orient the node grid differently.
+ *
+ * Do not "unify" these into one sign. That reintroduces the seam. */
+function secondAxisSign(style: MapStyle): number {
+  return style === "voxel" ? 1 : -1;
+}
+
+/** The world-space point for a same-face tile offset `(dx, dy)` from the
+ * ring's origin tile, under `style`'s axis convention. The single statement
+ * of that convention: mesh positions, the symbol overlay's group position,
+ * `setStyle`'s `controls.target` re-anchor, and `clampPan`'s world bounds
+ * all come from here, and `tileOffsetForWorldPoint` is its stated inverse.
+ * `MAP_VOXEL_EXTENT` is the tile pitch for BOTH styles (they are the same
+ * numeric size on purpose — see its doc comment). */
+export function worldPointForTileOffset(
+  style: MapStyle,
+  dx: number,
+  dy: number,
+): [number, number, number] {
+  const first = dx * MAP_VOXEL_EXTENT;
+  const second = dy * MAP_VOXEL_EXTENT * secondAxisSign(style);
+  return style === "voxel" ? [first, 0, second] : [first, second, 0];
+}
+
+/** `worldPointForTileOffset`'s inverse: which tile offset a world point sits
+ * at, under `style`'s axis convention. Returns fractional offsets — a camera
+ * target between two tiles is the normal case, and it is exactly what
+ * `mapRing.ts`'s `recenterTarget` hysteresis is written to consume.
+ *
+ * Exists so `clampPan` and `maybeRecenter` stop open-coding the second-axis
+ * sign. Before The Selvage they each inlined a `-`, which meant correcting
+ * the forward mapping alone would have left the ring clamping and
+ * recentring in the wrong direction — a behaviour no screenshot can show. */
+export function tileOffsetForWorldPoint(
+  style: MapStyle,
+  x: number,
+  y: number,
+  z: number,
+): { dx: number; dy: number } {
+  const second = style === "voxel" ? z : y;
+  return {
+    dx: x / MAP_VOXEL_EXTENT,
+    dy: second / (MAP_VOXEL_EXTENT * secondAxisSign(style)),
+  };
+}
+
 /** Elevation-band size (m) the voxel diorama quantizes to before scaling to
  * world height — the same value the globe's Terraced/Voxel styles use
  * (`globe.ts`'s private `TERRACE_BAND_M`/`VOXEL_BAND_M`), so a step reads as
@@ -363,10 +425,10 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
    * `setRegion`/`beginRegion`; after any number of recenters it can be
    * anywhere). `'voxel'`'s ground plane is X–Z (Y is height, see
    * `MAP_VOXEL_EXTENT`'s doc comment); `'pixel'`'s flat quad is X–Y (Z is
-   * depth-only). `dy` maps to the NEGATIVE second axis in both styles,
-   * extending `mapSymbols.ts`'s existing within-tile convention (increasing
-   * row/iy → decreasing world Y) across tile boundaries too, so a tile's
-   * own row ordering and the ring's tile ordering agree. */
+   * depth-only). The second-axis sign is `worldPointForOffset`'s (via
+   * `secondAxisSign`) — `+dy` runs toward `+z` under `'voxel'` and toward
+   * `-y` under `'pixel'`, so a tile's own row ordering and the ring's tile
+   * ordering agree under each style's own axis convention. */
   function positionAt(object: THREE.Object3D, dx: number, dy: number): void {
     const [x, y, z] = worldPointForOffset(dx, dy);
     object.position.set(x, y, z);
@@ -379,10 +441,7 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
    * `THREE.Vector3`, not an `Object3D`) when re-anchoring the pan target to
    * the current center tile (see the final-review fix, below). */
   function worldPointForOffset(dx: number, dy: number): [number, number, number] {
-    if (activeStyle === "voxel") {
-      return [dx * MAP_VOXEL_EXTENT, 0, -dy * MAP_VOXEL_EXTENT];
-    }
-    return [dx * MAP_VOXEL_EXTENT, -dy * MAP_VOXEL_EXTENT, 0];
+    return worldPointForTileOffset(activeStyle, dx, dy);
   }
 
   /** Mount (or remount, replacing any existing mesh at `key`) one ring
@@ -485,16 +544,22 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
 
   /** The world-unit box `controls.target` must stay within, given the
    * current ring — converts `mapRing.ts`'s tile-unit bounds to world units
-   * and the active style's plane (X–Z for voxel, X–Y for pixel). */
+   * and the active style's plane (X–Z for voxel, X–Y for pixel) via
+   * `worldPointForTileOffset`, so it can never disagree with where the
+   * meshes actually sit. */
   function clampPan(): void {
     if (!originAddr || !centerAddr) return;
     const bounds = panBoundsInTiles(centerAddr, originAddr, MAP_RING_RADIUS);
-    const minX = bounds.minDx * MAP_VOXEL_EXTENT;
-    const maxX = bounds.maxDx * MAP_VOXEL_EXTENT;
-    // Y bounds are the negated Dy bounds (positionAt's sign convention),
-    // so min/max swap.
-    const minSecond = -bounds.maxDy * MAP_VOXEL_EXTENT;
-    const maxSecond = -bounds.minDy * MAP_VOXEL_EXTENT;
+    // Take the world bounds from the forward mapping itself rather than
+    // re-deriving them: whether min/max swap on the second axis is a
+    // consequence of the style's own sign, not a fact to hand-maintain here.
+    const lo = worldPointForOffset(bounds.minDx, bounds.minDy);
+    const hi = worldPointForOffset(bounds.maxDx, bounds.maxDy);
+    const minX = Math.min(lo[0], hi[0]);
+    const maxX = Math.max(lo[0], hi[0]);
+    const secondIndex = activeStyle === "voxel" ? 2 : 1;
+    const minSecond = Math.min(lo[secondIndex]!, hi[secondIndex]!);
+    const maxSecond = Math.max(lo[secondIndex]!, hi[secondIndex]!);
     controls.target.x = Math.min(maxX, Math.max(minX, controls.target.x));
     if (activeStyle === "voxel") {
       controls.target.z = Math.min(maxSecond, Math.max(minSecond, controls.target.z));
@@ -509,10 +574,13 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
    * arithmetic comparisons, no allocation on the common no-op path). */
   function maybeRecenter(): void {
     if (!originAddr || !centerAddr) return;
-    const localX = controls.target.x / MAP_VOXEL_EXTENT;
-    const secondAxis = activeStyle === "voxel" ? controls.target.z : controls.target.y;
-    const localY = -secondAxis / MAP_VOXEL_EXTENT;
-    const next = recenterTarget(originAddr, centerAddr, localX, localY, RECENTER_HYSTERESIS_FRACTION);
+    const { dx, dy } = tileOffsetForWorldPoint(
+      activeStyle,
+      controls.target.x,
+      controls.target.y,
+      controls.target.z,
+    );
+    const next = recenterTarget(originAddr, centerAddr, dx, dy, RECENTER_HYSTERESIS_FRACTION);
     if (next) recenterTo(next);
   }
 

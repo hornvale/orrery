@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import * as THREE from "three";
-import { createMapView, ISO_CAMERA_DISTANCE, MAP_RING_RADIUS, MAP_VOXEL_EXTENT } from "./mapView";
+import {
+  createMapView,
+  ISO_CAMERA_DISTANCE,
+  MAP_RING_RADIUS,
+  MAP_VOXEL_EXTENT,
+  tileOffsetForWorldPoint,
+  worldPointForTileOffset,
+} from "./mapView";
 import type { RegionScene } from "../sim/scene";
 import type { TileId } from "./cubeSphere";
 import { tileKey } from "./cubeSphere";
@@ -338,10 +345,11 @@ describe("camera pan/zoom (The Excursion)", () => {
     const maxWorldDz = (MAP_RING_RADIUS + 0.5) * MAP_VOXEL_EXTENT;
     expect(Math.abs(vClamp.controls.target.z)).toBeLessThanOrEqual(maxWorldDz);
 
-    // Recenter: moving solidly past the +Z-mapped tile boundary (the
-    // negative-Z direction, since positionAt negates this axis) triggers a
+    // Recenter: moving solidly past a tile boundary on Z triggers a
     // recenter, mirroring "panning solidly past a tile boundary triggers a
-    // recenter" above but on Z instead of X.
+    // recenter" above but on Z instead of X. Since The Selvage, voxel's +dy
+    // runs toward +z, so a negative-Z target recenters toward iy-1 — the
+    // direction is not what this test is about, only that one happens.
     const requested: TileId[] = [];
     const vRecenter = createMapView({ requestRegion: (t) => requested.push(t) });
     vRecenter.beginRegion(center);
@@ -405,7 +413,7 @@ describe("camera pan/zoom (The Excursion)", () => {
     // it's the axis pixel and voxel disagree on (Y vs Z, with the same
     // negation), so a dx-only recenter can't distinguish "re-anchored
     // correctly" from "leftover on the wrong axis".
-    v.controls.target.set(0.7 * MAP_VOXEL_EXTENT, 0, -0.7 * MAP_VOXEL_EXTENT);
+    v.controls.target.set(0.7 * MAP_VOXEL_EXTENT, 0, 0.7 * MAP_VOXEL_EXTENT);
     v.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
     const recentered: TileId = { face: 0, level: 3, ix: 5, iy: 5 };
     v.onRegion(tileKey(recentered), fakeRegionAt(recentered));
@@ -419,7 +427,7 @@ describe("camera pan/zoom (The Excursion)", () => {
     expect(v.controls.target.toArray()).toEqual([1 * MAP_VOXEL_EXTENT, -1 * MAP_VOXEL_EXTENT, 0]);
 
     v.setStyle("voxel");
-    expect(v.controls.target.toArray()).toEqual([1 * MAP_VOXEL_EXTENT, 0, -1 * MAP_VOXEL_EXTENT]);
+    expect(v.controls.target.toArray()).toEqual([1 * MAP_VOXEL_EXTENT, 0, 1 * MAP_VOXEL_EXTENT]);
   });
 
   // Final-review fix, round 2: the FIRST fix above re-anchored
@@ -436,7 +444,7 @@ describe("camera pan/zoom (The Excursion)", () => {
     v.onRegion(tileKey(center), fakeRegionAt(center));
     // Recenter one tile east AND one tile "south" (dx=1, dy=1) — same
     // maneuver as the controls.target re-anchor test above.
-    v.controls.target.set(0.7 * MAP_VOXEL_EXTENT, 0, -0.7 * MAP_VOXEL_EXTENT);
+    v.controls.target.set(0.7 * MAP_VOXEL_EXTENT, 0, 0.7 * MAP_VOXEL_EXTENT);
     v.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
     const recentered: TileId = { face: 0, level: 3, ix: 5, iy: 5 };
     v.onRegion(tileKey(recentered), fakeRegionAt(recentered));
@@ -464,10 +472,131 @@ describe("camera pan/zoom (The Excursion)", () => {
     // the (new) target by (d, d, d), the true isometric direction.
     expect(v.camera.position.x).toBeCloseTo(ISO_CAMERA_DISTANCE + 1 * MAP_VOXEL_EXTENT);
     expect(v.camera.position.y).toBeCloseTo(ISO_CAMERA_DISTANCE);
-    expect(v.camera.position.z).toBeCloseTo(ISO_CAMERA_DISTANCE - 1 * MAP_VOXEL_EXTENT);
+    expect(v.camera.position.z).toBeCloseTo(ISO_CAMERA_DISTANCE + 1 * MAP_VOXEL_EXTENT);
     const isoOffsetFromTarget = v.camera.position.clone().sub(v.controls.target);
     expect(isoOffsetFromTarget.x).toBeCloseTo(ISO_CAMERA_DISTANCE);
     expect(isoOffsetFromTarget.y).toBeCloseTo(ISO_CAMERA_DISTANCE);
     expect(isoOffsetFromTarget.z).toBeCloseTo(ISO_CAMERA_DISTANCE);
+  });
+});
+
+describe("world <-> tile offset mapping (The Selvage)", () => {
+  const OFFSETS: Array<[number, number]> = [
+    [0, 0],
+    [1, 0],
+    [0, 1],
+    [-1, 0],
+    [0, -1],
+    [1, 1],
+    [-1, -1],
+    [2, -3],
+  ];
+
+  // The forward map places meshes and re-anchors `controls.target`; the
+  // inverse tells `maybeRecenter` which tile the camera is over. Before The
+  // Selvage the inverse was open-coded twice with the sign inlined, so the
+  // two could drift apart silently. This is the test that stops that.
+  test("tileOffsetForWorldPoint inverts worldPointForTileOffset, both styles", () => {
+    for (const style of ["voxel", "pixel"] as const) {
+      for (const [dx, dy] of OFFSETS) {
+        const [x, y, z] = worldPointForTileOffset(style, dx, dy);
+        const back = tileOffsetForWorldPoint(style, x, y, z);
+        expect(back.dx).toBeCloseTo(dx);
+        expect(back.dy).toBeCloseTo(dy);
+      }
+    }
+  });
+
+  // Each style keeps its own plane: voxel's ground is X–Z (Y is height),
+  // pixel's quad is X–Y (Z is depth-only). A mapping that leaked a nonzero
+  // value onto the off-plane axis would contaminate `controls.target`.
+  test("each style leaves its off-plane axis at zero", () => {
+    for (const [dx, dy] of OFFSETS) {
+      const [, voxelY] = worldPointForTileOffset("voxel", dx, dy);
+      expect(voxelY).toBe(0);
+      const [, , pixelZ] = worldPointForTileOffset("pixel", dx, dy);
+      expect(pixelZ).toBe(0);
+    }
+  });
+
+  /** A region whose elevation rises with `row`, so the built geometry has an
+   * unambiguous "which end is row N" — the fixture the row-direction
+   * assertion below needs. Same shape as the sibling blocks' `fakeRegionAt`. */
+  function slopedRegionAt(tile: TileId, samples = 4): RegionScene {
+    const n = samples + 1;
+    return {
+      schema: "scene/tiles-region/v1",
+      seed: 42,
+      face: tile.face,
+      level: tile.level,
+      ix: tile.ix,
+      iy: tile.iy,
+      samples,
+      sea_level_m: 0,
+      season_period_days: 360,
+      circulationBands: 3,
+      biomeLegend: ["deep-ocean", "temperate-forest"],
+      // row-major: node (row, col) is row*n + col. Elevation depends only on
+      // row, rising by a full band per row so the banding cannot flatten it.
+      elevation_m: Array.from({ length: n * n }, (_, i) => Math.floor(i / n) * 1000),
+      ocean: Array.from({ length: n * n }, () => false),
+      biome: Array.from({ length: n * n }, () => 1),
+      plate: Array.from({ length: n * n }, () => 0),
+      unrest: Array.from({ length: n * n }, () => 0),
+    } as unknown as RegionScene;
+  }
+
+  function meshNamed(v: ReturnType<typeof createMapView>, addr: TileId): THREE.Mesh {
+    const suffix = `${addr.face}:${addr.level}:${addr.ix}:${addr.iy}`;
+    const mesh = v.scene.children.find(
+      (c) => c instanceof THREE.Mesh && c.name.endsWith(suffix),
+    );
+    if (!mesh) throw new Error(`no mounted mesh for ${suffix}`);
+    return mesh as THREE.Mesh;
+  }
+
+  /** A mesh's world-space Z span: its geometry's own bounding box plus
+   * wherever the ring mounted it. */
+  function worldZSpan(mesh: THREE.Mesh): { min: number; max: number } {
+    mesh.geometry.computeBoundingBox();
+    const bb = mesh.geometry.boundingBox!;
+    return { min: bb.min.z + mesh.position.z, max: bb.max.z + mesh.position.z };
+  }
+
+  // Half one of the invariant: WITHIN a tile, increasing `row` must run
+  // toward +z under 'voxel'. Asserted through the built geometry (where is
+  // the tall end?) rather than by restating cornerZ's formula.
+  test("voxel: within a tile, increasing row runs toward +z", () => {
+    const addr: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
+    const v = createMapView({ requestRegion: () => {} });
+    v.setRegion(slopedRegionAt(addr));
+    const pos = meshNamed(v, addr).geometry.getAttribute("position");
+    let tallestZ = 0;
+    let tallestY = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) > tallestY) {
+        tallestY = pos.getY(i);
+        tallestZ = pos.getZ(i);
+      }
+    }
+    expect(tallestZ).toBeGreaterThan(0);
+  });
+
+  // Half two: ACROSS tiles, +dy must run the same way. Together the two
+  // halves are the invariant the producer's `param(iy, row/N, level)`
+  // imposes — and their disagreement was the seam. Asserted as adjacency of
+  // the two meshes' world-space spans, which is what "continuous" means
+  // here; a test comparing worldPointForTileOffset to a literal would pass
+  // whichever sign happened to be in the file.
+  test("voxel: the dy=+1 neighbour abuts the origin tile's +z edge", () => {
+    const origin: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
+    const neighbour: TileId = { face: 0, level: 3, ix: 4, iy: 5 };
+    const v = createMapView({ requestRegion: () => {} });
+    v.beginRegion(origin);
+    v.onRegion(tileKey(origin), slopedRegionAt(origin));
+    v.onRegion(tileKey(neighbour), slopedRegionAt(neighbour));
+    const originSpan = worldZSpan(meshNamed(v, origin));
+    const neighbourSpan = worldZSpan(meshNamed(v, neighbour));
+    expect(neighbourSpan.min).toBeCloseTo(originSpan.max);
   });
 });
