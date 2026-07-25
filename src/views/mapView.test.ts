@@ -327,11 +327,12 @@ describe("camera pan/zoom (The Excursion)", () => {
     expect(requested.length).toBeGreaterThan(requestedAfterBegin);
   });
 
-  // `positionAt` maps a tile's second-axis offset `dy` to world `-dy * extent`
-  // on whichever axis the active style uses (Z for 'voxel', Y for 'pixel');
-  // `clampPan`/`maybeRecenter` undo that same negation on that same axis. The
-  // two tests above only ever move `target.x` under the default 'voxel'
-  // style, which never exercises that negation or the 'pixel' branch at all.
+  // `worldPointForTileOffset` maps a tile's second-axis offset `dy` to world
+  // space in a style-dependent way (Since The Selvage): `+dy` sends to
+  // `+z` under 'voxel' but to `-y` under 'pixel'. `clampPan`/`maybeRecenter`
+  // invert that same style-dependent mapping on that same axis. The two
+  // tests above only ever move `target.x` under the default 'voxel' style,
+  // which never exercises that second axis or the 'pixel' branch at all.
   test("voxel style: pan clamp and recenter also operate on the world Z axis (second axis)", () => {
     const center: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
 
@@ -373,9 +374,11 @@ describe("camera pan/zoom (The Excursion)", () => {
     const maxWorldDy = (MAP_RING_RADIUS + 0.5) * MAP_VOXEL_EXTENT;
     expect(Math.abs(vClamp.controls.target.y)).toBeLessThanOrEqual(maxWorldDy);
 
-    // Recenter, under 'pixel': moving solidly past the Y-mapped tile
-    // boundary (negative-Y, same negation convention as voxel's Z) triggers
-    // a recenter.
+    // Recenter, under 'pixel': pixel's `+dy` runs toward `-y` (positionAt's
+    // doc comment), so a negative-Y target is the direction that moves
+    // toward increasing `iy` and triggers a recenter. Voxel does NOT share
+    // this sign — since The Selvage, voxel's `+dy` runs toward `+z` — the
+    // two styles are opposite by design, not variants of the same negation.
     const requested: TileId[] = [];
     const vRecenter = createMapView({ requestRegion: (t) => requested.push(t) });
     vRecenter.setStyle("pixel");

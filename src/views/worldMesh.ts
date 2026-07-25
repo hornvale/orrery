@@ -756,7 +756,12 @@ export function buildVoxelHeightfieldGeometry(
   // separate mesh this builder never sees) and gives the whole ring a solid
   // slab side where no neighbour exists at all. Without `floorY` it falls
   // back to the cell's own height, i.e. no wall — the pre-Selvage rule,
-  // preserved so the globe-side and single-tile callers are unaffected.
+  // kept as the default so `floorY` stays optional: a future single-tile
+  // diorama with no siblings could opt out of the plinth by omitting it.
+  // No such caller exists today — this builder's one caller (mapView.ts's
+  // `buildVoxelMesh`) always passes `floorY`. The globe uses the separate
+  // `buildVoxelBlocks`/`buildVoxelTileGeometry` builders, which this option
+  // does not touch.
   //
   // The floor is lowered to sit strictly BELOW every cell if the caller's
   // value does not already: the wall guard below is a strict `<`, so a floor
