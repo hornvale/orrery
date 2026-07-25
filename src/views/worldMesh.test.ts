@@ -957,4 +957,54 @@ describe('buildVoxelHeightfieldGeometry', () => {
       expect(Math.abs(nrm.getY(v))).toBeLessThan(1e-5); // a vertical wall's normal is purely horizontal
     }
   });
+
+  // The Selvage. Before it, a cell at the grid's own edge had no in-grid
+  // neighbour and emitted no wall — so a real elevation step at a TILE
+  // boundary had no geometry filling it and the viewer saw the page
+  // background through the world. `floorY` turns that "no wall at the
+  // boundary" rule into "wall all the way down at the boundary".
+  it("without floorY, a flat region still emits no walls at all (unchanged)", () => {
+    const region = flatHeightfieldRegion(4, 1000);
+    const geom = buildVoxelHeightfieldGeometry(region, () => [1, 1, 1], {
+      extent: 4,
+      heightScale: 1,
+      bandM: 100,
+    });
+    // 4x4 cells x 2 triangles per top face, and nothing else.
+    expect(triangleCount(geom)).toBe(16 * 2);
+  });
+
+  it("with floorY, every boundary cell emits exactly one wall and no interior cell does", () => {
+    const samples = 4;
+    const region = flatHeightfieldRegion(samples, 1000);
+    const geom = buildVoxelHeightfieldGeometry(region, () => [1, 1, 1], {
+      extent: 4,
+      heightScale: 1,
+      bandM: 100,
+      floorY: -100,
+    });
+    // A samples x samples grid has samples^2 top faces. Boundary EDGES (not
+    // cells): each of the 4 sides contributes `samples` cell-edges, so
+    // 4 * samples wall quads — corner cells contribute two each, which this
+    // count already includes. Interior cells are all equal height, so they
+    // emit nothing.
+    const tops = samples * samples * 2;
+    const walls = 4 * samples * 2;
+    expect(triangleCount(geom)).toBe(tops + walls);
+  });
+
+  it("floorY at or above the lowest cell is lowered rather than silently dropping the wall", () => {
+    const samples = 4;
+    const region = flatHeightfieldRegion(samples, 1000);
+    // The wall guard is a strict `<`, so a floor EQUAL to the cell height
+    // would emit nothing (or a degenerate quad). The builder must lower it.
+    const geom = buildVoxelHeightfieldGeometry(region, () => [1, 1, 1], {
+      extent: 4,
+      heightScale: 1,
+      bandM: 100,
+      floorY: 1e9,
+    });
+    expect(triangleCount(geom)).toBe(samples * samples * 2 + 4 * samples * 2);
+    expect(hasWallBetweenEqualCells(geom)).toBe(false);
+  });
 });

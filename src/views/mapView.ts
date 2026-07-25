@@ -13,7 +13,7 @@ import { overworldTexture } from "./mapTexture";
 import type { MapSymbols } from "./mapSymbols";
 import { buildMapSymbols } from "./mapSymbols";
 import { rungForMapZoom, type Rung } from "./symbols/budget";
-import { buildVoxelHeightfieldGeometry } from "./worldMesh";
+import { buildVoxelHeightfieldGeometry, REFERENCE_RADIUS_M } from "./worldMesh";
 import { pixelColorFor } from "./styles/pixelBase";
 import type { TileId } from "./cubeSphere";
 import { tileKey } from "./cubeSphere";
@@ -125,6 +125,15 @@ export const MAP_VOXEL_BAND_M = 250;
  * the tuning knob for the campaign's mandatory visual framing pass
  * (Task 4). */
 export const MAP_VOXEL_HEIGHT_SCALE = 800;
+
+/** Elevation (m) the voxel diorama's plinth drops to — the underside of the
+ * slab (The Selvage). Deep enough to sit below any terrain the producer
+ * emits, so the boundary wall is always a full cliff face rather than a
+ * partial one; `buildVoxelHeightfieldGeometry` lowers it further on the rare
+ * tile that would reach it, so this value can never open a gap, only make the
+ * slab thicker or thinner. A first-pass value chosen at a visual pass — the
+ * knob to turn if the slab reads too chunky or too papery. */
+export const MAP_VOXEL_FLOOR_M = -9000;
 
 /** True isometric camera offset: elevation `atan(1/√2) ≈ 35.264°`, azimuth
  * 45°. Positioning the camera at `(d, d, d)` looking at the origin with
@@ -402,7 +411,15 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
     const geometry = buildVoxelHeightfieldGeometry(
       region,
       (nodeIndex) => pixelColorFor([0, 0, 0], region, nodeIndex),
-      { extent: MAP_VOXEL_EXTENT, heightScale: MAP_VOXEL_HEIGHT_SCALE, bandM: MAP_VOXEL_BAND_M },
+      {
+        extent: MAP_VOXEL_EXTENT,
+        heightScale: MAP_VOXEL_HEIGHT_SCALE,
+        bandM: MAP_VOXEL_BAND_M,
+        // The plinth (The Selvage): the ring mounts a tile's siblings right
+        // up against its edges, so a boundary cell that emitted no wall left
+        // a real elevation step showing the page background through it.
+        floorY: (MAP_VOXEL_HEIGHT_SCALE * MAP_VOXEL_FLOOR_M) / REFERENCE_RADIUS_M,
+      },
     );
     const material = new THREE.MeshStandardMaterial({
       vertexColors: true,

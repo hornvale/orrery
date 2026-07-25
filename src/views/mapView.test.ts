@@ -599,4 +599,19 @@ describe("world <-> tile offset mapping (The Selvage)", () => {
     const neighbourSpan = worldZSpan(meshNamed(v, neighbour));
     expect(neighbourSpan.min).toBeCloseTo(originSpan.max);
   });
+
+  // The builder's plinth is opt-in, so the map rung must actually pass
+  // floorY — a builder that supports it and a caller that omits it looks
+  // exactly like the bug. A flat region emits no walls without a floor and
+  // exactly one per boundary cell with one, so vertex count is the tell.
+  test("voxel: the map rung mounts tiles WITH a plinth", () => {
+    const addr: TileId = { face: 0, level: 3, ix: 4, iy: 4 };
+    const samples = 4;
+    const v = createMapView({ requestRegion: () => {} });
+    v.setRegion(slopedRegionAt(addr, samples));
+    const count = meshNamed(v, addr).geometry.getAttribute("position").count;
+    // Top faces alone would be samples^2 * 6 vertices; the plinth adds at
+    // least one wall quad (6 vertices) per boundary cell.
+    expect(count).toBeGreaterThan(samples * samples * 6 + 4 * samples * 6 - 1);
+  });
 });

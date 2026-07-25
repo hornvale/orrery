@@ -686,8 +686,11 @@ export function buildVoxelRegionTileGeometryIndexed(
  * numbers read comparably between the globe and map views. Walls follow
  * `buildVoxelBlocks`'s identical rule: a vertical quad wherever an
  * edge-neighbor's banded height is STRICTLY lower; a cell at the grid's own
- * edge has no in-grid neighbor there (no wall, no seam — a region patch has
- * no sibling on this flat diorama to seam against).
+ * edge has no in-grid neighbor there and takes `opts.floorY` if given (The
+ * Selvage's plinth: a wall down to a shared floor, which fills a real
+ * elevation step at a TILE boundary and gives the ring a solid slab side).
+ * Omit `floorY` for the pre-Selvage rule — no wall at the grid boundary at
+ * all, correct for a diorama mounted alone with no siblings.
  *
  * Shares the actual vertex-emission math with `buildVoxelBlocks` via
  * `pushFlatQuad` (the cross-product-normal + winding-flip + 2-triangle push)
@@ -702,7 +705,7 @@ export function buildVoxelRegionTileGeometryIndexed(
 export function buildVoxelHeightfieldGeometry(
   region: RegionScene,
   colorAt: (nodeIndex: number) => RGB,
-  opts: { extent: number; heightScale: number; bandM: number },
+  opts: { extent: number; heightScale: number; bandM: number; floorY?: number },
 ): THREE.BufferGeometry {
   const { extent, heightScale, bandM } = opts;
   const N = region.samples;
@@ -746,12 +749,31 @@ export function buildVoxelHeightfieldGeometry(
       cellColor[idx] = colorAt(nodeIdx);
     }
   }
-  // A cell just outside [0, N) (the grid's own edge) has no in-grid
-  // neighbor — fall back to `ownIdx`'s own height, exactly like
-  // `buildVoxelBlocks`'s `neighborRadius` (a deliberate, bounded "no wall at
-  // the grid boundary" rule, not a bug).
-  const neighborHeight = (ownIdx: number, row: number, col: number): number =>
-    row < 0 || row >= N || col < 0 || col >= N ? cellHeight[ownIdx]! : cellHeight[row * N + col]!;
+  // The Selvage. A cell just outside `[0, N)` is at the grid's own edge and
+  // has no in-grid neighbour. Given `floorY`, it takes that shared floor, so
+  // the cell emits a wall all the way down — the "plinth" that fills a real
+  // elevation step at a TILE boundary (where the neighbouring tile is a
+  // separate mesh this builder never sees) and gives the whole ring a solid
+  // slab side where no neighbour exists at all. Without `floorY` it falls
+  // back to the cell's own height, i.e. no wall — the pre-Selvage rule,
+  // preserved so the globe-side and single-tile callers are unaffected.
+  //
+  // The floor is lowered to sit strictly BELOW every cell if the caller's
+  // value does not already: the wall guard below is a strict `<`, so a floor
+  // at or above a cell's height would silently emit nothing and reopen the
+  // gap. One band is the natural margin — it reads as one more terrace under
+  // the lowest, and needs no constant of its own.
+  const bandY = (heightScale * bandM) / REFERENCE_RADIUS_M;
+  let lowestCell = Infinity;
+  for (let i = 0; i < N * N; i++) lowestCell = Math.min(lowestCell, cellHeight[i]!);
+  const effectiveFloorY =
+    opts.floorY === undefined ? undefined : Math.min(opts.floorY, lowestCell - bandY);
+  const neighborHeight = (ownIdx: number, row: number, col: number): number => {
+    if (row < 0 || row >= N || col < 0 || col >= N) {
+      return effectiveFloorY ?? cellHeight[ownIdx]!;
+    }
+    return cellHeight[row * N + col]!;
+  };
 
   const writer = makeVertexWriter(N * N * (6 + 4 * 6));
 
