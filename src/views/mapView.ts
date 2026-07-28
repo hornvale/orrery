@@ -586,6 +586,7 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
    * meshes actually sit. */
   function clampPan(): void {
     if (!originAddr || !centerAddr) return;
+    const beforeClamp = controls.target.clone();
     const bounds = panBoundsInTiles(centerAddr, originAddr, MAP_RING_RADIUS);
     // Take the world bounds from the forward mapping itself rather than
     // re-deriving them: whether min/max swap on the second axis is a
@@ -603,6 +604,16 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
     } else {
       controls.target.y = Math.min(maxSecond, Math.max(minSecond, controls.target.y));
     }
+    // Move the camera by however far the clamp moved the target, for the
+    // same reason `setStyle` does it (see its own comment): a drag has
+    // already displaced `camera.position` by the FULL, unclamped pan, and
+    // `OrbitControls.update` re-derives its offset from wherever the camera
+    // currently sits — so a target-only correction is never propagated back
+    // to the camera. Left uncorrected, the camera keeps sliding while the
+    // target is pinned at the ring bound, and the fixed pose this whole
+    // module assumes (iso `(d, d, d)`; pixel straight down −Z) shears
+    // off-axis and never recovers.
+    camera.position.add(controls.target.clone().sub(beforeClamp));
   }
 
   /** Checks `controls.target` against the recenter-hysteresis boundary and

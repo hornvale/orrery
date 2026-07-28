@@ -466,6 +466,41 @@ describe("camera pan/zoom (The Excursion)", () => {
     }
   });
 
+  // `clampPan` pulls `controls.target` back inside the ring, but a drag has
+  // ALREADY moved `camera.position` by the full (unclamped) pan — and
+  // `OrbitControls.update` derives its offset from wherever the camera
+  // currently is, so a target-only correction is never propagated back. The
+  // camera keeps sliding while the target is pinned, and the fixed camera
+  // angle every other part of this module depends on (`setStyle`'s pose,
+  // `worldPointForTileOffset`'s planes, the symbol overlay's billboarding)
+  // shears off-axis, permanently. This is the same omission The Excursion's
+  // own final review fixed in `setStyle` (commit 9b09346, "translate
+  // camera.position alongside controls.target") — `clampPan` was missed
+  // because no test drove a real drag INTO the clamp.
+  describe("clamping a drag keeps the camera on its fixed pose (both styles)", () => {
+    for (const style of ["voxel", "pixel"] as MapStyle[]) {
+      test(`${style}: the camera-to-target offset survives a drag into the clamp`, () => {
+        const el = dragCanvas();
+        const v = createMapView({ domElement: el, requestRegion: () => {} });
+        v.setStyle(style);
+        v.beginRegion({ face: 0, level: 3, ix: 4, iy: 4 });
+        const renderer = { render: () => {} } as unknown as THREE.WebGLRenderer;
+        v.render(renderer);
+        const pose = v.camera.position.clone().sub(v.controls.target);
+
+        // Drag hard, repeatedly, in one direction — far enough that the ring
+        // bound bites and `clampPan` starts correcting every frame.
+        for (let i = 0; i < 8; i++) {
+          dragOn(el, -600, -600);
+          v.render(renderer);
+        }
+
+        const posed = v.camera.position.clone().sub(v.controls.target);
+        expect(posed.distanceTo(pose)).toBeLessThan(1e-6);
+      });
+    }
+  });
+
   // Final-review fix: `controls.target` persists across `setStyle`/
   // `beginRegion`/`setRegion` calls (it's a `THREE.Vector3` the view never
   // recreates), so a pan from a PRIOR visit/style could leak into the next
