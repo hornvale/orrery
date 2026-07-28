@@ -5,6 +5,7 @@ import {
   ISO_CAMERA_DISTANCE,
   MAP_RING_RADIUS,
   MAP_VOXEL_EXTENT,
+  type MapStyle,
   tileOffsetForWorldPoint,
   worldPointForTileOffset,
 } from "./mapView";
@@ -387,6 +388,82 @@ describe("camera pan/zoom (The Excursion)", () => {
     vRecenter.controls.target.set(0, -0.7 * MAP_VOXEL_EXTENT, 0);
     vRecenter.render({ render: () => {} } as unknown as THREE.WebGLRenderer);
     expect(requested.length).toBeGreaterThan(requestedAfterBegin);
+  });
+
+  // Every pan test above (and every one The Excursion shipped) writes
+  // `controls.target` DIRECTLY, which silently assumes the half of the loop
+  // it never exercises: that a drag on the canvas reaches that axis of the
+  // target at all. It doesn't, under 'pixel' — `MapControls` pans in the
+  // world-horizontal plane (perpendicular to `camera.up`), which is the
+  // map plane for 'voxel' (X–Z) but the DEPTH axis for 'pixel' (whose quad
+  // is X–Y). These two tests drive real pointer events through the real
+  // controls, and assert the only property that matters to a user: a drag
+  // along a screen axis moves the target along the corresponding MAP axis,
+  // and never off the map plane.
+  /** A `MapControls`-drivable stand-in for the real canvas: happy-dom gives
+   * us pointer events, but not layout (`clientWidth`/`clientHeight` are 0,
+   * and OrbitControls divides the pan distance by them) or pointer
+   * capture. */
+  function dragCanvas(): HTMLElement {
+    const el = document.createElement("canvas");
+    Object.defineProperty(el, "clientWidth", { value: 800 });
+    Object.defineProperty(el, "clientHeight", { value: 600 });
+    Object.assign(el, { setPointerCapture() {}, releasePointerCapture() {} });
+    document.body.appendChild(el);
+    return el;
+  }
+
+  /** Drag from the canvas centre by `(dx, dy)` screen pixels, as a real
+   * pointer sequence through the real controls. */
+  function dragOn(el: HTMLElement, dx: number, dy: number): void {
+    const opts = { bubbles: true, pointerId: 1, button: 0, buttons: 1, pointerType: "mouse" };
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, clientX: 400, clientY: 300 }));
+    el.dispatchEvent(
+      new PointerEvent("pointermove", { ...opts, clientX: 400 + dx, clientY: 300 + dy }),
+    );
+    el.dispatchEvent(
+      new PointerEvent("pointerup", { ...opts, clientX: 400 + dx, clientY: 300 + dy }),
+    );
+  }
+
+  describe("a canvas drag moves the target in the map plane (both styles)", () => {
+    /** Drag from the canvas centre by `(dx, dy)` screen pixels and return
+     * how far `controls.target` moved, in the active style's own tile-offset
+     * axes plus the off-plane (depth) component. */
+    function dragBy(
+      style: MapStyle,
+      dx: number,
+      dy: number,
+    ): { dx: number; dy: number; offPlane: number } {
+      const el = dragCanvas();
+      const v = createMapView({ domElement: el });
+      v.setStyle(style);
+      // `setStyle` only reaches its own `controls.update()` when a region is
+      // mounted, and pan direction is read off `camera.matrix` — so refresh
+      // it the same way `render` does every frame, or the drag would be
+      // measured against the PREVIOUS style's stale camera basis.
+      v.controls.update();
+      const before = v.controls.target.clone();
+      dragOn(el, dx, dy);
+      v.controls.update();
+      const moved = v.controls.target.clone().sub(before);
+      const offsets = tileOffsetForWorldPoint(style, moved.x, moved.y, moved.z);
+      return { ...offsets, offPlane: style === "voxel" ? moved.y : moved.z };
+    }
+
+    for (const style of ["voxel", "pixel"] as MapStyle[]) {
+      test(`${style}: a horizontal drag moves the target east-west, in-plane`, () => {
+        const moved = dragBy(style, -200, 0);
+        expect(Math.abs(moved.dx)).toBeGreaterThan(0.01);
+        expect(moved.offPlane).toBeCloseTo(0, 6);
+      });
+
+      test(`${style}: a vertical drag moves the target north-south, in-plane`, () => {
+        const moved = dragBy(style, 0, -200);
+        expect(Math.abs(moved.dy)).toBeGreaterThan(0.01);
+        expect(moved.offPlane).toBeCloseTo(0, 6);
+      });
+    }
   });
 
   // Final-review fix: `controls.target` persists across `setStyle`/

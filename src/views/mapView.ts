@@ -345,6 +345,9 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
     camera.up.set(0, 1, 0);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
+    // Pan in SCREEN space under 'pixel' — see `applyIsoCamera`'s counterpart
+    // comment for why the two styles must disagree here.
+    controls.screenSpacePanning = true;
   }
 
   /** The `'voxel'` style's fixed-isometric camera pose (see
@@ -365,6 +368,23 @@ export function createMapView(options: CreateMapViewOptions = {}): MapView {
     camera.up.set(0, 1, 0);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
+    // `MapControls` ships `screenSpacePanning = false`: a drag pans in the
+    // WORLD-HORIZONTAL plane (perpendicular to `camera.up`, i.e. X–Z). That
+    // is exactly right here — the diorama's ground plane IS X–Z, so a drag
+    // slides along the ground the way a paper map slides on a table, and the
+    // fixed isometric angle is preserved.
+    //
+    // It is exactly WRONG for 'pixel', whose quad lies in X–Y with the camera
+    // looking down −Z (`applyPixelCamera`): there, "perpendicular to up" is
+    // the DEPTH axis, so a vertical drag pushed `controls.target` along ±Z —
+    // straight toward/away from the map plane, which an orthographic camera
+    // renders as no movement at all. North–south panning was simply dead
+    // under 'pixel', and `clampPan`/`maybeRecenter` (which read `target.y`
+    // as pixel's second axis) never saw the drag either.
+    //
+    // So the flag is part of a style's POSE, not a constructor-time constant:
+    // whichever plane the tiles are mounted in, the drag must move within it.
+    controls.screenSpacePanning = false;
   }
   applyIsoCamera(); // default style is 'voxel'
 
