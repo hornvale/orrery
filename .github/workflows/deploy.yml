@@ -2,6 +2,12 @@ name: Deploy
 on:
   push:
     branches: [main]
+  # The gate (build job) also runs on PRs into main, so a branch can be
+  # adjudicated before merge — notably `npm run e2e`, which is timeout-
+  # marginal on a loaded dev box and needs a clean runner to be trusted.
+  # Deployment stays main-only; see the `if` on the deploy job.
+  pull_request:
+    branches: [main]
 permissions:
   contents: read
   pages: write
@@ -28,6 +34,8 @@ jobs:
         with: { path: dist }
   deploy:
     needs: build
+    # Never deploy from a PR run — only a push that landed on main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
