@@ -250,11 +250,17 @@ test('mounts the base set through the build queue, not all at once', () => {
   // tiles on the first frame, not the whole base set.
   expect(tileMeshesByKey(view).size).toBeLessThanOrEqual(6);
 
-  // Pumping frames drives it to the full base set (6 * 4^LOD_MIN_LEVEL).
-  pump(view, new THREE.PerspectiveCamera());
+  // A camera far enough out that no tile subdivides past the base level, so
+  // the settled set is exactly the base set. (A default PerspectiveCamera
+  // sits at the origin — INSIDE the globe — and is never a valid probe.)
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
   expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
 });
 ```
+
+`GLOBE_RADIUS` is already imported in this file.
 
 Add `LOD_MIN_LEVEL` to the existing `./cubeSphere` import in the test file.
 
@@ -335,20 +341,36 @@ documents come from `regionFixture(face, level, ix, iy, samples)` (line ~84).
 
 Add to `src/views/globe.test.ts`:
 
+**This task runs while `REGION_MIN_LEVEL` is still 3** (Task 4 lowers it), so a
+tile only wants a patch once the camera has zoomed deep enough to subdivide
+past level 3. Use the same deep-zoom camera the existing region tests use
+(`GLOBE_RADIUS * 1.001`, see the "onRegion swaps only the arriving tile" test)
+— a default `PerspectiveCamera` sits at the origin, inside the globe, and
+reaches nothing. Also call `view.setLens(moistureLens)`: `regionFixture` fills
+only `elevation_m` and `moisture`, so the default lens's ice blend would read
+a field the fixture lacks.
+
 ```ts
 test('caps outstanding region requests at the cascade in-flight limit', () => {
   const requested: TileId[] = [];
   const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => { requested.push(t); });
-  pump(view, new THREE.PerspectiveCamera());
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  pump(view, camera);
   // Nothing has been delivered, so nothing settles and the cap must hold —
   // however many frames we pump.
+  expect(requested.length).toBeGreaterThan(0); // the deep zoom did reach REGION_MIN_LEVEL
   expect(requested.length).toBeLessThanOrEqual(CASCADE_MAX_IN_FLIGHT);
 });
 
 test('resumes requesting once delivered patches settle', () => {
   const requested: TileId[] = [];
   const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => { requested.push(t); });
-  pump(view, new THREE.PerspectiveCamera());
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  pump(view, camera);
   const firstBatch = [...requested];
   expect(firstBatch.length).toBeGreaterThan(0);
 
@@ -356,13 +378,13 @@ test('resumes requesting once delivered patches settle', () => {
   for (const t of firstBatch) {
     view.onRegion(tileKey(t), regionFixture(t.face, t.level, t.ix, t.iy, TILE_QUADS));
   }
-  pump(view, new THREE.PerspectiveCamera());
+  pump(view, camera);
   expect(requested.length).toBeGreaterThan(firstBatch.length);
 });
 ```
 
-Import `CASCADE_MAX_IN_FLIGHT` from `./cascade`. `TILE_QUADS`, `tileKey`, and
-`type TileId` are already imported in this file.
+Import `CASCADE_MAX_IN_FLIGHT` from `./cascade`. `TILE_QUADS`, `tileKey`,
+`type TileId`, `GLOBE_RADIUS`, and `moistureLens` are already imported.
 
 - [ ] **Step 2: Run test to verify it fails**
 
