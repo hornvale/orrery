@@ -810,13 +810,35 @@ Change the header line to `**Status:** Shipped 2026-07-<dd>` with the merge date
 
 The section currently says region patches are a near-camera treatment gated to `REGION_MIN_LEVEL = 3`, and lists "CDLOD levels past a region's own `samples` re-interpolate" as the open knob. Rewrite it to describe the cascade: the base is region-served at level 2, the export is demoted to overlays at width 256, and the remaining open items are raising `samples` for the deepest tiles and region-doc parity for locked worlds.
 
-- [ ] **Step 3: Run the full gate**
+- [ ] **Step 3: Fix the e2e fixed-wait race Task 4a introduced**
+
+**Added after Task 4a's review.** `e2e/smoke.spec.ts:172` does
+`await page.waitForTimeout(400)` after a style switch. That was safe when
+`setStyle` rebuilt every tile synchronously before returning — it no longer
+does. Rebuilds are now paced at `MAX_BUILDS_PER_FRAME` (6) per frame, so 400 ms
+is a bet on frame rate: ~96 tiles needs ~16 frames, which is fine at 60 fps and
+not fine on a loaded box under software WebGL.
+
+Replace the fixed sleep with a readiness check. The globe already instruments
+`globalThis.__btCount` / `__swapCount` / `__slotBuildCount`; expose or reuse a
+signal for "the build queue is drained" and poll it with Playwright's
+`expect.poll` or `page.waitForFunction`, with a generous timeout. Do not simply
+raise the 400 to a bigger number — that reintroduces the same bet at a
+different threshold.
+
+Check whether any other fixed `waitForTimeout` in `e2e/` has the same problem
+now that rebuilds are amortized, and fix those too.
+
+- [ ] **Step 4: Run the full gate**
 
 ```bash
 npm test && npm run smoke && npm run build && npm run e2e
 ```
 
-Expected: all four green. If e2e is flaky locally (it is timeout-marginal under software WebGL), push and let CI adjudicate.
+Expected: all four green. e2e is timeout-marginal under software WebGL on a
+loaded dev box; if it flakes locally after the readiness fix, push and let CI
+adjudicate — but a flake here is now evidence the readiness check is wrong,
+not just noise, so investigate before dismissing it.
 
 - [ ] **Step 4: Commit**
 
