@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CASCADE_MAX_IN_FLIGHT, createCascade } from './cascade';
+import { CASCADE_MAX_ATTEMPTS, CASCADE_MAX_IN_FLIGHT, createCascade } from './cascade';
 import { tileCenterUnit, tileKey, type TileId } from './cubeSphere';
 
 const t = (face: number, level = 0, ix = 0, iy = 0): TileId => ({ face, level, ix, iy });
@@ -17,7 +17,7 @@ describe('cascade scheduler', () => {
     c.submit([t(0), t(1), t(2)]);
     const first = c.next();
     expect(first.length).toBe(2);
-    c.settle(first[0]!);
+    c.settle(first[0]!, true);
     expect(c.next().length).toBe(1);
   });
 
@@ -36,7 +36,7 @@ describe('cascade scheduler', () => {
     const dealt = c.next();
     const dealtKeys = dealt.map(tileKey);
     c.reprioritize(tileCenterUnit(t(5)));
-    for (const d of dealt) c.settle(d); // free both slots
+    for (const d of dealt) c.settle(d, true); // free both slots
     const after = c.next().map(tileKey);
     // The re-sorted queue leads with face 5, and nothing already dealt recurs.
     expect(after[0]).toBe(tileKey(t(5)));
@@ -56,9 +56,48 @@ describe('cascade scheduler', () => {
     const c = createCascade({ maxInFlight: 4 });
     c.submit([t(0), t(1)]);
     const dealt = c.next();
-    for (const d of dealt) c.settle(d);
+    for (const d of dealt) c.settle(d, true);
     expect(c.next()).toEqual([]);
     expect(c.pending).toBe(0);
     expect(c.inFlight).toBe(0);
+  });
+
+  // This also covers "a successful settle is never re-dealt": ok:true above
+  // retires both tiles permanently and next() stays empty across a re-submit.
+  it('a failed tile is re-dealt on a later submit', () => {
+    const c = createCascade({ maxInFlight: 4 });
+    c.submit([t(0)]);
+    const [dealt] = c.next();
+    c.settle(dealt!, false);
+    expect(c.inFlight).toBe(0);
+    c.submit([t(0)]); // caller resubmits the tile it still wants
+    expect(c.next().map(tileKey)).toEqual([tileKey(t(0))]);
+  });
+
+  it('after maxAttempts failures the tile is not re-dealt', () => {
+    // A small, non-default maxAttempts so the option itself (not the
+    // CASCADE_MAX_ATTEMPTS default) is what's under test.
+    const c = createCascade({ maxInFlight: 4, maxAttempts: 3 });
+    c.submit([t(0)]);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const [dealt] = c.next();
+      expect(dealt).toEqual(t(0));
+      c.settle(dealt!, false);
+      c.submit([t(0)]); // caller keeps wanting it
+    }
+    // All 3 configured attempts are spent; the 4th submit does not re-queue it.
+    expect(c.next()).toEqual([]);
+    expect(c.pending).toBe(0);
+  });
+
+  it('CASCADE_MAX_ATTEMPTS is the scheduler-wide default retry budget', () => {
+    const c = createCascade();
+    c.submit([t(0)]);
+    for (let attempt = 0; attempt < CASCADE_MAX_ATTEMPTS; attempt++) {
+      const [dealt] = c.next();
+      c.settle(dealt!, false);
+      c.submit([t(0)]);
+    }
+    expect(c.next()).toEqual([]);
   });
 });

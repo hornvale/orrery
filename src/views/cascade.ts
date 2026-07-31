@@ -14,26 +14,43 @@ import { tileCenterUnit, tileKey, type TileId, type V3 } from './cubeSphere';
  * be re-prioritized ahead of what has already been dealt. */
 export const CASCADE_MAX_IN_FLIGHT = 4;
 
+/** Failed-request retries allowed before a tile is given up on. */
+export const CASCADE_MAX_ATTEMPTS = 2;
+
 export interface Cascade {
-  /** Add tiles wanting patches. Already-pending, in-flight, and settled tiles
-   * are ignored, so callers may submit the same set every frame. */
+  /** Add tiles wanting patches. Already-pending, in-flight, and permanently
+   * settled tiles are ignored, so callers may submit the same set every
+   * frame — a tile that failed and has retries left is queued again. */
   submit(tiles: readonly TileId[]): void;
   /** Re-sort what has not yet been dealt, camera-facing first. */
   reprioritize(cameraUnit: V3): void;
   /** Take the next batch to request, respecting the in-flight cap. */
   next(): TileId[];
-  /** Mark a dealt tile as resolved (patch arrived, or failed), freeing a slot. */
-  settle(tile: TileId): void;
+  /** Resolve a dealt tile, freeing its slot. `ok: true` (the patch arrived)
+   * retires the tile permanently. `ok: false` (the request failed) counts
+   * the attempt and retires the tile only once it has been attempted
+   * `maxAttempts` times; until then a later `submit` re-queues it.
+   *
+   * This departs from `main.ts:147`'s no-retry policy for region replies
+   * ("left uncleared so a persistently-failing region isn't re-requested
+   * every rebuild") on purpose. That policy is safe today because only
+   * deep-zoom tiles use patches — a failure just costs detail nobody is
+   * looking at. Once the base globe is patch-served (Task 4), the same
+   * failure would leave a permanently coarse tile in the default view, so
+   * failures here get a bounded number of retries instead of none. */
+  settle(tile: TileId, ok: boolean): void;
   readonly pending: number;
   readonly inFlight: number;
 }
 
-export function createCascade(opts?: { maxInFlight?: number }): Cascade {
+export function createCascade(opts?: { maxInFlight?: number; maxAttempts?: number }): Cascade {
   const cap = opts?.maxInFlight ?? CASCADE_MAX_IN_FLIGHT;
+  const maxAttempts = opts?.maxAttempts ?? CASCADE_MAX_ATTEMPTS;
   let queue: TileId[] = [];
   const queued = new Set<string>();
   const inFlight = new Set<string>();
   const settled = new Set<string>();
+  const attempts = new Map<string, number>();
   // Camera direction as of the last reprioritize; identity ordering until then.
   let camera: V3 | null = null;
 
@@ -70,10 +87,16 @@ export function createCascade(opts?: { maxInFlight?: number }): Cascade {
       }
       return out;
     },
-    settle(tile) {
+    settle(tile, ok) {
       const k = tileKey(tile);
       inFlight.delete(k);
-      settled.add(k);
+      if (ok) {
+        settled.add(k);
+        return;
+      }
+      const count = (attempts.get(k) ?? 0) + 1;
+      attempts.set(k, count);
+      if (count >= maxAttempts) settled.add(k);
     },
     get pending() {
       return queue.length;
