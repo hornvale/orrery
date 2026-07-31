@@ -16,6 +16,7 @@ import {
 } from './globe';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import { LOD_MIN_LEVEL, TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
+import { CASCADE_MAX_IN_FLIGHT } from './cascade';
 import { iceFraction } from './ice';
 import { rotationPhase } from '../sim/ephemeris';
 import type { RegionScene, SystemScene, TilesScene } from '../sim/scene';
@@ -197,6 +198,47 @@ test('onRegion swaps only the arriving tile to region geometry — other tiles k
   // the region swap; count-capped it is fast on a dev box but slower per build
   // on constrained CI hardware. Correctness comes from the count-capped drain
   // (above); this only guards against a slow-box timeout, not a hang.
+}, 30_000);
+
+test('caps outstanding region requests at the cascade in-flight limit', () => {
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => {
+    requested.push(t);
+  });
+  view.setLens(moistureLens); // see regionFixture's doc — the fixture has no ice fields
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  pump(view, camera);
+
+  // Nothing was delivered, so nothing settles and the cap must hold — however
+  // many frames we pump. Before the cascade every deep build fired its own
+  // request, so this ran to dozens.
+  expect(requested.length).toBeGreaterThan(0); // the deep zoom did reach REGION_MIN_LEVEL
+  expect(requested.length).toBeLessThanOrEqual(CASCADE_MAX_IN_FLIGHT);
+}, 30_000);
+
+test('resumes requesting once delivered patches settle, and a failed patch frees its slot too', () => {
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => {
+    requested.push(t);
+  });
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
+  pump(view, camera);
+  const firstBatch = [...requested];
+  expect(firstBatch.length).toBeGreaterThan(0);
+
+  // Deliver them all: the cascade frees its slots and deals the next batch.
+  for (const t of firstBatch) view.onRegion(tileKey(t), regionFixture(t.face, t.level, t.ix, t.iy, TILE_QUADS));
+  pump(view, camera);
+  const secondBatch = requested.slice(firstBatch.length);
+  expect(secondBatch.length).toBeGreaterThan(0);
+
+  // A failure settles too, or the cap would leak a slot permanently.
+  for (const t of secondBatch) view.onRegionError(tileKey(t));
+  pump(view, camera);
+  expect(requested.length).toBeGreaterThan(firstBatch.length + secondBatch.length);
 }, 30_000);
 
 test('refines under autoplay spin: a still camera reaches a deep tile while the world rotates (settle keys off the user camera, not the diurnal spin)', () => {

@@ -35,7 +35,9 @@ import {
   tileGrid,
   tileKey,
   type TileId,
+  type V3,
 } from './cubeSphere';
+import { createCascade } from './cascade';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { createCurrents } from './currents';
@@ -329,6 +331,10 @@ export interface GlobeView {
   /** A requested region patch (true higher-res terrain) arrived for the tile
    * `key`: cache it and let the next frame rebuild that tile from it. */
   onRegion(key: string, region: RegionScene): void;
+  /** A requested region patch failed for the tile `key`: the tile keeps its
+   * interpolated form, and the request scheduler frees the slot it was
+   * holding (retrying a bounded number of times before giving up). */
+  onRegionError(key: string): void;
   /** Toggle the seasonal hold (Task 9): freezes the mesh's diurnal spin
    * (`spinGroup.rotation.z`, via `seasonalSpinZ`) while the terminator light
    * keeps tracking the sub-solar latitude, so a year's seasons are watchable
@@ -481,7 +487,12 @@ export function createGlobeView(
   const regionsEnabled = requestRegion !== undefined && sys.world.dayLengthDays !== null;
   const REGION_MIN_LEVEL = 3;
   const regionCache = new Map<string, RegionScene>();
-  const regionPending = new Set<string>();
+  // Region requests go through the cascade scheduler rather than firing inline
+  // at build time: it owns the dedupe (so a tile rebuilt every frame is asked
+  // for once), orders them camera-facing-first, and caps how many are
+  // outstanding — a camera move re-prioritizes what has not been asked for yet
+  // instead of waiting out a stale queue.
+  const cascade = createCascade();
   // A region tile's colour index is just its node index (0..n²-1) — one shared
   // identity map for all region tiles (read-only in the repaint).
   const identityIdx = Int32Array.from({ length: tileGridN * tileGridN }, (_, i) => i);
@@ -600,13 +611,11 @@ export function createGlobeView(
         idx = built.index;
         darken = built.darken;
         colorSrc = tiles;
-        // Ask for the region if it would sharpen this tile and isn't in flight
-        // — the same request path the smooth/terraced branch uses below, so a
-        // deep voxel tile still upgrades to true higher-res terrain.
-        if (wantsRegion && !regionPending.has(key)) {
-          regionPending.add(key);
-          requestRegion!(t);
-        }
+        // Ask for the region if it would sharpen this tile — the same request
+        // path the smooth/terraced branch uses below, so a deep voxel tile
+        // still upgrades to true higher-res terrain. Submitting is cheap and
+        // idempotent; `update` deals the actual requests.
+        if (wantsRegion) cascade.submit([t]);
       }
     } else if (region) {
       // True higher-res terrain, coloured by the lens on the region's own
@@ -629,11 +638,8 @@ export function createGlobeView(
       // its edge vertex's colour at build time and is never a data surface.
       idx = new Int32Array(tileGridN * tileGridN);
       for (let i = 0; i < idx.length; i++) idx[i] = tileIndex(tiles, grid.lats[i]!, grid.lons[i]!);
-      // Ask for the region if it would sharpen this tile and isn't in flight.
-      if (wantsRegion && !regionPending.has(key)) {
-        regionPending.add(key);
-        requestRegion!(t);
-      }
+      // Ask for the region if it would sharpen this tile (see above).
+      if (wantsRegion) cascade.submit([t]);
     }
     const mesh = new THREE.Mesh(geom, material);
     mesh.name = `globe-tile-${key}`;
@@ -950,7 +956,23 @@ export function createGlobeView(
   let settledFrames = 0;
 
   const localCam = new THREE.Vector3(); // reselect scratch — no per-frame alloc
+  const cascadeCam = new THREE.Vector3(); // cameraUnitFor scratch, kept separate
+  // so a cascade call can never alias `reselect`'s in-flight `localCam`
   const spinZAxis = new THREE.Vector3(0, 0, 1);
+  /** The camera in the spinning globe's LOCAL frame, written into `out` — the
+   * tiles live under `spinGroup`, so everything that reasons about which
+   * surface the camera faces (selection, region priority) must work here. */
+  function toLocalFrame(camera: THREE.Camera, out: THREE.Vector3): THREE.Vector3 {
+    return out.copy(camera.position).applyAxisAngle(spinZAxis, -spinGroup.rotation.z);
+  }
+  /** The same local frame as a unit direction — what the cascade scores tile
+   * centre units against (dot product), so its ordering follows the surface
+   * facing the camera as the world turns. */
+  function cameraUnitFor(camera: THREE.Camera): V3 {
+    const p = toLocalFrame(camera, cascadeCam);
+    const len = p.length() || 1;
+    return [p.x / len, p.y / len, p.z / len];
+  }
   /** Per-tile CDLOD: transform the camera into the spinning globe's local
    * frame (the tiles live under `spinGroup`, rotated by rotation.z), select
    * the leaf-tile set for that closeness (with merge hysteresis against the
@@ -966,7 +988,7 @@ export function createGlobeView(
     // Tile SELECTION uses the camera in the spinning globe's local frame (the
     // tiles live under `spinGroup`); as the world turns, this sweeps and the
     // leaf set follows the surface now facing the camera.
-    localCam.copy(camera.position).applyAxisAngle(spinZAxis, -spinGroup.rotation.z);
+    toLocalFrame(camera, localCam);
     const target = selectTiles(
       [localCam.x, localCam.y, localCam.z],
       GLOBE_RADIUS,
@@ -981,7 +1003,7 @@ export function createGlobeView(
   }
 
   function onRegion(key: string, region: RegionScene): void {
-    regionPending.delete(key);
+    cascade.settle(keyToTile(key), true); // the patch arrived: free the slot, retire the tile
     regionCache.set(key, region);
     // The tile at `key` may currently be mounted as a base-data slot (same
     // key either way — the leaf selection didn't change) — mark it so the
@@ -989,6 +1011,15 @@ export function createGlobeView(
     // without a full rebuild. Naturally debounced: several arrivals before
     // the next frame still cost one upgrade each, not a wholesale rebuild.
     pendingUpgrades.add(key);
+  }
+
+  /** A requested patch failed. Settling is not optional: an unsettled tile
+   * holds an in-flight slot forever and the cascade would deal fewer and
+   * fewer requests until it stalled. The cascade retries a failure a bounded
+   * number of times before retiring the tile, so a persistently-failing
+   * region costs a handful of requests, not one per rebuild. */
+  function onRegionError(key: string): void {
+    cascade.settle(keyToTile(key), false);
   }
 
   function setLens(lens: Lens): void {
@@ -1157,6 +1188,15 @@ export function createGlobeView(
     seasonalCtx.seasonDayOverride = on ? (lastDay ?? 0) : undefined;
   }
 
+  /** Deal the next region requests the builds submitted. Camera-facing tiles
+   * go first; the in-flight cap keeps the tail of the queue re-orderable for
+   * the next camera move rather than committing it now. */
+  function dealRegionRequests(camera?: THREE.Camera): void {
+    if (requestRegion === undefined) return;
+    if (camera !== undefined) cascade.reprioritize(cameraUnitFor(camera));
+    for (const t of cascade.next()) requestRegion(t);
+  }
+
   const upWorld = new THREE.Vector3(); // update()'s scratch — no per-frame allocation
   const zAxis = new THREE.Vector3(0, 0, 1);
   function update(day: number, camera?: THREE.Camera): void {
@@ -1192,10 +1232,12 @@ export function createGlobeView(
     }
     if (!camera) {
       drainBuildQueue(); // finish any pending builds even on a camera-less tick
+      dealRegionRequests(); // …and deal what they asked for, in submission order
       return;
     }
     reselect(camera); // per-tile CDLOD; reconciles the leaf set (enqueues, retires)
     drainBuildQueue(); // build a few queued tiles this frame (amortized, hole-free)
+    dealRegionRequests(camera); // ask for the next few patches, camera-facing first
     for (const m of markers) {
       upWorld.copy(m.up).applyAxisAngle(zAxis, spinGroup.rotation.z);
       const near = onNearSide(upWorld, camera.position, GLOBE_RADIUS);
@@ -1222,6 +1264,7 @@ export function createGlobeView(
     setDayHold,
     setStyle,
     onRegion,
+    onRegionError,
   };
 }
 

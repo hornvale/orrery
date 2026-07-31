@@ -135,7 +135,11 @@ function boot(): void {
   let globe: GlobeView | null = null;
   // The mounted views' region router (also feeds the map rung's placeholder
   // quad, Task 4) — set alongside `globe` the moment `mountViews` returns.
-  let views: { globe: GlobeView; deliverRegion: (key: string, region: RegionScene) => void } | null = null;
+  let views: {
+  globe: GlobeView;
+  deliverRegion: (key: string, region: RegionScene) => void;
+  deliverRegionError: (key: string) => void;
+} | null = null;
   worker.onmessage = (ev: MessageEvent) => {
     const msg = ev.data;
     if (msg.type === 'world') {
@@ -144,9 +148,14 @@ function boot(): void {
     } else if (msg.type === 'region') {
       views?.deliverRegion(msg.key, msg.region);
     } else if (msg.type === 'region-error') {
-      // Non-fatal: the tile keeps its interpolated form. (Left uncleared so a
-      // persistently-failing region isn't re-requested every rebuild.)
+      // Non-fatal: the tile keeps its interpolated form. The failure is still
+      // routed to the views — the globe's request scheduler must free the
+      // in-flight slot this request was holding, or the cap leaks a slot
+      // permanently. It re-queues the tile a bounded number of times (see
+      // `cascade.settle`) and then retires it, so a persistently-failing
+      // region costs a handful of requests rather than one per rebuild.
       console.warn(`region ${msg.key} failed: ${msg.message}`);
+      views?.deliverRegionError(msg.key);
     } else if (msg.type === 'error') {
       const kind = msg.kind as WorkerErrorKind;
       renderError(kind, titleFor(kind), msg.message, state.seed);
@@ -164,7 +173,11 @@ function mountViews(
   eclipses: EclipsesScene,
   state: AppState,
   worker: Worker,
-): { globe: GlobeView; deliverRegion: (key: string, region: RegionScene) => void } {
+): {
+  globe: GlobeView;
+  deliverRegion: (key: string, region: RegionScene) => void;
+  deliverRegionError: (key: string) => void;
+} {
   app.innerHTML = '';
 
   const stage = document.createElement('div');
@@ -833,7 +846,14 @@ function mountViews(
     mapView.onRegion(key, region); // no-ops if `key` isn't one the map's ring is tracking
   }
 
-  return { globe: globeView, deliverRegion };
+  /** Routes a worker region FAILURE the same way: only the globe cares — its
+   * scheduler is holding an in-flight slot for this key (the map's ring has
+   * no such bookkeeping and simply keeps its placeholder). */
+  function deliverRegionError(key: string): void {
+    globeView.onRegionError(key);
+  }
+
+  return { globe: globeView, deliverRegion, deliverRegionError };
 }
 
 boot();
