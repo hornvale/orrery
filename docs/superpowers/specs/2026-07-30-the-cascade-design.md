@@ -173,8 +173,15 @@ Capability probes in `main.ts` (`circulationBands`, `currentEast.some(...)`,
   are region-served. A new cascade scheduler: an ordered queue of pending
   tile requests with an in-flight cap, seeded at mount with steps 2–4 and
   re-prioritized on camera move. `regionsEnabled` gating unchanged (§8.2).
-- **`src/main.ts`** — `tilesWidth: 512` → `256` (§5), and a first-paint
-  trigger that fires when step 2 completes rather than when the export lands.
+- **`src/main.ts`** — `tilesWidth: 512` → `256` (§5). An earlier draft also
+  called for a first-paint trigger firing on step 2 rather than on the export
+  landing; that is not achievable and has been dropped. `mountViews` needs the
+  tiles document before it can construct anything at all — the ocean, ice,
+  lens, and marker layers all take it as a constructor argument — so the
+  export necessarily gates first paint. Demoting it to width 256 is what makes
+  that gate cheap (~0.4 s of export instead of ~1.4 s); the cascade then
+  starts from an already-mounted globe. The width choice moves into
+  `worker.ts`, which knows the world's `dayLengthDays` after genesis.
 - **`src/views/lens.ts`, `ocean.ts`, `ice.ts`** — untouched. They read
   through the per-tile colour source, which already accepts a region patch.
 
@@ -200,15 +207,38 @@ rest of `src/views/` already uses.
 
 ## 8. Risks and open questions
 
-### 8.1 Rebuild churn (the known open item)
+### 8.1 Rebuild churn — mostly already solved
 
-CLAUDE.md lists a rebuild throttle as still-open, and `LOD_SPLIT_FACTOR = 1.5`
-is deliberately tuned so the default view never leaves the base level and
-therefore never churns under diurnal spin. This campaign moves the base to
-level 2 and adds a refinement cascade on top — it deliberately increases
-rebuild activity. The in-flight cap (§4.3) bounds request rate but not
-geometry-rebuild rate. **If one thing sinks this campaign, it is this.** The
-throttle likely has to land first, or at least alongside.
+An earlier draft of this section claimed the rebuild throttle was still open
+and had to land first. That was wrong, and reading `globe.ts` before planning
+corrected it. The Massing already shipped the machinery:
+
+- `drainBuildQueue` builds at most `MAX_BUILDS_PER_FRAME` (6) tiles per frame
+  under a `BUILD_BUDGET_MS` (5 ms) time budget, called every frame from
+  `update`. A big refine sharpens over ~10 frames instead of freezing one.
+- `applyTileSet` only *reconciles* — it enqueues builds and marks undesired
+  tiles `retiring`, and `coveringMounted` defers their disposal until the
+  tiles replacing them are mounted, so a refine is hole-free.
+- On-settle gating (`gateRefinement`, `SETTLE_EPSILON`,
+  `SETTLE_FRAMES_NEEDED`) defers *refining* changes while the camera is
+  moving, so a fling holds its detail instead of rebuilding every frame.
+- `LOD_MERGE_FACTOR` hysteresis already prevents split/merge thrash at the
+  threshold.
+
+What CLAUDE.md lists as open is narrower than "no throttle": it is churn from
+repeated *reselection* under an unfrozen diurnal spin while zoomed in, for
+which freeze-spin is the current answer. The cascade does not make that worse.
+
+Two real residual risks remain, and both are addressed by tasks in the plan:
+
+1. **The initial mount is not amortized.** `rebuildAllTiles(tilesAtLevel(
+   LOD_MIN_LEVEL))` builds every base tile synchronously, outside the queue.
+   At `LOD_MIN_LEVEL = 1` that is 24 tiles; at 2 it is 96, which would hitch
+   badly. The initial mount has to route through `buildQueue` first.
+2. **Region requests have no explicit rate control.** They fire inside
+   `buildTileSlot`, so today they are implicitly capped at 6/frame by the
+   build cap. Making the base region-served raises their number sharply and
+   gives them an ordering requirement the current call site cannot express.
 
 ### 8.2 Locked worlds
 
