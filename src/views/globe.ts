@@ -472,11 +472,10 @@ export function createGlobeView(
   let reliefOn = false; // true-relief (1×) vs schematic (RELIEF_EXAGGERATION×)
   const reliefScale = (): number => (reliefOn ? 1 : RELIEF_EXAGGERATION);
   // The render-style axis (The Massing): declared here, ahead of
-  // `buildTileSlot`/the initial `rebuildAllTiles` call below, since both read
-  // it — a `let` declared after its first read would throw (temporal dead
-  // zone). `bandM()` is `buildTileSlot`'s single source of truth for whether
-  // a tile bands its elevation (Terraced) or stays continuous (everything
-  // else, including today's Smooth).
+  // `buildTileSlot` below, which reads it — a `let` declared after its first
+  // read would throw (temporal dead zone). `bandM()` is `buildTileSlot`'s
+  // single source of truth for whether a tile bands its elevation (Terraced)
+  // or stays continuous (everything else, including today's Smooth).
   let activeStyle: GlobeStyle = 'smooth';
   const bandM = (): number | undefined => (activeStyle === 'terraced' ? TERRACE_BAND_M : undefined);
 
@@ -582,6 +581,13 @@ export function createGlobeView(
    * this is the unit the incremental diff below adds/removes one of at a
    * time, instead of the old whole-set rebuild. */
   function buildTileSlot(t: TileId, scale: number): TileSlot {
+    // How many tile geometries have actually been built (same globalThis
+    // instrumentation pattern as `__btCount`/`__swapCount`/`__btMs`). Tests
+    // read it to assert that a whole-globe event ENQUEUES rather than builds:
+    // the count must not move across `setStyle`/`setTrueRelief` itself, and
+    // must move by at most MAX_BUILDS_PER_FRAME per pumped frame after.
+    const bc = globalThis as { __slotBuildCount?: number };
+    bc.__slotBuildCount = (bc.__slotBuildCount ?? 0) + 1;
     const key = tileKey(t);
     const skirt = skirtDepthFor(scale);
     const wantsRegion = regionsEnabled && t.level >= REGION_MIN_LEVEL;
@@ -770,20 +776,6 @@ export function createGlobeView(
     }
   }
 
-  /** Full rebuild: dispose every mounted slot and build the given leaf set
-   * from scratch. Reserved for the whole-globe events where every tile's
-   * geometry must change regardless of the LOD diff — the initial mount and
-   * a relief-scale toggle (`setTrueRelief`) — never the per-frame LOD path
-   * (`applyTileSet` below, the one the incremental diff/harness covers). */
-  function rebuildAllTiles(selected: TileId[]): void {
-    for (const key of [...tileSlots.keys()]) disposeSlot(key);
-    const scale = reliefScale();
-    for (const t of selected) tileSlots.set(tileKey(t), buildTileSlot(t, scale));
-    stitchMountedRegions(); // no-op unless ≥2 region tiles are mounted
-    currentSelected = selected;
-    currentSignature = signatureOf(selected);
-    repaint(lastDay ?? 0, true);
-  }
   // Amortized build: a leaf-set change would build up to ~36 tiles at once
   // (measured worst case ~69ms — several dropped frames, felt as a hitch on
   // every LOD change). Instead `applyTileSet` only RECONCILES — it disposes
@@ -870,6 +862,38 @@ export function createGlobeView(
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
   }
 
+  /** Queue a rebuild of the whole current leaf set, for the two whole-globe
+   * events where every tile's geometry changes without the leaf SET changing:
+   * a relief-scale toggle (`setTrueRelief`) and a style change that crosses
+   * geometry families (`setStyle` — smooth↔terraced↔voxel). Never the
+   * per-frame LOD path (`applyTileSet` above, which the incremental
+   * diff/harness covers).
+   *
+   * Builds nothing here. Every selected tile is enqueued as a SAME-KEY
+   * rebuild — exactly the shape `pendingUpgrades` already uses for a region
+   * arriving under a mounted base tile: `drainBuildQueue` disposes the old
+   * slot and installs the new one in the same step, so the tile is never
+   * absent and needs no `retiringKeys` deferral (these tiles are not being
+   * retired; they are being re-cut in place). Doing it synchronously instead
+   * froze the main thread for seconds once the base set reached 6·4² = 96
+   * tiles.
+   *
+   * The new style/relief is picked up because `buildTileSlot` reads
+   * `activeStyle`/`bandM()` live and `drainBuildQueue` re-reads
+   * `reliefScale()` each frame — a queued rebuild builds from the values in
+   * force when it BUILDS, not when it was enqueued. Callers therefore mutate
+   * `reliefOn`/`activeStyle` first, then enqueue. */
+  function enqueueRebuildAll(): void {
+    for (const t of currentSelected) {
+      const key = tileKey(t);
+      // Already queued (an undrained initial mount, or a pending region swap):
+      // that build will pick up the new style/relief on its own.
+      if (queuedKeys.has(key)) continue;
+      buildQueue.push(t);
+      queuedKeys.add(key);
+    }
+  }
+
   /** Build a few queued tiles under a per-frame time budget, then dispose any
    * retiring tiles whose replacements are now all mounted. Called every frame
    * from `update`. This is the amortization — no single frame builds the whole
@@ -935,8 +959,8 @@ export function createGlobeView(
   // its first `MAX_BUILDS_PER_FRAME` tiles are built before the view is
   // returned. Adding a second explicit drain would build two frames' worth (up
   // to 2×MAX_BUILDS_PER_FRAME) instead. Building the whole set synchronously
-  // (the old `rebuildAllTiles` behaviour) would hitch — at LOD_MIN_LEVEL 2
-  // that is 96 tiles in one synchronous burst. The rest arrive over the
+  // (the whole-set rebuild this queue replaced) would hitch — at LOD_MIN_LEVEL
+  // 2 that is 96 tiles in one synchronous burst. The rest arrive over the
   // following frames via `update` → `drainBuildQueue`.
   const baseSet = tilesAtLevel(LOD_MIN_LEVEL);
   // Seed the cascade with the WHOLE base set up front, ahead of the builds
@@ -1108,11 +1132,15 @@ export function createGlobeView(
   /** Toggle true-relief (1×, honest) vs the exaggerated schematic. With the
    * tile set rebuildable, this just rebuilds it at the new relief scale (a
    * user action, rare — no need to keep a second geometry set warm) and
-   * reseats the markers on the moved terrain. */
+   * reseats the markers on the moved terrain. The tile rebuild is QUEUED, not
+   * done here: `reliefOn` is flipped first, so each tile picks up the new
+   * scale as `drainBuildQueue` re-cuts it over the next few frames. The
+   * markers move at once — they are a handful of transforms, not 96
+   * geometries. */
   function setTrueRelief(on: boolean): void {
     if (on === reliefOn) return;
     reliefOn = on;
-    rebuildAllTiles(currentSelected); // same tiles, rebuilt at the new relief scale
+    enqueueRebuildAll(); // same tiles, re-cut at the new relief scale, a few per frame
     // The terrain the markers stand on just moved — reseat them on it.
     for (const marker of markers) placeMarker(marker, reliefScale());
     ocean.setTrueRelief(on);
@@ -1167,8 +1195,9 @@ export function createGlobeView(
   // (terraced) or the whole block layout (voxel) is baked into each tile's
   // vertex positions at build time — so entering or leaving either needs a
   // full rebuild, unlike the material-only faceted switch (`buildTileSlot`
-  // branches on `activeStyle`, so the rebuild below picks up the right
-  // builder). Both also flat-shade: a stepped/blocky surface reads as such
+  // branches on `activeStyle`, and `activeStyle` is assigned before the
+  // enqueue below, so each queued rebuild picks up the right builder whenever
+  // it lands). Both also flat-shade: a stepped/blocky surface reads as such
   // only without smooth-shaded normals blurring the risers/cliffs — voxel's
   // own per-cell flat normal attribute (`buildVoxelBlocks`) already agrees
   // with this, so `flatShading` and the geometry's own normals reinforce
@@ -1179,7 +1208,7 @@ export function createGlobeView(
     const nextFamily = geometryFamilyOf(activeStyle);
     material.flatShading = activeStyle === 'faceted' || activeStyle === 'terraced' || activeStyle === 'voxel';
     material.needsUpdate = true;
-    if (prevFamily !== nextFamily) rebuildAllTiles(currentSelected);
+    if (prevFamily !== nextFamily) enqueueRebuildAll();
   }
 
   let selectedGroup: string | null = null;

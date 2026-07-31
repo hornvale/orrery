@@ -106,12 +106,39 @@ function tileMeshesByKey(view: ReturnType<typeof createGlobeView>): Map<string, 
   return out;
 }
 
+/** One FIXED base tile's mesh, by key. The style/relief tests compare a tile's
+ * geometry before and after a rebuild, and an amortized rebuild remounts each
+ * tile at the end of the scene-graph child list as it lands — so "the first
+ * `globe-tile-*` in traverse order" is no longer necessarily the same tile
+ * before and after. This key is: it belongs to the base set, which every
+ * style/relief test below keeps selected (camera-less, or parked far enough
+ * out that nothing subdivides), so it stays mounted throughout. */
+const BASE_TILE_KEY = `0:${LOD_MIN_LEVEL}:0:0`;
+function baseTileMesh(view: ReturnType<typeof createGlobeView>): THREE.Mesh {
+  const mesh = tileMeshesByKey(view).get(BASE_TILE_KEY);
+  if (!mesh) throw new Error(`base tile ${BASE_TILE_KEY} is not mounted`);
+  return mesh;
+}
+
 /** Drive `update` enough frames to fully drain the amortized build queue — LOD
  * refinement now builds only a few tiles per frame, so a single update no longer
- * reaches the fully-built settled set. 48 frames far exceed any one refine. */
-function pump(view: ReturnType<typeof createGlobeView>, camera: THREE.Camera, n = 48): void {
+ * reaches the fully-built settled set. 48 frames far exceed any one refine.
+ * `camera` is optional: omitted, these are camera-less ticks that drain the
+ * queue without re-selecting the leaf set — what the style/relief tests want,
+ * since a default camera sits at the origin (inside the globe) and would
+ * subdivide everything. */
+function pump(view: ReturnType<typeof createGlobeView>, camera?: THREE.Camera, n = 48): void {
   for (let i = 0; i < n; i++) view.update(0, camera);
 }
+
+/** How many tile geometries `globe.ts` has built so far — its
+ * `__slotBuildCount` hook, the same globalThis instrumentation pattern as
+ * `__btCount`/`__swapCount`. Monotonic, so tests take a difference. The
+ * style/relief tests use it to assert the rebuild is QUEUED rather than done
+ * inline: the count must not move across the call itself, then move by at most
+ * MAX_BUILDS_PER_FRAME per pumped frame. */
+const buildCountHost = globalThis as { __slotBuildCount?: number };
+const slotBuilds = (): number => buildCountHost.__slotBuildCount ?? 0;
 
 // Lift the drain's per-frame TIME budget for the whole globe suite so the build
 // queue drains at the count cap (MAX_BUILDS_PER_FRAME) on any machine. Without
@@ -848,20 +875,16 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
   const mat = surfaceMaterial(globe);
   expect(mat.flatShading).toBe(false);
 
-  const firstTileMesh = (): THREE.Mesh => {
-    let mesh: THREE.Mesh | null = null;
-    globe.object3d.traverse((o) => {
-      if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
-    });
-    return mesh as unknown as THREE.Mesh;
-  };
-  const beforeGeom = firstTileMesh().geometry;
+  const beforeGeom = baseTileMesh(globe).geometry;
   const beforeCount = beforeGeom.getAttribute('position').count;
   expect(beforeGeom.getIndex()).not.toBeNull(); // the smooth path is a shared-vertex, indexed mesh
 
   expect(() => globe.setStyle('voxel')).not.toThrow();
   expect(mat.flatShading).toBe(true);
-  const afterGeom = firstTileMesh().geometry;
+  // The geometry rebuild is amortized (`enqueueRebuildAll`), so the new tiles
+  // arrive over the following frames rather than before `setStyle` returns.
+  pump(globe);
+  const afterGeom = baseTileMesh(globe).geometry;
   expect(afterGeom).not.toBe(beforeGeom); // a genuine rebuild, not a material-only flip
   // Voxel geometry is non-indexed (flat shading needs unshared per-triangle
   // vertices) — structurally distinct from the smooth builder's indexed mesh.
@@ -879,32 +902,77 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
 
   expect(() => globe.setStyle('smooth')).not.toThrow();
   expect(mat.flatShading).toBe(false);
-  const smoothGeom = firstTileMesh().geometry;
+  pump(globe);
+  const smoothGeom = baseTileMesh(globe).geometry;
   expect(smoothGeom).not.toBe(afterGeom);
   expect(smoothGeom.getIndex()).not.toBeNull(); // back to the shared-vertex indexed mesh
   expect(smoothGeom.getAttribute('position').count).toBe(beforeCount);
-  // Generous timeout (shared by the three style tests below, same reason):
-  // `setStyle` across geometry families rebuilds every mounted tile
-  // SYNCHRONOUSLY (`rebuildAllTiles`, deliberately — the assertions above read
-  // the new geometry on the next line), and The Cascade quadrupled the base set
-  // to 6·4^LOD_MIN_LEVEL = 96 tiles. Measured ~2.3 s here and ~4.2 s for the
-  // voxel repaint below on a dev box, which is under vitest's 5 s default but
-  // not by enough to survive a constrained CI box.
-}, 30_000);
+});
+
+test('setStyle queues its rebuild instead of re-cutting every mounted tile inline', () => {
+  const view = createGlobeView(markerTiles([]), spinningSys());
+  // Far enough out that the settled leaf set is exactly the base set, so the
+  // rebuild below is over all 6·4^LOD_MIN_LEVEL tiles — the size that made the
+  // synchronous version freeze for seconds.
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+  const baseSetSize = 6 * 4 ** LOD_MIN_LEVEL;
+  expect(tileMeshesByKey(view).size).toBe(baseSetSize);
+
+  // The synchronous part of a style switch must not scale with the base set:
+  // it enqueues, it builds nothing.
+  const beforeCall = slotBuilds();
+  view.setStyle('voxel');
+  expect(slotBuilds()).toBe(beforeCall);
+
+  // …and each frame after it builds at most MAX_BUILDS_PER_FRAME (globe.ts,
+  // not exported — mirrored here). The suite's `__buildBudgetMs = Infinity`
+  // makes the count cap, not wall clock, the governor.
+  const MAX_BUILDS_PER_FRAME = 6;
+  const beforeFrame = slotBuilds();
+  view.update(0, camera);
+  expect(slotBuilds() - beforeFrame).toBeLessThanOrEqual(MAX_BUILDS_PER_FRAME);
+
+  // Pumping completes the switch: the whole base set is mounted, and every
+  // tile is voxel geometry (non-indexed) — no tile left behind on the old
+  // builder, and no hole opened while the queue drained.
+  pump(view, camera);
+  const after = tileMeshesByKey(view);
+  expect(after.size).toBe(baseSetSize);
+  for (const mesh of after.values()) expect(mesh.geometry.getIndex()).toBeNull();
+});
+
+test('setTrueRelief queues its rebuild too, and reseats the markers at once', () => {
+  const tiles = markerTiles([{ name: 'Alpha', kind: 'settlement', latitude: 45, longitude: 10 }]);
+  const view = createGlobeView(tiles, spinningSys());
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+
+  const dot = view.object3d
+    .getObjectByName('feature-Alpha')!
+    .children.find((c) => (c as THREE.Mesh).isMesh)! as THREE.Mesh;
+  const markerBefore = dot.position.length();
+  const geomBefore = baseTileMesh(view).geometry;
+
+  const beforeCall = slotBuilds();
+  view.setTrueRelief(true);
+  expect(slotBuilds()).toBe(beforeCall); // queued, not re-cut inline
+  expect(dot.position.length()).not.toBeCloseTo(markerBefore, 6); // markers move immediately
+
+  pump(view, camera);
+  expect(baseTileMesh(view).geometry).not.toBe(geomBefore); // …and the terrain follows over frames
+  expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
+});
 
 test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for a new day, without a full rebuild", () => {
   const globe = makeGlobe();
   globe.setStyle('voxel');
   globe.setLens(temperatureLens); // a living (dependsOnDay) lens — every update recomputes color
+  pump(globe); // the voxel rebuild is queued — drain it before reading geometry
 
-  const firstTileMesh = (): THREE.Mesh => {
-    let mesh: THREE.Mesh | null = null;
-    globe.object3d.traverse((o) => {
-      if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
-    });
-    return mesh as unknown as THREE.Mesh;
-  };
-  const geom = firstTileMesh().geometry;
+  const geom = baseTileMesh(globe).geometry;
   const col = geom.getAttribute('color');
   const N = 48; // VOXEL_CELLS_PER_EDGE, mirrored — see the setStyle test above
   const topVerts = N * N * 6;
@@ -916,7 +984,7 @@ test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for 
   // have moved; `update` repaints in place (no camera → no LOD reselect, so
   // the SAME geometry object is repainted, not rebuilt).
   expect(() => globe.update(200)).not.toThrow();
-  expect(firstTileMesh().geometry).toBe(geom); // repainted in place, not rebuilt
+  expect(baseTileMesh(globe).geometry).toBe(geom); // repainted in place, not rebuilt
 
   const after = Array.from({ length: col.count }, (_, v) => [col.getX(v), col.getY(v), col.getZ(v)] as const);
   expect(after).not.toEqual(before); // the living lens actually repainted something
@@ -931,7 +999,7 @@ test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for 
     return sum / (hi - lo);
   };
   expect(avgLuminance(topVerts, col.count)).toBeLessThan(avgLuminance(0, topVerts));
-}, 30_000);
+});
 
 test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region variant when a patch is cached', () => {
   const tiles = markerTiles([]);
@@ -974,28 +1042,22 @@ test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region 
   // tiles' 0.1 — confirms `buildTileSlot`'s voxel branch took the region
   // path (`buildVoxelRegionTileGeometryIndexed`), not the base one.
   expect(afterSample).not.toEqual(beforeSample);
-}, 30_000);
+});
 
 test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded elevation', () => {
   const globe = makeGlobe(); // real seed-42 terrain — enough relief to distinguish banded from continuous
   const mat = surfaceMaterial(globe);
   expect(mat.flatShading).toBe(false);
 
-  const firstTileMesh = (): THREE.Mesh => {
-    let mesh: THREE.Mesh | null = null;
-    globe.object3d.traverse((o) => {
-      if (!mesh && o.name.startsWith('globe-tile-')) mesh = o as THREE.Mesh;
-    });
-    return mesh as unknown as THREE.Mesh;
-  };
-  const beforeGeom = firstTileMesh().geometry;
+  const beforeGeom = baseTileMesh(globe).geometry;
 
   globe.setStyle('terraced');
   expect(mat.flatShading).toBe(true);
   // Unlike faceted (a material-only flag flip), banding changes vertex
   // positions — this must be an actual geometry rebuild, not the same
-  // object reused.
-  const afterGeom = firstTileMesh().geometry;
+  // object reused. Queued, so drain it first (`enqueueRebuildAll`).
+  pump(globe);
+  const afterGeom = baseTileMesh(globe).geometry;
   expect(afterGeom).not.toBe(beforeGeom);
 
   // Real terrain has enough relief variation that a continuous (Smooth)
@@ -1020,11 +1082,12 @@ test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded el
   // variation that a continuous build shows a distinct radius at nearly
   // every vertex, so the reverse rebuild should recover (most of) that
   // many-valued distribution rather than staying stuck on the small banded set.
-  const smoothGeom = firstTileMesh().geometry;
+  pump(globe);
+  const smoothGeom = baseTileMesh(globe).geometry;
   const smoothPos = smoothGeom.getAttribute('position');
   const smoothRadii = new Set<number>();
   for (let i = 0; i < smoothPos.count; i++) {
     smoothRadii.add(Number(Math.hypot(smoothPos.getX(i), smoothPos.getY(i), smoothPos.getZ(i)).toFixed(5)));
   }
   expect(smoothRadii.size).toBeGreaterThan(smoothPos.count / 2); // back to (near-)continuous, not banded
-}, 30_000);
+});
