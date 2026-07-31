@@ -15,7 +15,7 @@ import {
   tileIndexOfVertex,
 } from './globe';
 import { REFERENCE_RADIUS_M } from './worldMesh';
-import { TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
+import { LOD_MIN_LEVEL, TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
 import { iceFraction } from './ice';
 import { rotationPhase } from '../sim/ephemeris';
 import type { RegionScene, SystemScene, TilesScene } from '../sim/scene';
@@ -246,6 +246,21 @@ test('LOD refinement is amortized and hole-free: a big refine builds a few tiles
   expect(fullDeep).toBeGreaterThan(partialDeep); // amortized: frame 1 did NOT build the whole refine
   const settledMax = Math.max(...[...tileMeshesByKey(view).keys()].map((k) => Number(k.split(':')[1])));
   expect(settledMax).toBeGreaterThan(coarseMax); // refined deeper than the coarse start
+});
+
+test('mounts the base set through the build queue, not all at once', () => {
+  const view = makeGlobe();
+  // The initial mount must be amortized like any other refine: a handful of
+  // tiles on the first frame, not the whole base set.
+  expect(tileMeshesByKey(view).size).toBeLessThanOrEqual(6);
+
+  // A camera far enough out that no tile subdivides past the base level, so
+  // the settled set is exactly the base set. (A default PerspectiveCamera
+  // sits at the origin — INSIDE the globe — and is never a valid probe.)
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+  expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
 });
 
 test('mounted region patches are normal-stitched: adjacent same-level region tiles share identical edge normals (no shading seam)', () => {

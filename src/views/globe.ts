@@ -773,9 +773,6 @@ export function createGlobeView(
     currentSignature = signatureOf(selected);
     repaint(lastDay ?? 0, true);
   }
-  // Initial coarse set (the data-matching base level); the camera refines it.
-  rebuildAllTiles(tilesAtLevel(LOD_MIN_LEVEL));
-
   // Amortized build: a leaf-set change would build up to ~36 tiles at once
   // (measured worst case ~69ms — several dropped frames, felt as a hitch on
   // every LOD change). Instead `applyTileSet` only RECONCILES — it disposes
@@ -918,6 +915,17 @@ export function createGlobeView(
     const g = globalThis as { __btMs?: number };
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
   }
+
+  // Initial base set, amortized exactly like any later refine: reconcile the
+  // desired set (which enqueues every tile) — no explicit drain here. The
+  // trailing `update(0)` below (this function's last statement) is a normal
+  // camera-less tick, and that already calls `drainBuildQueue` once; adding a
+  // second explicit drain here would build two frames' worth (up to
+  // 2×MAX_BUILDS_PER_FRAME) before the view is even returned. Building the
+  // whole set synchronously here (the old `rebuildAllTiles` behaviour) would
+  // hitch — at LOD_MIN_LEVEL 2 that is 96 tiles in one synchronous burst. The
+  // rest arrive over the following frames via `update` → `drainBuildQueue`.
+  applyTileSet(tilesAtLevel(LOD_MIN_LEVEL));
 
   // On-settle refinement (spec §2, Nathan-approved): while the camera moved
   // more than SETTLE_EPSILON since last frame, `reselect` defers *refining*
