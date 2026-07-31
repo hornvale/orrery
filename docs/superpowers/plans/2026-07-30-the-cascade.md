@@ -30,9 +30,22 @@ A pure module: given tiles wanted and a camera direction, decide what to request
 **Interfaces:**
 - Consumes: `TileId`, `tileKey`, `tileCenterUnit`, `type V3` from `./cubeSphere` (all already exported).
 - Produces:
-  - `createCascade(opts?: { maxInFlight?: number }): Cascade`
-  - `interface Cascade { submit(tiles: readonly TileId[]): void; reprioritize(cameraUnit: V3): void; next(): TileId[]; settle(tile: TileId): void; readonly pending: number; readonly inFlight: number; }`
+  - `createCascade(opts?: { maxInFlight?: number; maxAttempts?: number }): Cascade`
+  - `interface Cascade { submit(tiles: readonly TileId[]): void; reprioritize(cameraUnit: V3): void; next(): TileId[]; settle(tile: TileId, ok: boolean): void; readonly pending: number; readonly inFlight: number; }`
   - `const CASCADE_MAX_IN_FLIGHT = 4`
+  - `const CASCADE_MAX_ATTEMPTS = 2`
+
+**Retry policy (Nathan's ruling, 2026-07-30).** `settle` takes an explicit
+`ok`. A successful patch retires the tile permanently. A *failed* one is
+retried on a later `submit` until it has been attempted `CASCADE_MAX_ATTEMPTS`
+times, after which it retires too.
+
+This departs from `main.ts:147`'s existing policy ("Left uncleared so a
+persistently-failing region isn't re-requested every rebuild"), deliberately.
+That policy is safe today because only deep zoom tiles use patches — a failure
+costs detail nobody is looking at. Task 4 makes the *base* globe patch-served,
+so the same failure would leave a permanently coarse tile in the default view.
+Bounding the retry at 2 keeps the storm the old comment feared off the table.
 
 - [ ] **Step 1: Write the failing test**
 
