@@ -162,7 +162,7 @@ function boot(): void {
     }
   };
 
-  worker.postMessage({ type: 'generate', seed: state.seed, tilesWidth: 512 });
+  worker.postMessage({ type: 'generate', seed: state.seed });
 }
 
 function mountViews(

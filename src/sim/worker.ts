@@ -10,6 +10,7 @@ import {
   parseTiles,
   SceneFormatError,
 } from "./scene";
+import { tilesWidthFor } from "./tilesWidth";
 
 /** How main.ts distinguishes the three worker failure modes it renders as
  * distinct, styled full-screen states: the catalog binary itself never
@@ -70,14 +71,17 @@ self.onmessage = async (ev: MessageEvent) => {
     }
     return;
   }
-  const { seed, pins, tilesWidth } = msg;
+  const { seed, pins } = msg;
   try {
     catalog = await loadCatalog(catalogUrl(import.meta.env.BASE_URL, self.location.origin));
     catalog.generate(BigInt(seed), pins);
     const system = parseSystem(catalog.sceneSystem());
     const moons = parseMoons(catalog.sceneMoons());
     const neighbors = parseNeighbors(catalog.sceneNeighbors());
-    const tiles = parseTiles(catalog.sceneTiles(tilesWidth));
+    // Chosen from the just-parsed world, not passed in from main.ts, which
+    // posts this message before genesis has run and so cannot know
+    // dayLengthDays yet (tilesWidthFor's doc comment explains the split).
+    const tiles = parseTiles(catalog.sceneTiles(tilesWidthFor(system.world)));
     // The displayed year's eclipses (day scrubber marks, Task 7): the whole
     // scrubber range, [0, yearDays) — matches setDayRange's own extent.
     const eclipses = parseEclipses(catalog.sceneEclipses(0, system.world.yearDays));
