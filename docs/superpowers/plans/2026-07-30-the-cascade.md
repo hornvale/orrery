@@ -548,17 +548,35 @@ In `src/views/globe.ts`, replace `REGION_MIN_LEVEL`:
   const REGION_MIN_LEVEL = 0;
 ```
 
-Then seed the cascade with the coarse-to-fine ladder at mount, replacing Task 2's initial mount block:
+Then seed the cascade so it can order the whole base set, keeping Task 2's mount:
 
 ```ts
-  // The cascade: a complete coarse globe first, then two refining passes. The
-  // level-0 pass is COARSER than the old base (64 vs 128 samples per face
-  // edge) on purpose — a complete globe sooner, sharpening visibly, beats a
-  // medium one later (spec §4.1).
-  applyTileSet(tilesAtLevel(0));
-  drainBuildQueue();
-  for (let level = 1; level <= LOD_MIN_LEVEL; level++) cascade.submit(tilesAtLevel(level));
+  // Seed the cascade with the entire base set so `reprioritize` can order all
+  // 96 camera-facing-first. Without this the queue holds only the ~6 tiles
+  // drained so far when the first reprioritize runs, and ordering degrades to
+  // face-major build order. `submit` dedupes, so this changes WHICH tiles get
+  // requested not at all — only the order.
+  if (regionsEnabled) cascade.submit(tilesAtLevel(LOD_MIN_LEVEL));
 ```
+
+> **AMENDED 2026-07-30 (Nathan's ruling).** This step originally seeded a
+> coarse-to-fine ladder — `applyTileSet(tilesAtLevel(0))`, a drain, then
+> `cascade.submit` for levels 1 and 2. That was wrong on two counts, both
+> confirmed by review against the code:
+>
+> 1. `coveringMounted` spans only one level. A retiring level-0 tile under a
+>    level-2 selection has level-1 `childTiles` (none selected) and a `null`
+>    `parentTile`, so it returns `true` and disposes immediately — all six
+>    level-0 tiles gone while 96 replacements are still queued, leaving 6/96
+>    coverage for ~15 frames.
+> 2. A level-0 patch pass is 6 × `TILE_QUADS` = 256 equirect columns against
+>    the export's 512. The ladder would have spent ~2.5 s of producer time to
+>    fetch *lower* resolution than the client already held, and `selectTiles`
+>    never emits a leaf below `LOD_MIN_LEVEL`, so levels 0-1 are unrenderable
+>    regardless.
+>
+> The coarse pass is the export; the cascade's job is the refinement. See spec
+> §4.1, amended to match.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -577,6 +595,108 @@ equirect columns against the old 512, and gets them from region patches
 rather than resampling the export — so the producer's width <= 1024 cap stops
 bounding globe detail. Mount seeds a level-0 globe, then refines through 1
 to 2 via the cascade."
+```
+
+---
+
+### Task 4a: Amortize the style and relief rebuilds
+
+**Added 2026-07-30 (Nathan's ruling) after Task 4's review.** `setStyle` and
+`setTrueRelief` both call `rebuildAllTiles(currentSelected)`, which disposes
+and rebuilds every mounted slot in one synchronous loop — no queue, no time
+budget. Task 2 amortized the *initial mount*; these two callers survived, and
+Task 4 quadrupled their cost by taking the base set from 24 tiles to 96.
+
+Measured in Task 4's own test run: the voxel style repaint went from ~1460 ms
+to ~4186 ms solo, and ~12518 ms under contention. Four tests needed their
+timeouts raised to `30_000` to survive it. That is a user-visible freeze on
+every style or relief toggle, and it is a regression this campaign introduced.
+
+**Files:**
+- Modify: `src/views/globe.ts` — the `setTrueRelief` and `setStyle` bodies, and `rebuildAllTiles`
+- Test: `src/views/globe.test.ts`
+
+**Interfaces:**
+- Consumes: `applyTileSet`, `drainBuildQueue`, `buildQueue`, `tileSlots` — all existing in `globe.ts`.
+- Produces: no new exports. Behavioural contract: after `setStyle(...)` or `setTrueRelief(...)` returns, no more than `MAX_BUILDS_PER_FRAME` tiles have been rebuilt; pumping frames completes the rest.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+test('setStyle rebuilds through the queue, not all at once', () => {
+  const view = makeGlobe();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera); // settle the full base set first
+
+  const before = performance.now();
+  view.setStyle('voxel');
+  const sync = performance.now() - before;
+
+  // The synchronous part of a style switch must not scale with the base set.
+  // Rebuilding all 96 tiles inline is what this guards against.
+  expect(sync).toBeLessThan(1_000);
+
+  // Pumping completes the switch: every mounted tile ends up voxel geometry.
+  pump(view, camera);
+  expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
+});
+```
+
+A wall-clock assertion is a blunt instrument and normally I would avoid one,
+but the defect IS wall-clock and the margin is large (measured ~4200 ms
+against a 1000 ms bound). If it proves flaky on CI, replace it with a counter:
+instrument `buildTileSlot` calls behind a `globalThis` hook the way
+`__btCount` and `__swapCount` already are, and assert the synchronous portion
+rebuilds at most `MAX_BUILDS_PER_FRAME`. Prefer the counter if it is
+straightforward — it is the better test.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/views/globe.test.ts -t "setStyle rebuilds through the queue"`
+Expected: FAIL — the synchronous rebuild takes seconds.
+
+- [ ] **Step 3: Write the implementation**
+
+Route both callers through the queue. `rebuildAllTiles(selected)` currently
+disposes and rebuilds inline; give it (or a sibling) a form that instead marks
+the mounted slots for rebuild and enqueues them, letting `drainBuildQueue`
+pace the work exactly as a LOD refine already is.
+
+The subtlety to get right: a style or relief change rebuilds tiles *in place*
+— the same keys stay selected. That is the `pendingUpgrades` shape (a same-key
+rebuild that disposes and replaces atomically when built), not the
+retiring/`coveringMounted` shape, so it needs no hole-free deferral. Reuse the
+existing same-key path rather than inventing a second one.
+
+Keep `rebuildAllTiles`'s doc comment accurate — it currently claims it serves
+"the initial mount", which Task 2 removed, and omits `setStyle` entirely.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `npm test`
+Expected: PASS. Several style/relief tests read rebuilt geometry immediately
+after the call; those now need a `pump` first. That is the correct fix — the
+rebuild is amortized now. Also REMOVE the four `30_000` timeouts Task 4 added
+(`globe.test.ts`, the style tests) — they were an accommodation for this
+defect and should not outlive it. If the suite's wall time drops noticeably,
+say so in the report.
+
+- [ ] **Step 5: Commit**
+
+```bash
+npm test && npm run build
+git add src/views/globe.ts src/views/globe.test.ts
+git commit -m "perf(the-cascade): amortize the style and relief rebuilds
+
+setStyle and setTrueRelief rebuilt every mounted slot synchronously. Task 2
+amortized the initial mount; these two callers survived it, and Task 4
+quadrupled their cost by taking the base set from 24 tiles to 96 — the voxel
+repaint went ~1460ms to ~4186ms solo and ~12518ms under contention.
+
+Both now enqueue and let drainBuildQueue pace them, the same amortization
+every LOD refine already uses. The four 30s test timeouts added to survive the
+slow path are removed with it."
 ```
 
 ---

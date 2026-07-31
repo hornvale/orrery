@@ -85,28 +85,59 @@ worker pool less attractive than it first looks (§8.3).
   STEP  LEVEL  TILES  SAMPLES  PRODUCER TIME   RESULT
   ----  -----  -----  -------  -------------   ---------------------------------
    0      -      -       -      ~2.8 s         hw_new (unavoidable, unchanged)
-   1      -      -       -      ~1.4 s         hw_scene_tiles at width 256 (§5);
-                                               ~1.0 s of this is SceneContext::build,
-                                               paid once here so step 2 runs warm
-   2      0      6       64     ~0.5 s         complete globe, 64/face-edge
-   3      1     24       64     ~2.0 s         128/face-edge = today's detail
-   4      2     96       64     ~7.9 s         256/face-edge = 2x today
-   5     3+   on demand  64     82 ms each     CDLOD under the camera (unchanged)
+   1      -      -       -      ~1.4 s         hw_scene_tiles (§5); ~1.0 s of this
+                                               is SceneContext::build, paid once
+                                               here so every later patch runs warm
+   2      2     96       -       0             base mesh built FROM THE EXPORT,
+                                               amortized ~6 tiles/frame (~16 frames,
+                                               ~0.27 s) — no producer round trips
+   3      2     96       64     82 ms each     each base tile sharpens to true
+                                               patch detail, camera-facing first
+   4     3+   on demand  64     82 ms each     CDLOD under the camera (unchanged)
 ```
 
-First paint moves to the end of step 2 — **~4.7 s, against ~5.2 s today**
-(`hw_new` 2.8 s + a cold `hw_scene_tiles(512)` 2.4 s). Steps 3 and 4 refine a
-globe the user is already looking at, reaching today's detail at ~6.7 s and
-2× it at ~14.6 s.
+**An earlier draft had two more steps here — a 6-tile level-0 patch pass and a
+24-tile level-1 pass ahead of level 2 — and both were wrong.** Task 4's
+implementation dropped them and review confirmed the drop on two independent
+grounds, so the table above is the corrected shape:
+
+- **They would have opened a hole.** `coveringMounted` (`globe.ts`) only spans
+  one level: for a retiring level-0 tile under a level-2 selection,
+  `childTiles` are level-1 (none selected) and `parentTile` is `null`, so it
+  returns `true` and the tile is disposed immediately. All six level-0 tiles
+  would vanish while their 96 replacements were still queued — 6/96 coverage
+  for ~15 frames, which is worse than not seeding at all.
+- **They fetched less detail than the client already held.** A level-0 patch
+  pass is 6 × `TILE_QUADS` = 256 equirect columns. The export is 512 (256
+  after §5). So the ladder would have spent ~2.5 s of producer time to replace
+  the export's data with data of equal or lower resolution, and levels 0-1 are
+  unrenderable anyway once `selectTiles` never emits a leaf below
+  `LOD_MIN_LEVEL`.
+
+§6 already contained the reason this was doomed and this section failed to
+follow it through: the export necessarily gates first paint, so by the time
+anything renders, the client holds a full-globe dataset at ≥ the resolution
+any coarse patch pass could supply. The coarse pass was always going to be the
+export. The cascade's job is the *refinement*, not the coarse pass.
+
+First paint is **~4.2 s** (`hw_new` ~2.8 s + a cold demoted export ~1.4 s),
+against ~5.2 s today — and the globe is *complete* ~0.27 s later, meshed from
+the export at the level-2 lattice. Step 3 then sharpens it tile by tile to
+true 1024-equivalent detail over ~8 s, camera-facing first.
 
 So the cascade is not a wall-clock win to *full* detail; it is a win to
 *first* detail, and it raises the ceiling on what full detail means. If cold
 start is the thing being optimized, the lever is `hw_new` (§3), not this.
 
-Note that step 2 is *coarser* than today's first paint (64 vs 128 samples per
-face edge). That is deliberate and is the whole bet: a complete coarse globe
-at ~4.7 s beats a complete medium globe at ~5.7 s, provided the refinement
-that follows is visible and orderly rather than ragged.
+One honest consequence of the level-2 base: between steps 2 and 3 the globe
+meshes a 1024-column lattice over the export's data (512 columns today, 256
+after §5), so base-level elevation is interpolated between real samples for
+the first time. This is a lattice choice rather than invented precision — the
+values still come from a producer document, nearest-cell colour keeps the
+underlying blockiness visible, and step 3 replaces the interpolation with real
+samples. But it does mean the pre-patch globe is *smoother-looking than its
+data*, which is the closest this design comes to the §7 line, and it is worth
+looking at on a real screen before calling §5's demotion to 256 settled.
 
 ### 4.2 Ordering
 
