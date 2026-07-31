@@ -88,6 +88,17 @@ describe('cubeSphere addressing', () => {
   });
 });
 
+describe('the base LOD level', () => {
+  it('the base level resolves the 1024-equivalent grid', () => {
+    // Four equatorial faces × (2^level tiles) × TILE_QUADS samples per tile
+    // edge is the effective equirect column count of the base mesh. Pinned:
+    // The Cascade exists to double this against the old 512, and it is only
+    // reachable because the base is region-served (globe.ts's
+    // REGION_MIN_LEVEL 0) rather than resampled from the export.
+    expect(4 * 2 ** LOD_MIN_LEVEL * TILE_QUADS).toBe(1024);
+  });
+});
+
 describe('globeLodLevel', () => {
   const r = 2;
   it('is the base level far away and never leaves [MIN, MAX]', () => {

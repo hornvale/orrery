@@ -480,12 +480,17 @@ export function createGlobeView(
   let activeStyle: GlobeStyle = 'smooth';
   const bandM = (): number | undefined => (activeStyle === 'terraced' ? TERRACE_BAND_M : undefined);
 
-  // Region patches (true higher-res terrain) for the deep near tiles: cached
-  // by tile key, requested async through the worker. Gated to spinning worlds
-  // (the locked-temperature lens needs width/height a region patch lacks).
-  // REGION_MIN_LEVEL is where the 512-wide base data starts under-sampling.
+  // Region patches (true higher-res terrain): cached by tile key, requested
+  // async through the worker. Gated to spinning worlds (the locked-temperature
+  // lens needs width/height a region patch lacks) — a locked world renders
+  // from the export alone at every level, exactly as it does today.
   const regionsEnabled = requestRegion !== undefined && sys.world.dayLengthDays !== null;
-  const REGION_MIN_LEVEL = 3;
+  // Every level is region-served now (The Cascade): the base globe is built
+  // from patches rather than resampled from the tiles export, so the export's
+  // width stops bounding the globe's detail. 0 rather than LOD_MIN_LEVEL
+  // because no rendered tile is ever coarser than the base — this says "every
+  // tile the globe can show wants its own patch" without restating the base.
+  const REGION_MIN_LEVEL = 0;
   const regionCache = new Map<string, RegionScene>();
   // Region requests go through the cascade scheduler rather than firing inline
   // at build time: it owns the dedupe (so a tile rebuilt every frame is asked
@@ -925,13 +930,26 @@ export function createGlobeView(
   // Initial base set, amortized exactly like any later refine: reconcile the
   // desired set (which enqueues every tile) — no explicit drain here. The
   // trailing `update(0)` below (this function's last statement) is a normal
-  // camera-less tick, and that already calls `drainBuildQueue` once; adding a
-  // second explicit drain here would build two frames' worth (up to
-  // 2×MAX_BUILDS_PER_FRAME) before the view is even returned. Building the
-  // whole set synchronously here (the old `rebuildAllTiles` behaviour) would
-  // hitch — at LOD_MIN_LEVEL 2 that is 96 tiles in one synchronous burst. The
-  // rest arrive over the following frames via `update` → `drainBuildQueue`.
-  applyTileSet(tilesAtLevel(LOD_MIN_LEVEL));
+  // camera-less tick, and that already calls `drainBuildQueue` once, which is
+  // what makes omitting a drain here safe: the whole base set is enqueued and
+  // its first `MAX_BUILDS_PER_FRAME` tiles are built before the view is
+  // returned. Adding a second explicit drain would build two frames' worth (up
+  // to 2×MAX_BUILDS_PER_FRAME) instead. Building the whole set synchronously
+  // (the old `rebuildAllTiles` behaviour) would hitch — at LOD_MIN_LEVEL 2
+  // that is 96 tiles in one synchronous burst. The rest arrive over the
+  // following frames via `update` → `drainBuildQueue`.
+  const baseSet = tilesAtLevel(LOD_MIN_LEVEL);
+  // Seed the cascade with the WHOLE base set up front, ahead of the builds
+  // that would each submit their own tile from `buildTileSlot`. Both routes
+  // reach the same scheduler and `submit` dedupes, so this changes nothing
+  // about WHICH tiles are requested — only the order they can be requested
+  // in. Submitting per-build would leave the queue holding only the handful
+  // of tiles drained so far, so the first `reprioritize` would have almost
+  // nothing to sort and the camera-facing-first ordering (spec §4.2) would
+  // degrade to build order (face-major) for the first frames. With all 96 in
+  // hand the very first camera frame deals the tiles the user is looking at.
+  if (regionsEnabled) cascade.submit(baseSet);
+  applyTileSet(baseSet);
 
   // On-settle refinement (spec §2, Nathan-approved): while the camera moved
   // more than SETTLE_EPSILON since last frame, `reselect` defers *refining*

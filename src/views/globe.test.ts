@@ -136,7 +136,7 @@ test('onRegion swaps only the arriving tile to region geometry — other tiles k
 
   // Camera just above the surface: whatever tile sits under it is close
   // enough (dist << threshold at every level) to subdivide all the way to
-  // LOD_CDLOD_MAX_LEVEL, so a deep (>= REGION_MIN_LEVEL) tile is guaranteed
+  // LOD_CDLOD_MAX_LEVEL, so a tile deeper than the base level is guaranteed
   // to mount regardless of which face the spin has rotated under the point.
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
@@ -150,10 +150,10 @@ test('onRegion swaps only the arriving tile to region geometry — other tiles k
   let otherKey: string | null = null;
   for (const key of before.keys()) {
     const level = Number(key.split(':')[1]);
-    if (level >= 3 && targetKey === null) targetKey = key;
+    if (level > LOD_MIN_LEVEL && targetKey === null) targetKey = key;
     else if (key !== targetKey && otherKey === null) otherKey = key;
   }
-  expect(targetKey).not.toBeNull(); // the deep zoom actually reached REGION_MIN_LEVEL
+  expect(targetKey).not.toBeNull(); // the deep zoom actually subdivided past the base level
   expect(otherKey).not.toBeNull(); // and left at least one other tile mounted
   const otherMeshBefore = before.get(otherKey!)!;
   const otherGeomBefore = otherMeshBefore.geometry;
@@ -213,9 +213,42 @@ test('caps outstanding region requests at the cascade in-flight limit', () => {
   // Nothing was delivered, so nothing settles and the cap must hold — however
   // many frames we pump. Before the cascade every deep build fired its own
   // request, so this ran to dozens.
-  expect(requested.length).toBeGreaterThan(0); // the deep zoom did reach REGION_MIN_LEVEL
+  expect(requested.length).toBeGreaterThan(0); // patches were actually dealt (every level asks for one)
   expect(requested.length).toBeLessThanOrEqual(CASCADE_MAX_IN_FLIGHT);
 }, 30_000);
+
+test('requests region patches for the base level, not just deep tiles', () => {
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => {
+    requested.push(t);
+  });
+  view.setLens(moistureLens); // see regionFixture's doc — no ice fields on a patch
+  // Far enough out that nothing subdivides past the base level (the settled
+  // set is exactly the base set), so every request here is a BASE tile asking
+  // for its own patch — the whole point of REGION_MIN_LEVEL 0. Before The
+  // Cascade this camera requested nothing at all.
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+  expect(requested.length).toBeGreaterThan(0);
+  expect(requested.every((t) => t.level === LOD_MIN_LEVEL)).toBe(true);
+});
+
+test('a tidally locked world still renders the whole base set, from the export alone', () => {
+  // `regionsEnabled` is false without a rotation period (the locked-temperature
+  // lens needs the width/height a RegionScene lacks), so a locked world gets NO
+  // patches at any level — it must still mount the full base set from the tiles
+  // export. This is the path REGION_MIN_LEVEL 0 could most easily have broken.
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), lockedSys(), [], (t) => {
+    requested.push(t);
+  });
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+  expect(requested).toEqual([]);
+  expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
+});
 
 test('resumes requesting once delivered patches settle, and a failed patch frees its slot too', () => {
   const requested: TileId[] = [];
@@ -254,10 +287,15 @@ test('refines under autoplay spin: a still camera reaches a deep tile while the 
   // LOD_MIN_LEVEL — this asserts refinement survives a live clock.
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(GLOBE_RADIUS * 1.001, 0, 0);
-  for (let f = 0; f < 8; f++) view.update(f * 0.05, camera); // ~0.35 day of spin
+  // 48 frames, matching `pump`'s default: the base set is 6·4^LOD_MIN_LEVEL
+  // tiles and the queue is FIFO, so the base pass alone occupies the first
+  // ~16 frames at MAX_BUILDS_PER_FRAME before a deep tile can be reached. The
+  // 8 frames this test used when the base was 24 tiles now only measure how
+  // long the base takes to mount, not whether refinement happens at all.
+  for (let f = 0; f < 48; f++) view.update(f * 0.05, camera); // ~2.4 days of spin
 
   const maxLevel = Math.max(...[...tileMeshesByKey(view).keys()].map((k) => Number(k.split(':')[1])));
-  expect(maxLevel).toBeGreaterThanOrEqual(3); // reached REGION_MIN_LEVEL despite the spin (buggy gate froze at 1)
+  expect(maxLevel).toBeGreaterThan(LOD_MIN_LEVEL); // refined past the base despite the spin (a buggy gate froze it AT the base)
 });
 
 test('LOD refinement is amortized and hole-free: a big refine builds a few tiles per frame while the coarse tiles it replaces stay mounted until their replacements exist', () => {
@@ -265,7 +303,7 @@ test('LOD refinement is amortized and hole-free: a big refine builds a few tiles
   view.setLens(moistureLens);
   const camera = new THREE.PerspectiveCamera();
   const deep = (v: ReturnType<typeof createGlobeView>) =>
-    [...tileMeshesByKey(v).keys()].filter((k) => Number(k.split(':')[1]) >= 3).length;
+    [...tileMeshesByKey(v).keys()].filter((k) => Number(k.split(':')[1]) > LOD_MIN_LEVEL).length;
 
   // Settle far away (a coarse set), then zoom to the surface — a big refine.
   camera.position.set(GLOBE_RADIUS * 4, 0, 0);
@@ -313,13 +351,13 @@ test('mounted region patches are normal-stitched: adjacent same-level region til
   pump(view, camera); // settled + fully built: a deep patch under the camera
 
   // Find two horizontally-adjacent (same face/level/iy, ix differing by 1)
-  // mounted tiles at >= REGION_MIN_LEVEL — they share an exact edge.
+  // mounted tiles deeper than the base level — they share an exact edge.
   const keys = [...tileMeshesByKey(view).keys()];
   let a: string | null = null;
   let b: string | null = null;
   for (const k of keys) {
     const [f, l, ix, iy] = k.split(':').map(Number) as [number, number, number, number];
-    if (l < 3) continue;
+    if (l <= LOD_MIN_LEVEL) continue;
     const east = `${f}:${l}:${ix + 1}:${iy}`;
     if (keys.includes(east)) {
       a = k;
@@ -455,6 +493,14 @@ function spinningSys(): SystemScene {
     world: { orbitAu: 1, yearDays: 360, dayLengthDays: 1, obliquityDeg: 20, yearPhaseOffset: 0 },
     moons: [],
   };
+}
+
+/** `spinningSys()`'s tidally locked twin — no rotation period, so
+ * `createGlobeView`'s `regionsEnabled` is false and the globe renders from the
+ * tiles export alone at every level. */
+function lockedSys(): SystemScene {
+  const sys = spinningSys();
+  return { ...sys, world: { ...sys.world, dayLengthDays: null } };
 }
 
 /** 4×2 all-land world at a uniform 1000 m, with `features`. */
@@ -636,13 +682,7 @@ test('setDayHold(true) pins the temperature lens season while the day advances',
 });
 
 test('subsolar longitude is frozen for a tidally locked world', () => {
-  const sys: SystemScene = {
-    schema: 'scene/system/v1',
-    seed: 1,
-    star: { className: 'yellow dwarf (G)', luminosityRel: 1, hzInnerAu: 0.9, hzOuterAu: 1.4 },
-    world: { orbitAu: 1, yearDays: 360, dayLengthDays: null, obliquityDeg: 20, yearPhaseOffset: 0 },
-    moons: [],
-  };
+  const sys = lockedSys();
   expect(subsolarPoint(sys, 0).lon).toBe(0);
   expect(subsolarPoint(sys, 123).lon).toBe(0);
 });
@@ -843,7 +883,14 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
   expect(smoothGeom).not.toBe(afterGeom);
   expect(smoothGeom.getIndex()).not.toBeNull(); // back to the shared-vertex indexed mesh
   expect(smoothGeom.getAttribute('position').count).toBe(beforeCount);
-});
+  // Generous timeout (shared by the three style tests below, same reason):
+  // `setStyle` across geometry families rebuilds every mounted tile
+  // SYNCHRONOUSLY (`rebuildAllTiles`, deliberately — the assertions above read
+  // the new geometry on the next line), and The Cascade quadrupled the base set
+  // to 6·4^LOD_MIN_LEVEL = 96 tiles. Measured ~2.3 s here and ~4.2 s for the
+  // voxel repaint below on a dev box, which is under vitest's 5 s default but
+  // not by enough to survive a constrained CI box.
+}, 30_000);
 
 test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for a new day, without a full rebuild", () => {
   const globe = makeGlobe();
@@ -884,7 +931,7 @@ test("living-lens repaint recolors voxel geometry (tops AND darkened walls) for 
     return sum / (hi - lo);
   };
   expect(avgLuminance(topVerts, col.count)).toBeLessThan(avgLuminance(0, topVerts));
-});
+}, 30_000);
 
 test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region variant when a patch is cached', () => {
   const tiles = markerTiles([]);
@@ -900,12 +947,12 @@ test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region 
   const before = tileMeshesByKey(view);
   let targetKey: string | null = null;
   for (const key of before.keys()) {
-    if (Number(key.split(':')[1]) >= 3) {
+    if (Number(key.split(':')[1]) > LOD_MIN_LEVEL) {
       targetKey = key;
       break;
     }
   }
-  expect(targetKey).not.toBeNull(); // deep zoom reached REGION_MIN_LEVEL under voxel too
+  expect(targetKey).not.toBeNull(); // deep zoom subdivided past the base level under voxel too
   const beforeGeom = before.get(targetKey!)!.geometry;
   const beforeColor = beforeGeom.getAttribute('color');
   const beforeSample: [number, number, number] = [beforeColor.getX(0), beforeColor.getY(0), beforeColor.getZ(0)];
@@ -927,7 +974,7 @@ test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region 
   // tiles' 0.1 — confirms `buildTileSlot`'s voxel branch took the region
   // path (`buildVoxelRegionTileGeometryIndexed`), not the base one.
   expect(afterSample).not.toEqual(beforeSample);
-});
+}, 30_000);
 
 test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded elevation', () => {
   const globe = makeGlobe(); // real seed-42 terrain — enough relief to distinguish banded from continuous
@@ -980,4 +1027,4 @@ test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded el
     smoothRadii.add(Number(Math.hypot(smoothPos.getX(i), smoothPos.getY(i), smoothPos.getZ(i)).toFixed(5)));
   }
   expect(smoothRadii.size).toBeGreaterThan(smoothPos.count / 2); // back to (near-)continuous, not banded
-});
+}, 30_000);

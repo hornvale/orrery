@@ -129,9 +129,13 @@ export function tileGrid(t: TileId): TileGrid {
   return { lats, lons, units };
 }
 
-/** Base LOD level: matches the 512-wide tile data at the whole-globe view (a
- * level-0 face under-samples it ~2×). */
-export const LOD_MIN_LEVEL = 1;
+/** Base LOD level. Level 2 is 4 tiles × TILE_QUADS (64) = 256 samples per
+ * face edge, so the four equatorial faces resolve 1024 equirect columns —
+ * twice the old 512-wide export the base used to be matched to. The base is
+ * region-served now (The Cascade: `REGION_MIN_LEVEL` in `globe.ts` is 0, so
+ * every base tile asks the producer for its own patch), so this is no longer
+ * bounded by the export's width. */
+export const LOD_MIN_LEVEL = 2;
 /** Deepest uniform LOD level: past this, a finer lattice only interpolates
  * the same data (smoother silhouette, no new detail) at a steep triangle
  * cost, so the uniform scheme stops here. Per-tile CDLOD (only near tiles go
