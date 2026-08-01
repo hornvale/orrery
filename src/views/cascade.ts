@@ -31,13 +31,16 @@ export interface Cascade {
    * the attempt and retires the tile only once it has been attempted
    * `maxAttempts` times; until then a later `submit` re-queues it.
    *
-   * This departs from `main.ts:147`'s no-retry policy for region replies
-   * ("left uncleared so a persistently-failing region isn't re-requested
-   * every rebuild") on purpose. That policy is safe today because only
-   * deep-zoom tiles use patches — a failure just costs detail nobody is
-   * looking at. Once the base globe is patch-served (Task 4), the same
-   * failure would leave a permanently coarse tile in the default view, so
-   * failures here get a bounded number of retries instead of none. */
+   * This departs on purpose from the pre-cascade policy, which never retried
+   * a failed region at all: the failed key was left marked so a
+   * persistently-failing region would not be re-requested on every rebuild.
+   * That was safe while only deep-zoom tiles used patches — a failure just
+   * cost detail nobody was looking at. Now that the base globe is
+   * patch-served, the same failure would leave a permanently coarse tile in
+   * the DEFAULT view, so failures here get a bounded number of retries
+   * instead of none. Retrying is driven by the caller re-submitting its
+   * still-patchless tiles each frame (`globe.ts`'s `dealRegionRequests`);
+   * `settle` only frees the slot and counts the attempt. */
   settle(tile: TileId, ok: boolean): void;
   readonly pending: number;
   readonly inFlight: number;

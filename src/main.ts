@@ -111,6 +111,14 @@ function titleFor(kind: WorkerErrorKind): string {
   }
 }
 
+/** What `mountViews` hands back to `boot`: the globe itself, plus the two
+ * routers that carry the worker's region replies into it. */
+interface MountedViews {
+  globe: GlobeView;
+  deliverRegion: (key: string, region: RegionScene) => void;
+  deliverRegionError: (key: string) => void;
+}
+
 /** Resolves the app's starting `AppState` from the URL hash and boots
  * genesis for it — or, if the hash names an unparseable seed, shows that
  * parse error instead of ever touching the worker. */
@@ -135,11 +143,7 @@ function boot(): void {
   let globe: GlobeView | null = null;
   // The mounted views' region router (also feeds the map rung's placeholder
   // quad, Task 4) — set alongside `globe` the moment `mountViews` returns.
-  let views: {
-  globe: GlobeView;
-  deliverRegion: (key: string, region: RegionScene) => void;
-  deliverRegionError: (key: string) => void;
-} | null = null;
+  let views: MountedViews | null = null;
   worker.onmessage = (ev: MessageEvent) => {
     const msg = ev.data;
     if (msg.type === 'world') {
@@ -151,9 +155,10 @@ function boot(): void {
       // Non-fatal: the tile keeps its interpolated form. The failure is still
       // routed to the views — the globe's request scheduler must free the
       // in-flight slot this request was holding, or the cap leaks a slot
-      // permanently. It re-queues the tile a bounded number of times (see
-      // `cascade.settle`) and then retires it, so a persistently-failing
-      // region costs a handful of requests rather than one per rebuild.
+      // permanently. The tile is then re-offered by the globe's per-frame
+      // re-submit (`dealRegionRequests`) until `CASCADE_MAX_ATTEMPTS` retires
+      // it (see `cascade.settle`), so a persistently-failing region costs a
+      // handful of requests rather than one per rebuild — or, worse, none.
       console.warn(`region ${msg.key} failed: ${msg.message}`);
       views?.deliverRegionError(msg.key);
     } else if (msg.type === 'error') {
@@ -173,11 +178,7 @@ function mountViews(
   eclipses: EclipsesScene,
   state: AppState,
   worker: Worker,
-): {
-  globe: GlobeView;
-  deliverRegion: (key: string, region: RegionScene) => void;
-  deliverRegionError: (key: string) => void;
-} {
+): MountedViews {
   app.innerHTML = '';
 
   const stage = document.createElement('div');

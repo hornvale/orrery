@@ -16,7 +16,7 @@ import {
 } from './globe';
 import { REFERENCE_RADIUS_M } from './worldMesh';
 import { LOD_MIN_LEVEL, TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
-import { CASCADE_MAX_IN_FLIGHT } from './cascade';
+import { CASCADE_MAX_ATTEMPTS, CASCADE_MAX_IN_FLIGHT } from './cascade';
 import { iceFraction } from './ice';
 import { rotationPhase } from '../sim/ephemeris';
 import type { RegionScene, SystemScene, TilesScene } from '../sim/scene';
@@ -261,11 +261,17 @@ test('requests region patches for the base level, not just deep tiles', () => {
   expect(requested.every((t) => t.level === LOD_MIN_LEVEL)).toBe(true);
 });
 
-test('a tidally locked world still renders the whole base set, from the export alone', () => {
+test('a tidally locked world renders its whole base set at level 1, matched to the export it actually has', () => {
   // `regionsEnabled` is false without a rotation period (the locked-temperature
   // lens needs the width/height a RegionScene lacks), so a locked world gets NO
   // patches at any level — it must still mount the full base set from the tiles
   // export. This is the path REGION_MIN_LEVEL 0 could most easily have broken.
+  //
+  // And it mounts it at level 1 (24 tiles / 512 columns), NOT LOD_MIN_LEVEL.
+  // LOD_MIN_LEVEL's 1024-column lattice is sized for a globe whose tiles get
+  // replaced by real patches; a locked world never receives one, so that
+  // lattice would resample the same 512-column export onto 4× the vertices —
+  // interpolation dressed as detail, which decision 0022 forbids.
   const requested: TileId[] = [];
   const view = createGlobeView(markerTiles([]), lockedSys(), [], (t) => {
     requested.push(t);
@@ -274,6 +280,17 @@ test('a tidally locked world still renders the whole base set, from the export a
   camera.position.set(0, 0, GLOBE_RADIUS * 40);
   pump(view, camera);
   expect(requested).toEqual([]);
+  expect(tileMeshesByKey(view).size).toBe(6 * 4 ** 1);
+});
+
+test('a spinning world keeps the finer LOD_MIN_LEVEL base — the lattice patches will fill', () => {
+  // The counterpart to the locked case above: patches DO arrive here, so the
+  // finer base earns its vertices.
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
   expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
 });
 
@@ -299,6 +316,42 @@ test('resumes requesting once delivered patches settle, and a failed patch frees
   for (const t of secondBatch) view.onRegionError(tileKey(t));
   pump(view, camera);
   expect(requested.length).toBeGreaterThan(firstBatch.length + secondBatch.length);
+}, 30_000);
+
+test('a failed patch is re-requested on a later frame, and stops after CASCADE_MAX_ATTEMPTS', () => {
+  // The bounded retry needs something to DRIVE it. `cascade.settle(t, false)`
+  // frees the in-flight slot and counts the attempt, but re-queueing takes a
+  // later `submit` — and a failed base tile stays mounted under an unchanged
+  // key, so nothing rebuilds it and `buildTileSlot` never re-submits it.
+  // `dealRegionRequests` re-offering the still-selected, still-patchless tiles
+  // each frame is what makes the documented retry real.
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => {
+    requested.push(t);
+  });
+  view.setLens(moistureLens);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40); // whole-globe view: the base set, nothing deeper
+
+  // Fail every patch as it is asked for, and keep pumping.
+  let failed = 0;
+  for (let f = 0; f < 200; f++) {
+    view.update(0, camera);
+    for (; failed < requested.length; failed++) view.onRegionError(tileKey(requested[failed]!));
+  }
+
+  const perTile = new Map<string, number>();
+  for (const t of requested) perTile.set(tileKey(t), (perTile.get(tileKey(t)) ?? 0) + 1);
+  expect(perTile.size).toBe(6 * 4 ** LOD_MIN_LEVEL); // every base tile was asked for…
+  // …and each was retried, then retired — exactly CASCADE_MAX_ATTEMPTS tries.
+  // Without the re-submit this is 1 apiece and the tile stays coarse forever.
+  expect([...new Set(perTile.values())]).toEqual([CASCADE_MAX_ATTEMPTS]);
+
+  // Retirement sticks: `submit` drops anything in `settled`, so the re-submit
+  // is not an infinite retry loop. More frames ask for nothing further.
+  const total = requested.length;
+  for (let f = 0; f < 20; f++) view.update(0, camera);
+  expect(requested.length).toBe(total);
 }, 30_000);
 
 test('refines under autoplay spin: a still camera reaches a deep tile while the world rotates (settle keys off the user camera, not the diurnal spin)', () => {
@@ -744,8 +797,14 @@ beforeAll(async () => {
   seed42System = await loadSeed42System();
 }, 60000);
 
+/** A production-shaped globe: a spinning world WITH a region bridge, so
+ * `regionsEnabled` is true and the base set is the finer `LOD_MIN_LEVEL` one
+ * (`baseLevel` follows `regionsEnabled` — a globe that can never receive a
+ * patch drops to level 1 rather than interpolate the export onto 4× the
+ * vertices). The callback is a no-op: these tests never deliver a patch, so
+ * every tile stays base-data terrain, exactly as before. */
 function makeGlobe() {
-  return createGlobeView(seed42Tiles, seed42System);
+  return createGlobeView(seed42Tiles, seed42System, [], () => {});
 }
 
 test('repaints when the lens changes', () => {
@@ -910,7 +969,7 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
 });
 
 test('setStyle queues its rebuild instead of re-cutting every mounted tile inline', () => {
-  const view = createGlobeView(markerTiles([]), spinningSys());
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
   // Far enough out that the settled leaf set is exactly the base set, so the
   // rebuild below is over all 6·4^LOD_MIN_LEVEL tiles — the size that made the
   // synchronous version freeze for seconds.
@@ -944,7 +1003,7 @@ test('setStyle queues its rebuild instead of re-cutting every mounted tile inlin
 });
 
 test('__buildPending reports the queue depth synchronously — the readiness signal e2e polls instead of sleeping', () => {
-  const view = createGlobeView(markerTiles([]), spinningSys());
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(0, 0, GLOBE_RADIUS * 40);
   pump(view, camera);
@@ -968,7 +1027,7 @@ test('__buildPending reports the queue depth synchronously — the readiness sig
 
 test('setTrueRelief queues its rebuild too, and reseats the markers at once', () => {
   const tiles = markerTiles([{ name: 'Alpha', kind: 'settlement', latitude: 45, longitude: 10 }]);
-  const view = createGlobeView(tiles, spinningSys());
+  const view = createGlobeView(tiles, spinningSys(), [], () => {});
   const camera = new THREE.PerspectiveCamera();
   camera.position.set(0, 0, GLOBE_RADIUS * 40);
   pump(view, camera);

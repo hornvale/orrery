@@ -492,6 +492,16 @@ export function createGlobeView(
   // because no rendered tile is ever coarser than the base — this says "every
   // tile the globe can show wants its own patch" without restating the base.
   const REGION_MIN_LEVEL = 0;
+  // …and therefore the BASE level follows `regionsEnabled` too. LOD_MIN_LEVEL
+  // (2, i.e. 96 tiles / a 1024-column lattice) is sized for a globe whose
+  // tiles get replaced by real patches. A locked world never receives one, so
+  // that lattice would resample the same 512-column export onto 4× the
+  // vertices: 4× the build time and geometry memory for zero additional
+  // information, and permanently bilinear-synthesized relief between real
+  // samples. That is interpolation dressed as detail — precision the producer
+  // never shipped — which is exactly what decision 0022 forbids. Level 1 (24
+  // tiles / 512 columns) is matched to the export a locked world actually has.
+  const baseLevel = regionsEnabled ? LOD_MIN_LEVEL : 1;
   const regionCache = new Map<string, RegionScene>();
   // Region requests go through the cascade scheduler rather than firing inline
   // at build time: it owns the dedupe (so a tile rebuilt every frame is asked
@@ -985,10 +995,10 @@ export function createGlobeView(
   // its first `MAX_BUILDS_PER_FRAME` tiles are built before the view is
   // returned. Adding a second explicit drain would build two frames' worth (up
   // to 2×MAX_BUILDS_PER_FRAME) instead. Building the whole set synchronously
-  // (the whole-set rebuild this queue replaced) would hitch — at LOD_MIN_LEVEL
+  // (the whole-set rebuild this queue replaced) would hitch — at base level
   // 2 that is 96 tiles in one synchronous burst. The rest arrive over the
   // following frames via `update` → `drainBuildQueue`.
-  const baseSet = tilesAtLevel(LOD_MIN_LEVEL);
+  const baseSet = tilesAtLevel(baseLevel);
   // Seed the cascade with the WHOLE base set up front, ahead of the builds
   // that would each submit their own tile from `buildTileSlot`. Both routes
   // reach the same scheduler and `submit` dedupes, so this changes nothing
@@ -1062,7 +1072,7 @@ export function createGlobeView(
       GLOBE_RADIUS,
       LOD_SPLIT_FACTOR,
       LOD_CDLOD_MAX_LEVEL,
-      LOD_MIN_LEVEL,
+      baseLevel, // follows `regionsEnabled` — see its declaration
       { mergeFactor: LOD_MERGE_FACTOR, splitAncestors: splitAncestorKeys(currentSelected) },
     );
     const settled = settledFrames >= SETTLE_FRAMES_NEEDED;
@@ -1107,9 +1117,11 @@ export function createGlobeView(
 
   /** A requested patch failed. Settling is not optional: an unsettled tile
    * holds an in-flight slot forever and the cascade would deal fewer and
-   * fewer requests until it stalled. The cascade retries a failure a bounded
-   * number of times before retiring the tile, so a persistently-failing
-   * region costs a handful of requests, not one per rebuild. */
+   * fewer requests until it stalled. Settling only frees the slot and counts
+   * the attempt; the retry itself comes from `dealRegionRequests`, which
+   * re-submits this tile while it is still selected and still patchless, up
+   * to CASCADE_MAX_ATTEMPTS — so a persistently-failing region costs a
+   * handful of requests, not one per rebuild and not zero. */
   function onRegionError(key: string): void {
     cascade.settle(keyToTile(key), false);
   }
@@ -1191,6 +1203,11 @@ export function createGlobeView(
     if (on === reliefOn) return;
     reliefOn = on;
     enqueueRebuildAll(); // same tiles, re-cut at the new relief scale, a few per frame
+    // Deliberate, disclosed transient: `enqueueRebuildAll` walks
+    // `currentSelected`, so a mounted-but-RETIRING tile keeps its OLD relief
+    // for the few frames before its disposal lands. It is on its way out —
+    // re-cutting it would burn a build slot on geometry about to be thrown
+    // away. Not a hole; do not "fix" it.
     // The terrain the markers stand on just moved — reseat them on it.
     for (const marker of markers) placeMarker(marker, reliefScale());
     ocean.setTrueRelief(on);
@@ -1258,6 +1275,9 @@ export function createGlobeView(
     const nextFamily = geometryFamilyOf(activeStyle);
     material.flatShading = activeStyle === 'faceted' || activeStyle === 'terraced' || activeStyle === 'voxel';
     material.needsUpdate = true;
+    // As in `setTrueRelief`: `enqueueRebuildAll` iterates `currentSelected`
+    // only, so a mounted-but-RETIRING tile keeps its OLD style for the few
+    // frames before disposal. Deliberate and disclosed, not a hole.
     if (prevFamily !== nextFamily) enqueueRebuildAll();
   }
 
@@ -1285,11 +1305,25 @@ export function createGlobeView(
     seasonalCtx.seasonDayOverride = on ? (lastDay ?? 0) : undefined;
   }
 
-  /** Deal the next region requests the builds submitted. Camera-facing tiles
-   * go first; the in-flight cap keeps the tail of the queue re-orderable for
-   * the next camera move rather than committing it now. */
+  /** Deal the next region requests. Camera-facing tiles go first; the
+   * in-flight cap keeps the tail of the queue re-orderable for the next
+   * camera move rather than committing it now.
+   *
+   * The re-submit below is what actually DRIVES the cascade's bounded retry.
+   * `settle(t, false)` frees the in-flight slot and counts the attempt, but it
+   * cannot re-queue the tile by itself — that needs a later `submit`, and the
+   * only other submit sites are construction and `buildTileSlot`. A failed
+   * base tile stays mounted under an UNCHANGED key, so nothing rebuilds it and
+   * nothing would ever re-ask: the documented retry would fire only if some
+   * unrelated event happened to re-cut that tile. Re-offering the
+   * still-desired, still-patchless selected tiles every frame closes that
+   * hole. It is idempotent and cheap — `submit` drops anything queued,
+   * in-flight, or settled — and a tile retired at CASCADE_MAX_ATTEMPTS is in
+   * `settled`, so retirement still sticks and this never becomes an infinite
+   * retry loop. */
   function dealRegionRequests(camera?: THREE.Camera): void {
     if (requestRegion === undefined) return;
+    if (regionsEnabled) cascade.submit(currentSelected.filter((t) => !regionCache.has(tileKey(t))));
     if (camera !== undefined) cascade.reprioritize(cameraUnitFor(camera));
     for (const t of cascade.next()) requestRegion(t);
   }

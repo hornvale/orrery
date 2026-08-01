@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  LOD_CDLOD_MAX_LEVEL, LOD_MAX_LEVEL, LOD_MERGE_FACTOR, LOD_MIN_LEVEL, LOD_SPLIT_FACTOR, TILE_QUADS,
+  LOD_CDLOD_MAX_LEVEL, LOD_MERGE_FACTOR, LOD_MIN_LEVEL, LOD_SPLIT_FACTOR, TILE_QUADS,
   children, containingTile, faceUnit,
-  globeLodLevel, maxLevel, parent, selectTiles, splitAncestorKeys,
+  maxLevel, parent, selectTiles, splitAncestorKeys,
   tileCenterUnit, tileEdgeLenM, tileGrid, tileKey, unitLatLon, type TileId, type V3,
 } from './cubeSphere';
 
@@ -96,28 +96,6 @@ describe('the base LOD level', () => {
     // reachable because the base is region-served (globe.ts's
     // REGION_MIN_LEVEL 0) rather than resampled from the export.
     expect(4 * 2 ** LOD_MIN_LEVEL * TILE_QUADS).toBe(1024);
-  });
-});
-
-describe('globeLodLevel', () => {
-  const r = 2;
-  it('is the base level far away and never leaves [MIN, MAX]', () => {
-    expect(globeLodLevel(10 * r, r)).toBe(LOD_MIN_LEVEL);
-    expect(globeLodLevel(4 * r, r)).toBe(LOD_MIN_LEVEL);
-    for (const d of [10 * r, 2 * r, 1.5 * r, 1.1 * r, 1.001 * r]) {
-      const lvl = globeLodLevel(d, r);
-      expect(lvl).toBeGreaterThanOrEqual(LOD_MIN_LEVEL);
-      expect(lvl).toBeLessThanOrEqual(LOD_MAX_LEVEL);
-    }
-  });
-  it('rises monotonically as the camera nears the surface, capping at MAX', () => {
-    let prev = 0;
-    for (const d of [4 * r, 2 * r, 1.5 * r, 1.25 * r, 1.1 * r, 1.01 * r]) {
-      const lvl = globeLodLevel(d, r);
-      expect(lvl).toBeGreaterThanOrEqual(prev);
-      prev = lvl;
-    }
-    expect(globeLodLevel(1.0001 * r, r)).toBe(LOD_MAX_LEVEL);
   });
 });
 

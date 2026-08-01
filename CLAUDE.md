@@ -129,7 +129,12 @@ swaps that tile in place). Region tiles mesh through the same
 `buildGridGeometry`/skirt core as base tiles and colour through the lens via a
 per-tile colour SOURCE (`RegionScene` carries the fields `colorAt`/`iceFraction`
 read). Still gated to spinning worlds (`regionsEnabled`): a **tidally locked**
-world gets no patches at all and renders from the export alone at every level.
+world gets no patches at all and renders from the export alone at every level —
+and therefore keeps the **level-1 base** (24 tiles / 512 columns, matched to its
+`TILES_WIDTH_LOCKED` export). `globe.ts`'s `baseLevel` follows `regionsEnabled`
+for exactly this reason: the finer `LOD_MIN_LEVEL` lattice only pays for itself
+when patches arrive to fill it. Without them it is 4× the vertices carrying zero
+extra information — interpolation dressed as detail, which decision 0022 forbids.
 
 **The scheduler** (`src/views/cascade.ts`, pure — no three.js, no globe state)
 owns which patch is asked for next: dedupe, camera-facing-first ordering
@@ -137,7 +142,11 @@ owns which patch is asked for next: dedupe, camera-facing-first ordering
 (`CASCADE_MAX_IN_FLIGHT`, small on purpose so the queue stays re-orderable), and
 a bounded retry — a failed request is re-queued until `CASCADE_MAX_ATTEMPTS`,
 then retired. Retry exists because a permanently-failed patch is now a coarse
-tile in the DEFAULT view, not just missing deep-zoom detail.
+tile in the DEFAULT view, not just missing deep-zoom detail. The retry is
+*driven* by `dealRegionRequests` re-submitting the still-patchless selected
+tiles every frame: `settle(t, false)` only frees the in-flight slot and counts
+the attempt, so without that re-offer a failed base tile — mounted under an
+unchanged key, so never rebuilt — would never be asked for again.
 
 **The export is demoted to an overlay.** `TILES_WIDTH_OVERLAY = 256`
 (`src/sim/tilesWidth.ts`): the export now carries only what a patch cannot —

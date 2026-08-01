@@ -136,24 +136,6 @@ export function tileGrid(t: TileId): TileGrid {
  * every base tile asks the producer for its own patch), so this is no longer
  * bounded by the export's width. */
 export const LOD_MIN_LEVEL = 2;
-/** Deepest uniform LOD level: past this, a finer lattice only interpolates
- * the same data (smoother silhouette, no new detail) at a steep triangle
- * cost, so the uniform scheme stops here. Per-tile CDLOD (only near tiles go
- * deeper) is where higher levels earn their cost — the next stage. */
-export const LOD_MAX_LEVEL = 3;
-
-/** The uniform LOD level for the globe, chosen from how close the camera is.
- * `distance` is camera-to-globe-centre, `radius` the undisplaced globe radius.
- * Far away → `LOD_MIN_LEVEL`; each halving of the camera's altitude above the
- * surface adds one level, clamped to `[LOD_MIN_LEVEL, LOD_MAX_LEVEL]`.
- * Monotonic in closeness, so a caller rebuilds only when the returned level
- * changes (a few times across a zoom, not per frame). Uniform across the
- * globe — no cross-level T-junctions to skirt. */
-export function globeLodLevel(distance: number, radius: number): number {
-  const altitude = Math.max(distance - radius, radius * 0.01); // never divide by ~0 at the surface
-  const steps = Math.floor(Math.log2(radius / altitude));
-  return Math.min(LOD_MAX_LEVEL, Math.max(LOD_MIN_LEVEL, LOD_MIN_LEVEL + Math.max(0, steps)));
-}
 
 /** How aggressively CDLOD subdivides: a tile splits into its four children
  * while the camera is within this multiple of the tile's world edge length of
