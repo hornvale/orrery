@@ -67,6 +67,17 @@ export interface TilesScene {
   schema: string;
   width: number;
   height: number;
+  /** Per-node latitude/longitude in degrees, present ONLY on a region patch
+   * (see `RegionScene`), absent on the equirect export.
+   *
+   * The export's nodes are an equirect grid, so their coordinates follow from
+   * the linear index and `width`/`height`. A region patch's nodes are a
+   * cube-sphere tile's own lattice and have no such mapping — `globe.ts`
+   * computes these from the tile address on receipt. Any evaluator needing a
+   * node's geography must go through `lockedClimate.ts`'s `nodeLatLon`, which
+   * prefers these and falls back to the grid derivation. */
+  nodeLatDeg?: number[];
+  nodeLonDeg?: number[];
   sea_level_m: number;
   elevation_m: number[];
   /** Whether each tile is ocean (sea level baked in) — row-major, matching `elevation_m`. */
@@ -200,6 +211,24 @@ export interface RegionScene {
   /** Waterfall sites: sparse lat/lon points, not grid-aligned (The
    * Freshwater). */
   waterfalls: Waterfall[];
+  /** Diurnal (day/night) temperature half-amplitude per node, °C — the same
+   * quantity `TilesScene.tDiurnalAmpC` carries, under the same property name
+   * so the temperature lens reads either source identically. Added in
+   * `world-wasm-v14`: The Cascade made the base globe patch-served, and
+   * without this the temperature lens crashed on every base tile. */
+  tDiurnalAmpC: number[];
+  /** Annual precipitation per node, mm/yr — the region counterpart of
+   * `TilesScene.precipMmYr`, added in `world-wasm-v14` for the same reason.
+   * The producer interpolates the precipitation itself rather than deriving
+   * it from the interpolated `moisture`, since that mapping is nonlinear. */
+  precipMmYr: number[];
+  /** Per-node latitude/longitude, degrees — NOT from the producer. Filled in
+   * client-side by `globe.ts`'s `attachNodeCoords` on arrival, derived from
+   * the tile address this document already carries. See `TilesScene`'s
+   * declaration of the same pair for why a patch needs them and the export
+   * does not. */
+  nodeLatDeg?: number[];
+  nodeLonDeg?: number[];
 }
 
 /** One moon's surface: derived physics + seeded descriptors, from
@@ -708,6 +737,8 @@ export function parseRegion(text: string): RegionScene {
     waterLegend,
     drainage: numberArray(doc, "drainage", nodes),
     waterfalls: waterfalls.map(parseWaterfall),
+    tDiurnalAmpC: numberArray(doc, "t_diurnal_amp_c", nodes),
+    precipMmYr: numberArray(doc, "precip_mm_yr", nodes),
   };
 }
 

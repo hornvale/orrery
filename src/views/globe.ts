@@ -34,10 +34,12 @@ import {
   splitAncestorKeys,
   tileGrid,
   tileKey,
+  unitLatLon,
   type TileId,
   type V3,
 } from './cubeSphere';
 import { createCascade } from './cascade';
+import { regionPatchUnits } from './regionPatch';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { createCurrents } from './currents';
@@ -1070,6 +1072,7 @@ export function createGlobeView(
 
   function onRegion(key: string, region: RegionScene): void {
     cascade.settle(keyToTile(key), true); // the patch arrived: free the slot, retire the tile
+    attachNodeCoords(region);
     regionCache.set(key, region);
     // The tile at `key` may currently be mounted as a base-data slot (same
     // key either way — the leaf selection didn't change) — mark it so the
@@ -1077,6 +1080,29 @@ export function createGlobeView(
     // without a full rebuild. Naturally debounced: several arrivals before
     // the next frame still cost one upgrade each, not a wholesale rebuild.
     pendingUpgrades.add(key);
+  }
+
+  /** Give a freshly-arrived patch its per-node geography.
+   *
+   * A region's nodes are a cube-sphere tile's own lattice, so unlike the
+   * equirect export their coordinates do not follow from a linear index — but
+   * they ARE fully determined by the tile address the patch already carries.
+   * The temperature lens needs them for its diurnal term (which is phased by
+   * local solar time, i.e. by longitude), so compute them once here rather
+   * than per-vertex on every repaint. Mutating the document on arrival keeps
+   * `RegionScene`'s cast to `TilesScene` (the lens' colour SOURCE) honest:
+   * both shapes now answer the same question the same way. */
+  function attachNodeCoords(region: RegionScene): void {
+    const units = regionPatchUnits(region);
+    const lat = new Array<number>(units.length);
+    const lon = new Array<number>(units.length);
+    for (let i = 0; i < units.length; i++) {
+      const { latDeg, lonDeg } = unitLatLon(units[i]!);
+      lat[i] = latDeg;
+      lon[i] = lonDeg;
+    }
+    region.nodeLatDeg = lat;
+    region.nodeLonDeg = lon;
   }
 
   /** A requested patch failed. Settling is not optional: an unsettled tile

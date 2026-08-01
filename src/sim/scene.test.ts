@@ -427,6 +427,8 @@ function validRegion(): Record<string, unknown> {
     water_legend: ['ocean', 'salt-basin', 'river', 'dry-land'],
     drainage: [0.0, 0.0, 0.0, 0.0],
     waterfalls: [],
+    t_diurnal_amp_c: [2.0, 2.0, 2.0, 2.0],
+    precip_mm_yr: [900.0, 900.0, 900.0, 900.0],
   };
 }
 

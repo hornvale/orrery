@@ -17,8 +17,16 @@ export const REFERENCE_RADIUS_M = 6.371e6;
 
 /** The tile-grid array fields `sampleTile` can index into — every
  * `TilesScene` field that is a flat, row-major per-tile layer. */
+// `-?` strips optionality from the mapped result: without it an OPTIONAL
+// field on `TilesScene` (the region-only `nodeLatDeg`/`nodeLonDeg`) makes the
+// corresponding mapped property optional too, so indexing the map yields
+// `... | undefined` and `undefined` lands in this union — which then cannot
+// index `TilesScene`. The condition still excludes those fields on its own
+// (`number[] | undefined` does not extend `readonly unknown[]`), which is
+// correct: they are a region patch's per-node lattice, not an equirect layer
+// `sampleTile` can address by (lat, lon).
 type TileArrayKey = {
-  [K in keyof TilesScene]: TilesScene[K] extends readonly unknown[] ? K : never;
+  [K in keyof TilesScene]-?: TilesScene[K] extends readonly unknown[] ? K : never;
 }[keyof TilesScene];
 
 /** Row-major index into any `scene/tiles/v1` per-tile layer at `(lat, lon)`:

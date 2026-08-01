@@ -20,7 +20,10 @@ const LAPSE_C_PER_M = 6.5 / 1000;
 
 /** The tile-grid fields `lockedTemperatureAt` needs beyond the equirect
  * `width`/`height` addressing. */
-export type LockedTemperatureSource = Pick<TilesScene, "width" | "height" | "elevation_m" | "sea_level_m">;
+export type LockedTemperatureSource = Pick<
+  TilesScene,
+  "width" | "height" | "elevation_m" | "sea_level_m" | "nodeLatDeg" | "nodeLonDeg"
+>;
 
 /** The tile lattice's per-index (lat, lon) center, degrees — the inverse of
  * `windows/scene/src/lib.rs`'s forward pixel-center mapping (`latitude =
@@ -31,6 +34,22 @@ function tileLatLon(width: number, height: number, i: number): { lat: number; lo
   const lat = 90 - ((row + 0.5) / height) * 180;
   const lon = ((col + 0.5) / width) * 360 - 180;
   return { lat, lon };
+}
+
+/** Node `i`'s geographic coordinates, for either kind of source.
+ *
+ * The tiles export is an equirect grid, so `tileLatLon` derives them from the
+ * linear index. A **region patch** is not on that grid at all — its nodes are
+ * a cube-sphere tile's own lattice — so a patch carries `nodeLatDeg`/
+ * `nodeLonDeg` computed from its tile address (`globe.ts`, on receipt), and
+ * they win when present. Before The Cascade this distinction did not arise:
+ * only the export ever reached the temperature lens. */
+function nodeLatLon(tiles: LockedTemperatureSource, i: number): { lat: number; lon: number } {
+  const { nodeLatDeg, nodeLonDeg } = tiles;
+  if (nodeLatDeg !== undefined && nodeLonDeg !== undefined) {
+    return { lat: nodeLatDeg[i]!, lon: nodeLonDeg[i]! };
+  }
+  return tileLatLon(tiles.width, tiles.height, i);
 }
 
 /** Unit vector for a (lat, lon) in degrees — same convention as
@@ -68,7 +87,7 @@ export function lockedTemperatureAt(
   yearPhaseOffset: number,
   insolation: number,
 ): number {
-  const { lat, lon } = tileLatLon(tiles.width, tiles.height, i);
+  const { lat, lon } = nodeLatLon(tiles, i);
   const p = latLonToUnit(lat, lon);
   const subLat = obliquityDeg * Math.sin(TAU * frac(day / seasonPeriodDays + yearPhaseOffset));
   const subLatRad = (subLat * Math.PI) / 180;
@@ -145,7 +164,7 @@ export function lensTemperatureAt(tiles: TilesScene, i: number, day: number, ctx
   const seasonDay = ctx.seasonDayOverride ?? day;
   const yearPhase = frac(seasonDay / tiles.season_period_days + ctx.yearPhaseOffset);
   const dayFraction = frac(day);
-  const { lat, lon } = tileLatLon(tiles.width, tiles.height, i);
+  const { lat, lon } = nodeLatLon(tiles, i);
   return (
     base + tiles.tDiurnalAmpC[i]! * diurnalWaveform(lat, lon, ctx.obliquityDeg, yearPhase, dayFraction, ctx.dayLengthStd)
   );

@@ -37,7 +37,7 @@ implementations are pinned to each other, not hoped to agree.
 locally you build/fetch it yourself before tests will pass:
 
 ```bash
-npm run wasm:release   # fetch the pinned release (world-wasm-v13) + verify sha
+npm run wasm:release   # fetch the pinned release (world-wasm-v14) + verify sha
 npm run wasm:local     # OR copy a local hornvale world-wasm build
 ```
 

@@ -48,5 +48,5 @@ npm run build
 build the catalog there first with `make wasm-world`.
 
 Release consumption: CI and the live Pages deploy pin the catalog to
-hornvale release `world-wasm-v13` (`npm run wasm:release`). The pin lives in
+hornvale release `world-wasm-v14` (`npm run wasm:release`). The pin lives in
 that script in `package.json` — the one place it is written down.
