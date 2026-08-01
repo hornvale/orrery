@@ -943,6 +943,29 @@ test('setStyle queues its rebuild instead of re-cutting every mounted tile inlin
   for (const mesh of after.values()) expect(mesh.geometry.getIndex()).toBeNull();
 });
 
+test('__buildPending reports the queue depth synchronously — the readiness signal e2e polls instead of sleeping', () => {
+  const view = createGlobeView(markerTiles([]), spinningSys());
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+  const pending = (): number | undefined => (globalThis as { __buildPending?: number }).__buildPending;
+  expect(pending()).toBe(0); // settled: every desired tile is mounted
+
+  // The signal must be correct at the instant `setStyle` returns, not only
+  // from the next frame — an out-of-process driver polls right after the
+  // switch, and a stale 0 there is exactly the race a fixed sleep hides.
+  view.setStyle('voxel');
+  expect(pending()).toBe(6 * 4 ** LOD_MIN_LEVEL);
+
+  // One frame drains at most MAX_BUILDS_PER_FRAME, so the signal is still
+  // non-zero — "the rebuild has landed" is a frame count, not a duration.
+  view.update(0, camera);
+  expect(pending()).toBeGreaterThan(0);
+
+  pump(view, camera);
+  expect(pending()).toBe(0);
+});
+
 test('setTrueRelief queues its rebuild too, and reseats the markers at once', () => {
   const tiles = markerTiles([{ name: 'Alpha', kind: 'settlement', latitude: 45, longitude: 10 }]);
   const view = createGlobeView(tiles, spinningSys());

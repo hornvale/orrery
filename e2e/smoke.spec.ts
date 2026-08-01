@@ -1,5 +1,57 @@
 import { expect, test } from '@playwright/test';
 
+/** Wait until the globe has actually finished building, rather than sleeping a
+ * fixed number of milliseconds and hoping.
+ *
+ * The Cascade made every whole-globe rebuild AMORTIZED: `setStyle`,
+ * `setTrueRelief`, the initial base mount and every LOD refine only ENQUEUE,
+ * and `drainBuildQueue` builds at most `MAX_BUILDS_PER_FRAME` (6) tiles per
+ * frame. The base set is 6·4² = 96 tiles, so a style switch needs ~16 frames —
+ * fine at 60 fps, not fine on a loaded box under software WebGL. Any fixed
+ * sleep here is therefore a bet on frame rate, and raising the number only
+ * moves the threshold the bet loses at.
+ *
+ * `globalThis.__buildPending` (globe.ts, alongside `__btCount`/`__swapCount`/
+ * `__slotBuildCount`) is the build queue's depth, written at both enqueue sites
+ * and at the drain — so it is already non-zero when the call that enqueued
+ * returns, and reaching 0 means every tile the current leaf set wants is
+ * mounted.
+ *
+ * Used only where an assertion actually DEPENDS on the rebuild having landed
+ * (the geometry-style roster, the voxel switch before the deep zoom, and the
+ * two roster baselines that later shots are diffed against). The boot sleeps in
+ * the map/vantage tests are left as sleeps on purpose: those tests assert on
+ * the map canvas and on crossfade opacities, never on globe tiles, so making
+ * them block on a full 96-tile drain would buy no correctness and cost every
+ * one of them a real minute on a loaded box.
+ *
+ * Strictly `=== 0` (`undefined` → `-1`): before the globe view exists the hook
+ * is absent, and treating that as ready would reintroduce the very false-pass
+ * this replaces. The trailing double-rAF then guarantees one frame has been
+ * RENDERED with the finished set — which also covers the material-only style
+ * switches (smooth↔faceted) that legitimately enqueue nothing at all.
+ *
+ * `expect.poll`, not `waitForFunction`, on purpose: when it does give up, the
+ * failure reads `expected 0, received 37` — which distinguishes "the box is
+ * slow, it was still draining" from "the queue is wedged" without a rerun.
+ * Measured on a quiet-ish box, the boot drain (96 tiles) takes ~14 s and then
+ * sits at 0; the timeout is a generous multiple of that, and the wait costs
+ * only as many frames as the rebuild actually needs. */
+async function waitForGlobeIdle(
+  page: import('@playwright/test').Page,
+  timeoutMs = 90_000,
+): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => (globalThis as { __buildPending?: number }).__buildPending ?? -1), {
+      timeout: timeoutMs,
+      message: 'the globe build queue never drained',
+    })
+    .toBe(0);
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  );
+}
+
 test('seed 42 boots, renders, and stays console-clean', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -108,6 +160,12 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   // rather than diffing the first iteration against mount state — clicking
   // an already-active lens is a real no-op and must NOT look like a failure.
   await page.locator('.hud-lenses button', { hasText: 'natural' }).click();
+  // The amortized base mount and the refines the rotation above queued must
+  // both have landed before the baseline is fixed — otherwise the baseline is
+  // a half-built globe and every later diff is against the wrong picture.
+  // (The 150ms waits elsewhere in this test are compositor settle for a lens
+  // REPAINT, which `setLens` still does synchronously — a different thing.)
+  await waitForGlobeIdle(page);
   await page.waitForTimeout(150);
   const baselineShot = await fingerprint();
   const baselineCaption = await caption.textContent();
@@ -168,8 +226,9 @@ test('the globe geometry styles: every .hud-style option renders the globe non-b
   for (const style of ['smooth', 'voxel', 'terraced', 'faceted']) {
     await styleSelect.selectOption(style);
     await expect(globeCanvas).toBeVisible();
-    // Let the rebuild land before sampling.
-    await page.waitForTimeout(400);
+    // The rebuild is amortized across frames — wait for the queue to drain,
+    // not for a fixed 400ms (see `waitForGlobeIdle`).
+    await waitForGlobeIdle(page);
     const shot = await globeCanvas.screenshot();
     // A geometry rebuild that throws (or a style that renders nothing) still
     // yields a compositor frame, but a blank/degenerate one compresses to a
@@ -195,7 +254,7 @@ test('the globe deep zoom: wheel-zooming to the new near limit in voxel style do
   await page.locator('.hud-bottom button').first().click();
 
   await page.locator('.hud-style').selectOption('voxel');
-  await page.waitForTimeout(300);
+  await waitForGlobeIdle(page); // the voxel rebuild is queued, ~16 frames of it
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
   const box = (await globeCanvas.boundingBox())!;
@@ -214,7 +273,12 @@ test('the globe deep zoom: wheel-zooming to the new near limit in voxel style do
     await page.mouse.wheel(0, -220);
     await page.waitForTimeout(60);
   }
-  // Let any in-flight region replies/rebuilds land.
+  // Let any in-flight region replies land. Deliberately still a fixed wait:
+  // what is outstanding here is WORKER latency (patch requests in the
+  // cascade), not frame-paced builds — there is no build-queue backlog to
+  // drain, and no signal is exposed for the request queue. A patch landing
+  // after this only sharpens a tile that is already mounted, so it cannot
+  // blank the frame this test asserts on.
   await page.waitForTimeout(2_000);
 
   await expect(globeCanvas).toBeVisible();
@@ -251,7 +315,7 @@ async function waitForOpacities(
 test('the map rung: the dropdown crosses to the flat map and back', async ({ page }) => {
   await page.goto('#seed=42&view=globe&day=0.1');
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(800); // a settle; this test asserts on the MAP, not on globe tiles
   // pause the clock (same idiom as the other tests)
   await page.locator('.hud-bottom button').first().click();
 
@@ -292,7 +356,7 @@ test('the vantage: a full round-trip through the dropdown', async ({ page }) => 
 test('the vantage: the wheel no longer switches views, only zooms', async ({ page }) => {
   await page.goto('#seed=42&view=globe&day=0.1');
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(800); // a settle; this test asserts on canvas OPACITIES, not globe tiles
   // pause the clock (same idiom as the other tests)
   await page.locator('.hud-bottom button').first().click();
 
@@ -332,6 +396,9 @@ test('the diorama: every .hud-map-style option renders the map non-blank (The Di
   // by selecting Globe first (sets the center the map will show) and then
   // Map from the HUD dropdown, same as the round-trip test above.
   await page.locator('.hud-view').selectOption('globe');
+  // A settle before crossing to the map, not a readiness dependency: nothing
+  // this test asserts reads the globe's tiles (it screenshots the MAP), so it
+  // does not pay for a full 96-tile drain.
   await page.waitForTimeout(2_500);
   await page.locator('.hud-view').selectOption('map');
   await page.waitForTimeout(3_000); // region fetch + mount
@@ -367,6 +434,9 @@ test('the diorama: switching back to pixel restores the flat map (The Diorama, T
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
 
   await page.locator('.hud-view').selectOption('globe');
+  // A settle before crossing to the map, not a readiness dependency: nothing
+  // this test asserts reads the globe's tiles (it screenshots the MAP), so it
+  // does not pay for a full 96-tile drain.
   await page.waitForTimeout(2_500);
   await page.locator('.hud-view').selectOption('map');
   await page.waitForTimeout(3_000);
@@ -394,6 +464,9 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   // Map is not URL-addressable — reach it via globe first (same idiom as
   // the diorama tests above).
   await page.locator('.hud-view').selectOption('globe');
+  // A settle before crossing to the map, not a readiness dependency: nothing
+  // this test asserts reads the globe's tiles (it screenshots the MAP), so it
+  // does not pay for a full 96-tile drain.
   await page.waitForTimeout(2_500);
   await page.locator('.hud-view').selectOption('map');
   await page.waitForTimeout(3_000);
@@ -461,6 +534,10 @@ test('the style roster: every render style renders the globe non-blank and trans
   expect(await styleButtons.count()).toBeGreaterThanOrEqual(5);
 
   await page.locator('[data-style="photoreal"]').click();
+  // These styles are screen-space post-process, not tile geometry — but the
+  // baseline still has to be a FULLY BUILT globe, or the later diffs record
+  // the amortized mount finishing rather than the style transforming.
+  await waitForGlobeIdle(page);
   await page.waitForTimeout(250);
   const photoreal = await globeCanvas.screenshot();
   expect(photoreal.length).toBeGreaterThan(5_000);

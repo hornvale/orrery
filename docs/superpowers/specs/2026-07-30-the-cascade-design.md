@@ -1,7 +1,7 @@
 # The Cascade — Design
 
 **Date:** 2026-07-30
-**Status:** Draft — not started
+**Status:** Shipped 2026-07-31
 **Parent contracts:** hornvale `windows/scene/src/region.rs` (`tiles_region_scene_in`, `RegionAddr`) and `clients/world-wasm/src/lib.rs` (`hw_scene_tiles_region`, `SCENE_CTX`), both at hornvale release `world-wasm-v13`. The Massing (CDLOD `selectTiles`, skirts, `LOD_CDLOD_MAX_LEVEL = 6`) and The Region (`scene/tiles-region/v1`, `regionPatch.ts`) are the direct ancestors — this campaign generalizes the region path from a near-camera treatment to the globe's own base.
 **Upstream work required:** none to start. Sections 5 and 8.2 name producer-side gaps that bound how far this can go, but the cascade as specced here runs entirely against v13 as shipped.
 

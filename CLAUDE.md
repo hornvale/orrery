@@ -72,7 +72,8 @@ root-cache browser is invisible to the test run).
 - `src/views/` — the three.js layer: `globe.ts` (the world), `ocean.ts`,
   `winds.ts`, `ice.ts`, `lens.ts` (+ `colormap.ts`, `biomePalette.ts`),
   `moonShading.ts`/`moonTexture.ts`, `starfield.ts`, `system.ts`, and the LOD
-  scaffolding `cubeSphere.ts` / `worldMesh.ts` / `regionPatch.ts` / `scale.ts`
+  scaffolding `cubeSphere.ts` / `worldMesh.ts` / `regionPatch.ts` /
+  `cascade.ts` (the region-request scheduler) / `scale.ts`
   / `zoom.ts`.
 - `src/ui/` — `hud.ts`, `inspect.ts`, `seed.ts`, `infoCard.ts`.
 - `src/state/url.ts` — deep-link state (seed/view/day in the hash).
@@ -116,19 +117,52 @@ Mixed-level boundaries are crack-filled by **skirts** — `buildTileGeometry`'s
 when neighbours match. The whole geometry pipeline is keyed by tile slot, so a
 rebuild at any mix of levels is mechanical.
 
-**Region patches (true detail).** Near tiles at level ≥ `REGION_MIN_LEVEL`
-render from the producer's `scene/tiles-region/v1` patch (terrain re-sampled at
-the tile's own grid, not interpolated from the 512-wide export). The globe
-requests a tile's region async through `main`'s worker bridge (`requestRegion`
-→ `{type:'region'}` message → the persisted post-genesis catalog serves it →
-`globe.onRegion` caches it → the next reselect rebuilds that tile). Region tiles
-mesh through the same `buildGridGeometry`/skirt core as base tiles, and colour
-through the lens via a per-tile colour SOURCE (`RegionScene` carries the fields
-`colorAt`/`iceFraction` read). Gated to spinning worlds (the locked-temperature
-lens needs `width`/`height` a patch lacks).
+**The base globe is region-served (The Cascade).** `REGION_MIN_LEVEL` is **0**
+— *every* tile the globe can show, base set included, renders from the
+producer's `scene/tiles-region/v1` patch (terrain re-sampled at the tile's own
+grid) rather than resampled from the equirect export. `LOD_MIN_LEVEL` is **2**,
+so the base set is 6·4² = 96 tiles and the four equatorial faces resolve a
+1024-column lattice. The globe requests a tile's patch async through `main`'s
+worker bridge (`requestRegion` → `{type:'region'}` message → the persisted
+post-genesis catalog serves it → `globe.onRegion` caches it → the next reselect
+swaps that tile in place). Region tiles mesh through the same
+`buildGridGeometry`/skirt core as base tiles and colour through the lens via a
+per-tile colour SOURCE (`RegionScene` carries the fields `colorAt`/`iceFraction`
+read). Still gated to spinning worlds (`regionsEnabled`): a **tidally locked**
+world gets no patches at all and renders from the export alone at every level.
 
-**Still open (unblocked, client-side):** CDLOD levels past a region's own
-`samples` (requested at `TILE_QUADS`) re-interpolate — raising the requested
-`samples` for the deepest tiles is the future knob. Also a rebuild throttle if
-an unfrozen diurnal spin while zoomed-in ever churns rebuilds (freeze-spin is
-the current answer).
+**The scheduler** (`src/views/cascade.ts`, pure — no three.js, no globe state)
+owns which patch is asked for next: dedupe, camera-facing-first ordering
+(`reprioritize` sorts what has not been dealt yet), an outstanding-request cap
+(`CASCADE_MAX_IN_FLIGHT`, small on purpose so the queue stays re-orderable), and
+a bounded retry — a failed request is re-queued until `CASCADE_MAX_ATTEMPTS`,
+then retired. Retry exists because a permanently-failed patch is now a coarse
+tile in the DEFAULT view, not just missing deep-zoom detail.
+
+**The export is demoted to an overlay.** `TILES_WIDTH_OVERLAY = 256`
+(`src/sim/tilesWidth.ts`): the export now carries only what a patch cannot —
+cloud type, ocean currents, settlement features, and the `width`/`height` the
+locked-temperature evaluator needs. Locked worlds keep `TILES_WIDTH_LOCKED =
+512`, since for them the export IS the globe.
+
+**Rebuilds are amortized.** No whole-globe event builds inline: `applyTileSet`,
+`enqueueRebuildAll` (`setStyle` across geometry families, `setTrueRelief`) and
+the initial base mount only ENQUEUE, and `drainBuildQueue` builds at most
+`MAX_BUILDS_PER_FRAME` (6) tiles per frame under a time budget. Undesired tiles
+stay rendered as "retiring" until their replacements mount, so a refine never
+opens a hole. Consequence for anything driving the globe from outside: **"the
+rebuild finished" is a frame count, not a duration** — poll
+`globalThis.__buildPending` (the queue depth, 0 = every desired tile mounted)
+rather than sleeping. e2e's `waitForGlobeIdle` is the worked example.
+
+**Still open:** (1) CDLOD levels past a region's own `samples` (requested at
+`TILE_QUADS`) re-interpolate — raising the requested `samples` for the deepest
+tiles is the future knob, untouched by The Cascade. (2) Region-doc parity for
+**locked worlds**: they cannot use patches at all until the producer adds
+`width`/`height` to `scene/tiles-region/v1` — a producer-side change in
+`hornvale/windows/scene`, not a client one. (3) `coveringMounted` only looks one
+level up/down, a pre-existing latent bug that is what blocks meshing a level-0
+export seed. (4) Before a tile's patch lands, the globe meshes that 1024-column
+lattice over 256 columns of export data — it is smoother-LOOKING than its data
+for those frames. Also still open: a rebuild throttle if an unfrozen diurnal
+spin while zoomed-in ever churns rebuilds (freeze-spin is the current answer).

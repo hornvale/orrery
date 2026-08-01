@@ -796,6 +796,27 @@ export function createGlobeView(
   const BUILD_BUDGET_MS = 5; // per-frame time budget (governs production pacing)
   const MAX_BUILDS_PER_FRAME = 6; // hard count cap (governs when builds are ~free, e.g. tests)
 
+  /** Publish the build queue's depth (same `globalThis` instrumentation pattern
+   * as `__btCount`/`__swapCount`/`__slotBuildCount`). `0` means every tile the
+   * current leaf set wants is MOUNTED — the readiness signal an out-of-process
+   * driver (e2e) polls instead of sleeping a fixed number of milliseconds after
+   * a style switch or a refine. Since the builds are paced at
+   * `MAX_BUILDS_PER_FRAME`, "how long a rebuild takes" is a frame count, not a
+   * wall-clock duration, and any fixed sleep is a bet on frame rate.
+   *
+   * Deliberately the QUEUE only, not `retiringKeys`: a retiring tile is still
+   * rendered (that is the point of deferring its disposal), so it never blocks
+   * visual readiness — and `coveringMounted` can strand one (it only looks one
+   * level up/down), which would make a signal that counted them never reach 0.
+   *
+   * Written wherever the queue's depth changes — the two enqueue sites and the
+   * drain — so it is correct SYNCHRONOUSLY with the call that enqueues, not
+   * only from the next animation frame. A driver that polls right after
+   * `setStyle` must not read a stale `0` from the previous frame's drain. */
+  function noteBuildPending(): void {
+    (globalThis as { __buildPending?: number }).__buildPending = buildQueue.length;
+  }
+
   const keyToTile = (key: string): TileId => {
     const [face, level, ix, iy] = key.split(':').map(Number) as [number, number, number, number];
     return { face, level, ix, iy };
@@ -857,6 +878,7 @@ export function createGlobeView(
     }
     currentSelected = selected;
     currentSignature = signatureOf(selected);
+    noteBuildPending();
     const g = globalThis as { __btCount?: number; __btMs?: number };
     g.__btCount = (g.__btCount ?? 0) + 1;
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
@@ -892,6 +914,7 @@ export function createGlobeView(
       buildQueue.push(t);
       queuedKeys.add(key);
     }
+    noteBuildPending();
   }
 
   /** Build a few queued tiles under a per-frame time budget, then dispose any
@@ -925,6 +948,7 @@ export function createGlobeView(
         built.push(key);
       } while (buildQueue.length > 0 && built.length < MAX_BUILDS_PER_FRAME && performance.now() - t0 < budgetMs);
       if (built.length > 0) repaintSlots(built);
+      noteBuildPending();
       if (swaps > 0) {
         const g = globalThis as { __swapCount?: number };
         g.__swapCount = (g.__swapCount ?? 0) + swaps;
