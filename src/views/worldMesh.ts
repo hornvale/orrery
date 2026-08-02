@@ -8,7 +8,12 @@ import * as THREE from 'three';
 import type { RegionScene, TilesScene } from '../sim/scene';
 import type { RGB } from './lens';
 import { TILE_QUADS, faceUnit, tileGrid, unitFromLatLon, unitLatLon, type TileId } from './cubeSphere';
-import { nearestRegionNodeIndex, regionPatchUnits, sampleRegionElevationBilinear } from './regionPatch';
+import {
+  nearestRegionNodeIndex,
+  regionContains,
+  regionPatchUnits,
+  sampleRegionElevationBilinear,
+} from './regionPatch';
 
 /** Reference body radius (Earth's, meters) used only to turn raw elevation
  * meters into a *fraction* of a rendered radius before exaggerating — not a
@@ -183,6 +188,10 @@ export function buildRegionTileGeometry(
       return [latDeg, lonDeg];
     },
     radiusAtLatLon,
+    // The patch's own bounds: outside them `sampleRegionElevationBilinear`
+    // clamps, so the normal probe must step inward instead of reading a
+    // flat-lie. See `analyticNormal`.
+    (lat, lon) => regionContains(region, lat, lon),
   );
 }
 
@@ -870,30 +879,67 @@ export function buildVoxelHeightfieldGeometry(
  * visual pass finds seams or over-smoothing against the shipped data. */
 const NORMAL_PROBE_DELTA_DEG = 0.2;
 
-/** Analytic per-vertex normal at (lat, lon): displace `unit(lat,lon)` and
- * two lat/lon-offset neighbours through the SAME `radiusAtLatLon` the
- * surface itself uses, then take the outward-facing cross product of the
- * two tangents. A pure function of (lat, lon) + the field, so any two
- * callers evaluating the same (lat, lon) — e.g. two same-level tiles
- * sharing a border, or a region patch and the global field it refines —
- * get the bit-identical normal. That's what lets `buildGridGeometry` drop
- * THREE's face-averaged `computeVertexNormals()` (one-sided at tile edges)
- * without a post-hoc cross-tile stitch. */
+/** Analytic per-vertex normal at (lat, lon): displace two lat/lon-offset
+ * neighbours per axis through the SAME `radiusAtLatLon` the surface itself
+ * uses, then take the outward-facing cross product of the two tangents. A
+ * pure function of (lat, lon) + the field, so any two callers evaluating the
+ * same (lat, lon) — e.g. two same-level tiles sharing a border, or a region
+ * patch and the global field it refines — get the bit-identical normal.
+ * That's what lets `buildGridGeometry` drop THREE's face-averaged
+ * `computeVertexNormals()` (one-sided at tile edges) without a post-hoc
+ * cross-tile stitch.
+ *
+ * Each tangent is a CENTRAL difference (±`NORMAL_PROBE_DELTA_DEG`), which is
+ * symmetric about the vertex and so carries none of a forward difference's
+ * half-step bias — the two ends of a shared edge then agree without either
+ * side having to know which one it is.
+ *
+ * `hasData`, when given, says whether the field actually holds a value at a
+ * probe point — a REGION patch's own bounds. Where it does not, that half of
+ * the central difference is dropped and the tangent becomes one-sided
+ * INWARD. This is the whole point of the parameter: `sampleRegionElevation*`
+ * clamps outside a patch, so an outward probe reads the edge value twice and
+ * reports a dead-flat slope, and the edge vertex ends up shaded as if the
+ * terrain levelled off exactly at the tile boundary. Stepping inward instead
+ * gives each side of a seam its own true one-sided gradient, and
+ * `stitchNormals`' average of the two IS the central difference across the
+ * boundary — the normal a patch with a one-node halo would have computed
+ * directly. Only the tangents' DIRECTIONS matter (the cross product is
+ * normalized), so mixing a central tangent on one axis with a one-sided one
+ * on the other needs no rescaling. */
 function analyticNormal(
   lat: number,
   lon: number,
   radiusAtLatLon: (lat: number, lon: number) => number,
+  hasData?: (lat: number, lon: number) => boolean,
 ): [number, number, number] {
   const displaced = (la: number, lo: number): [number, number, number] => {
     const [ux, uy, uz] = unitFromLatLon(la, lo);
     const r = radiusAtLatLon(la, lo);
     return [ux * r, uy * r, uz * r];
   };
-  const p = displaced(lat, lon);
-  const pLon = displaced(lat, lon + NORMAL_PROBE_DELTA_DEG);
-  const pLat = displaced(lat + NORMAL_PROBE_DELTA_DEG, lon);
-  const tLon: [number, number, number] = [pLon[0] - p[0], pLon[1] - p[1], pLon[2] - p[2]];
-  const tLat: [number, number, number] = [pLat[0] - p[0], pLat[1] - p[1], pLat[2] - p[2]];
+  /** The tangent pointing along +`dLat`/+`dLon`, from whichever of the two
+   * probe points the field has data for (both → central, one → one-sided
+   * inward).
+   *
+   * NEITHER is possible, at exactly the four CORNER vertices of a patch: the
+   * corner sits on two edges at once, and a step along one lat/lon axis can
+   * leave through one edge while the opposite step leaves through the other.
+   * There the plain forward difference stands — the same clamped, slightly
+   * flattened normal every patch edge had before this predicate existed.
+   * Four vertices per patch, each shared with (and averaged against) the
+   * three other patches meeting at that corner by `stitchNormals`; the
+   * alternative, a zero-length tangent, would collapse the cross product to a
+   * black, unlit vertex. */
+  const tangent = (dLat: number, dLon: number): [number, number, number] => {
+    const forward = hasData === undefined || hasData(lat + dLat, lon + dLon);
+    const backward = hasData === undefined || hasData(lat - dLat, lon - dLon);
+    const ahead = forward || !backward ? displaced(lat + dLat, lon + dLon) : displaced(lat, lon);
+    const behind = backward ? displaced(lat - dLat, lon - dLon) : displaced(lat, lon);
+    return [ahead[0] - behind[0], ahead[1] - behind[1], ahead[2] - behind[2]];
+  };
+  const tLon = tangent(0, NORMAL_PROBE_DELTA_DEG);
+  const tLat = tangent(NORMAL_PROBE_DELTA_DEG, 0);
   let nx = tLon[1] * tLat[2] - tLon[2] * tLat[1];
   let ny = tLon[2] * tLat[0] - tLon[0] * tLat[2];
   let nz = tLon[0] * tLat[1] - tLon[1] * tLat[0];
@@ -926,6 +972,7 @@ function buildGridGeometry(
   skirtDepth: number,
   latLonAt: (i: number) => readonly [number, number],
   radiusAtLatLon: (lat: number, lon: number) => number,
+  hasData?: (lat: number, lon: number) => boolean,
 ): THREE.BufferGeometry {
   // Growable arrays (the skirt appends past the n×n surface grid).
   const pos: number[] = [];
@@ -938,7 +985,7 @@ function buildGridGeometry(
     const rgb = colorOf(i);
     col.push(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
     const [lat, lon] = latLonAt(i);
-    const [nx, ny, nz] = analyticNormal(lat, lon, radiusAtLatLon);
+    const [nx, ny, nz] = analyticNormal(lat, lon, radiusAtLatLon, hasData);
     nrmArr.push(nx, ny, nz);
   }
   const q = n - 1;
@@ -1061,12 +1108,21 @@ export function buildFaceGeometry(
  * vertex position ends up with one shared normal. Analytic normals already
  * make BASE tiles agree by construction (both sides probe the same global
  * field), so this is NOT needed there. It IS needed across adjacent REGION
- * patches: `sampleRegionElevation` clamps its probe to a patch's own bounds,
- * so a patch's edge vertex sees zero outward slope while its neighbour sees
- * the real interior slope — the two one-sided normals disagree and the
- * directional light draws a shading crease (worst at 60× relief). The
- * proper cure is a 1-node halo in the region export, which needs the wasm
- * producer; until then this pass stands in for it.
+ * patches: `sampleRegionElevation*` clamps outside a patch's own bounds, so
+ * neither side of a shared edge can see across it and each computes a
+ * one-sided normal from its own interior. The two disagree, and the
+ * directional light draws a shading crease (worst at 60× relief). The proper
+ * cure is a 1-node halo in the region export, which needs the wasm producer;
+ * until then this pass stands in for it.
+ *
+ * It stands in well, because the two values it averages are the two halves of
+ * the answer: `analyticNormal` steps its probe INWARD at a patch bound, so
+ * each side contributes its own true one-sided gradient and the average
+ * reconstructs the central difference across the boundary — the normal a
+ * haloed patch would have computed directly. (Before that inward step the
+ * outward side contributed a clamped, dead-flat slope instead, and the
+ * average came out at roughly half the true tilt — agreement, but on a wrong
+ * value, which is what drew the visible line along every tile boundary.)
  *
  * Visits only each geometry's `stitchCandidateIndices` — its border and skirt
  * vertices, the only ones that can coincide with another tile's. The interior

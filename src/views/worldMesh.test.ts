@@ -676,9 +676,11 @@ describe('buildFaceGeometry', () => {
 // (both sides derive the normal from the same pure function of (lat, lon) + the
 // GLOBAL elevation field). This deleted the old O(all-vertices) `stitchNormals`
 // pass for base tiles. It does NOT hold for region patches (see the region test
-// at the end of this block): `sampleRegionElevation` clamps its probe to the
-// patch's own bounds, so a scoped `stitchNormals` over the mounted region set
-// survives for exactly that case.
+// at the end of this block): `sampleRegionElevation*` clamps outside a patch's
+// own bounds, so neither side of a shared edge can see across it and each
+// computes its own one-sided normal. A scoped `stitchNormals` over the mounted
+// region set survives for exactly that case — averaging the two one-sided
+// halves back into the central difference.
 
 /** A region patch whose elevation rises linearly west→east across the WHOLE
  * face (via the tile's global column offset `ix*samples + col`), so two
@@ -790,6 +792,43 @@ describe('analytic normals (buildGridGeometry)', () => {
       expect(nrmA.getY(ia)).toBeCloseTo(nrmB.getY(ib), 6);
       expect(nrmA.getZ(ia)).toBeCloseTo(nrmB.getZ(ib), 6);
     }
+  });
+
+  it('a slope continuing across a region-patch boundary does not crease the stitched seam normal', () => {
+    // Agreeing is not enough: the stitch makes both sides of the seam hold the
+    // SAME normal, but until the probe steps inward at the patch bound that
+    // shared value is the average of one real one-sided slope and one
+    // degenerate (clamped, zero-slope) one — i.e. half the true tilt. On a
+    // ramp that runs straight through the boundary the true normal at the seam
+    // is the one its own row already has, so any crease here is the artifact,
+    // and 60× relief is what turns it into a visible line on the globe.
+    //
+    // Level 1 (not the sibling test's level 3): a level-1 patch's cells are
+    // ~0.7° wide, comfortably wider than the 0.2° probe, so every interior
+    // probe reads one cell's own constant gradient and the interior normal is
+    // steady column to column. That steadiness is what makes "the seam should
+    // look like its neighbours" a sharp assertion instead of a noisy one — at
+    // level 3 the cell (~0.18°) and the probe are the same size and the
+    // interior normal itself alternates by ~10°.
+    const samples = 64; // TILE_QUADS
+    const gA = buildRegionTileGeometry(slopedRegion(0, 1, 0, 0, samples), 2, 60, ignoreColor);
+    const gB = buildRegionTileGeometry(slopedRegion(0, 1, 1, 0, samples), 2, 60, ignoreColor);
+    stitchNormals([gA, gB]);
+    const n = samples + 1;
+    const nrm = gA.getAttribute('normal');
+    const tiltBetween = (i: number, j: number): number => {
+      const a = new THREE.Vector3().fromBufferAttribute(nrm, i);
+      const b = new THREE.Vector3().fromBufferAttribute(nrm, j);
+      return (a.angleTo(b) * 180) / Math.PI;
+    };
+    const row = 32;
+    const seam = row * n + samples; // A's east edge — the shared border
+    const in1 = row * n + (samples - 1);
+    const in2 = row * n + (samples - 2);
+    // How much the normal legitimately drifts from one column to the next on
+    // this ramp — the yardstick the seam step has to stay within.
+    const interiorDrift = tiltBetween(in1, in2);
+    expect(tiltBetween(seam, in1)).toBeLessThan(interiorDrift + 1);
   });
 });
 
