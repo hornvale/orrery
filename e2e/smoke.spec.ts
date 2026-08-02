@@ -18,8 +18,10 @@ import { expect, test } from '@playwright/test';
  * mounted.
  *
  * Used only where an assertion actually DEPENDS on the rebuild having landed
- * (the geometry-style roster, the voxel switch before the deep zoom, and the
- * two roster baselines that later shots are diffed against). The boot sleeps in
+ * (the geometry-style roster, the voxel switch before the deep zoom, the two
+ * roster baselines that later shots are diffed against, and the helm's
+ * inspector click — a raycast can only hit a tile that is MOUNTED, so a click
+ * during the boot drain picks empty space). The boot sleeps in
  * the map/vantage tests are left as sleeps on purpose: those tests assert on
  * the map canvas and on crossfade opacities, never on globe tiles, so making
  * them block on a full 96-tile drain would buy no correctness and cost every
@@ -71,6 +73,9 @@ test('seed 42 boots, renders, and stays console-clean', async ({ page }) => {
 });
 
 test('the helm: true scale, inspector, and the capped globe clock', async ({ page }) => {
+  // Genesis's 150s allowance plus a full base-set mount before the inspector
+  // click no longer fits the 180s default.
+  test.setTimeout(240_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));
@@ -92,7 +97,12 @@ test('the helm: true scale, inspector, and the capped globe clock', async ({ pag
   await page.getByRole('button', { name: 'schematic scale' }).click();
 
   // The inspector: the globe fills the viewport center — clicking it is a
-  // world card, deterministically.
+  // world card, deterministically. The raycast can only hit a MOUNTED tile,
+  // and the base set arrives over frames, so this waits on the queue rather
+  // than on luck: measured under a 6x CPU throttle, the click landed with 92
+  // of 96 tiles still unbuilt and picked empty space (the card stayed ""),
+  // which is precisely how this read on CI.
+  await waitForGlobeIdle(page);
   await page.locator('canvas.view-canvas').nth(1).click({ position: { x: 640, y: 360 } });
   await expect(page.locator('.info-card')).toContainText('the world');
   await page.keyboard.press('Escape');
@@ -193,7 +203,12 @@ test('the lens roster: every lens repaints the globe and updates its own caption
 });
 
 test('the globe geometry styles: every .hud-style option renders the globe non-blank (The Massing, Task 7)', async ({ page }) => {
-  test.setTimeout(240_000);
+  // Three of the four styles cross a geometry family, and each of those re-cuts
+  // the whole 95-tile selection through the amortized queue. Measured under a
+  // 6x CPU throttle: ~38s, ~40s and ~44s for voxel/terraced/faceted, on top of
+  // the boot mount — 167s total against the old 240s cap, which is why this
+  // was the test that ran out of budget on CI rather than one that hung.
+  test.setTimeout(480_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));

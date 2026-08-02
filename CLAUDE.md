@@ -164,6 +164,17 @@ rebuild finished" is a frame count, not a duration** — poll
 `globalThis.__buildPending` (the queue depth, 0 = every desired tile mounted)
 rather than sleeping. e2e's `waitForGlobeIdle` is the worked example.
 
+**The drain is camera-facing first** (`sortCameraFacingFirst`, shared with the
+cascade so the "what next" order of REQUESTS and of BUILDS cannot drift). This
+matters because the per-frame budget is wall-clock: on a slow box it affords
+**one** build per frame, so a 96-tile base mount spans ~96 frames, and in queue
+order the globe fills in from behind — the surface under the camera arriving
+last. Measured under a 6× CPU throttle, that was a 44 s boot with the centre of
+the globe unclickable throughout (the inspector raycast can only hit a MOUNTED
+tile); facing-first makes the centre clickable at 2.6 s with 84 of 96 tiles
+still pending. The total drain is unchanged — this is purely which frames buy
+which tiles.
+
 **Still open:** (1) CDLOD levels past a region's own `samples` (requested at
 `TILE_QUADS`) re-interpolate — raising the requested `samples` for the deepest
 tiles is the future knob, untouched by The Cascade. (2) Region-doc parity for

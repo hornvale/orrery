@@ -17,6 +17,31 @@ export const CASCADE_MAX_IN_FLIGHT = 4;
 /** Failed-request retries allowed before a tile is given up on. */
 export const CASCADE_MAX_ATTEMPTS = 2;
 
+/** How camera-facing a tile is: the dot of its centre against the camera
+ * direction, NEGATED so a plain ascending sort puts facing tiles first. Both
+ * arguments must be in the same frame — for the globe that is the spinning
+ * local frame the tiles live in, never world. */
+function facingScore(t: TileId, cameraUnit: V3): number {
+  const c = tileCenterUnit(t);
+  return -(c[0] * cameraUnit[0] + c[1] * cameraUnit[1] + c[2] * cameraUnit[2]);
+}
+
+/** Sort tiles camera-facing first, in place.
+ *
+ * Shared with `globe.ts`'s build queue so the two schedulers that decide "what
+ * does the user get next" cannot drift apart: the cascade orders which patches
+ * are REQUESTED, the drain orders which tiles are BUILT, and a globe that asked
+ * for the near hemisphere first but built the far one would spend a slow box's
+ * whole boot budget on geometry nobody can see. */
+export function sortCameraFacingFirst(tiles: TileId[], cameraUnit: V3): void {
+  // Scored once per tile rather than once per comparison: the build queue is
+  // sorted every frame and `tileCenterUnit` allocates, so a comparator that
+  // called it would do ~n·log n allocations per frame instead of n.
+  const scored = tiles.map((t) => ({ t, score: facingScore(t, cameraUnit) }));
+  scored.sort((a, b) => a.score - b.score);
+  for (let i = 0; i < scored.length; i++) tiles[i] = scored[i]!.t;
+}
+
 export interface Cascade {
   /** Add tiles wanting patches. Already-pending, in-flight, and permanently
    * settled tiles are ignored, so callers may submit the same set every
@@ -57,14 +82,6 @@ export function createCascade(opts?: { maxInFlight?: number; maxAttempts?: numbe
   // Camera direction as of the last reprioritize; identity ordering until then.
   let camera: V3 | null = null;
 
-  const score = (t: TileId): number => {
-    if (camera === null) return 0;
-    const c = tileCenterUnit(t);
-    // Dot product against the camera direction: larger = more camera-facing.
-    // Negated so a plain ascending sort puts facing tiles first.
-    return -(c[0] * camera[0] + c[1] * camera[1] + c[2] * camera[2]);
-  };
-
   return {
     submit(tiles) {
       for (const t of tiles) {
@@ -73,11 +90,11 @@ export function createCascade(opts?: { maxInFlight?: number; maxAttempts?: numbe
         queued.add(k);
         queue.push(t);
       }
-      if (camera !== null) queue.sort((a, b) => score(a) - score(b));
+      if (camera !== null) sortCameraFacingFirst(queue, camera);
     },
     reprioritize(cameraUnit) {
       camera = cameraUnit;
-      queue.sort((a, b) => score(a) - score(b));
+      sortCameraFacingFirst(queue, camera);
     },
     next() {
       const out: TileId[] = [];
