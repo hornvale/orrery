@@ -15,7 +15,7 @@ import {
   tileIndexOfVertex,
 } from './globe';
 import { REFERENCE_RADIUS_M } from './worldMesh';
-import { LOD_MIN_LEVEL, TILE_QUADS, children, tileKey, type TileId } from './cubeSphere';
+import { LOD_MIN_LEVEL, TILE_QUADS, children, tileCenterUnit, tileKey, type TileId } from './cubeSphere';
 import { CASCADE_MAX_ATTEMPTS, CASCADE_MAX_IN_FLIGHT } from './cascade';
 import { iceFraction } from './ice';
 import { rotationPhase } from '../sim/ephemeris';
@@ -1023,6 +1023,56 @@ test('__buildPending reports the queue depth synchronously — the readiness sig
 
   pump(view, camera);
   expect(pending()).toBe(0);
+});
+
+test('the build queue drains camera-facing tiles first, so the visible hemisphere mounts before the far side', () => {
+  // The base set is 96 tiles drained at MAX_BUILDS_PER_FRAME, so a boot mount
+  // spans ~16 frames — and on a slow box, where the drain's wall-clock budget
+  // affords one build per frame, ~96 of them. WHICH tiles those frames spend
+  // themselves on is therefore the whole user-visible question: in queue order
+  // the globe fills face-by-face and the surface under the camera can be the
+  // last thing to arrive (nothing to look at, and nothing for the inspector's
+  // raycast to hit). Camera-facing-first is the same ordering `cascade.ts`
+  // already applies to region REQUESTS, now applied to the builds themselves.
+  const sys = spinningSys();
+  const view = createGlobeView(markerTiles([]), sys, [], () => {});
+  // Equatorial and far enough out that the settled leaf set is exactly the
+  // base set — so this is purely about order, not about which tiles are wanted.
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(GLOBE_RADIUS * 40, 0, 0);
+
+  // Tiles live under `spinGroup`, so facing must be judged in the globe's
+  // LOCAL frame — the same transform `reselect` does. A world-frame version of
+  // this test would pass at spin 0 and drift wrong at every other day.
+  const localCam = camera.position
+    .clone()
+    .applyAxisAngle(new THREE.Vector3(0, 0, 1), -seasonalSpinZ(sys, 0, false))
+    .normalize();
+  const facing = (key: string): number => {
+    const [face, level, ix, iy] = key.split(':').map(Number) as [number, number, number, number];
+    const c = tileCenterUnit({ face, level, ix, iy });
+    return c[0] * localCam.x + c[1] * localCam.y + c[2] * localCam.z;
+  };
+
+  // Four camera-ful frames — a fraction of the 96-tile base set, which is the
+  // window this is about. (Construction's own `update(0)` has no camera to
+  // order by and drains one batch blind; that batch is the allowance below.)
+  const MAX_BUILDS_PER_FRAME = 6;
+  for (let i = 0; i < 4; i++) view.update(0, camera);
+
+  const mounted = [...tileMeshesByKey(view).keys()];
+  expect(mounted.length).toBeGreaterThan(MAX_BUILDS_PER_FRAME); // the camera-ful frames did build
+  expect(mounted.length).toBeLessThan(6 * 4 ** LOD_MIN_LEVEL); // …and did NOT finish the set
+
+  // Every tile mounted since the camera was known faces it. Only construction's
+  // blind first batch may sit on the far side, so that is the exact allowance.
+  const farSide = mounted.filter((k) => facing(k) <= 0);
+  expect(farSide.length).toBeLessThanOrEqual(MAX_BUILDS_PER_FRAME);
+
+  // And the tile the user is looking straight at is up — not queued behind the
+  // other five faces. This is the property the inspector's raycast depends on.
+  const nearest = mounted.reduce((a, b) => (facing(a) >= facing(b) ? a : b));
+  expect(facing(nearest)).toBeGreaterThan(0.9);
 });
 
 test('setTrueRelief queues its rebuild too, and reseats the markers at once', () => {

@@ -38,7 +38,7 @@ import {
   type TileId,
   type V3,
 } from './cubeSphere';
-import { createCascade } from './cascade';
+import { createCascade, sortCameraFacingFirst } from './cascade';
 import { regionPatchUnits } from './regionPatch';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
@@ -807,6 +807,12 @@ export function createGlobeView(
   let regionDirtyPending = false; // a region tile built/left since the last stitch
   const BUILD_BUDGET_MS = 5; // per-frame time budget (governs production pacing)
   const MAX_BUILDS_PER_FRAME = 6; // hard count cap (governs when builds are ~free, e.g. tests)
+  // The camera direction the drain orders by, in the globe's LOCAL frame (the
+  // tiles live under `spinGroup`) — written by `reselect`, which computes that
+  // frame for the selection anyway. Mutated in place rather than reassigned so
+  // a per-frame sort costs no allocation.
+  const buildCam: V3 = [0, 0, 0];
+  let buildCamKnown = false; // until the first camera-ful frame: queue order
 
   /** Publish the build queue's depth (same `globalThis` instrumentation pattern
    * as `__btCount`/`__swapCount`/`__slotBuildCount`). `0` means every tile the
@@ -945,6 +951,17 @@ export function createGlobeView(
     // behaviour is unchanged; only the wall-clock sensitivity is removed.
     const budgetMs = (globalThis as { __buildBudgetMs?: number }).__buildBudgetMs ?? BUILD_BUDGET_MS;
     if (buildQueue.length > 0) {
+      // Camera-facing first — the same ordering `cascade.ts` applies to region
+      // REQUESTS, here applied to the builds those patches feed. It matters for
+      // the same reason and more sharply: the budget above buys ONE build per
+      // frame on a slow box, so a 96-tile base mount spans ~96 frames, and in
+      // queue order (face 0 through face 5) the surface under the camera can be
+      // the last thing to arrive — the globe fills in from behind, and until it
+      // does there is nothing to look at and nothing for the inspector's
+      // raycast to hit. Sorting the whole queue each frame, rather than only on
+      // enqueue, is what lets a camera move re-aim the remaining builds; at
+      // ≤ a few hundred tiles it does not register against one tile's build.
+      if (buildCamKnown && buildQueue.length > 1) sortCameraFacingFirst(buildQueue, buildCam);
       const scale = reliefScale();
       const built: string[] = [];
       let swaps = 0;
@@ -1067,6 +1084,13 @@ export function createGlobeView(
     // tiles live under `spinGroup`); as the world turns, this sweeps and the
     // leaf set follows the surface now facing the camera.
     toLocalFrame(camera, localCam);
+    // Hand the drain the same local-frame direction the selection just used,
+    // so this frame's builds are spent on the surface the camera is looking at.
+    const camLen = localCam.length() || 1;
+    buildCam[0] = localCam.x / camLen;
+    buildCam[1] = localCam.y / camLen;
+    buildCam[2] = localCam.z / camLen;
+    buildCamKnown = true;
     const target = selectTiles(
       [localCam.x, localCam.y, localCam.z],
       GLOBE_RADIUS,
