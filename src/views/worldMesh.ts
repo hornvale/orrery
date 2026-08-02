@@ -1009,7 +1009,40 @@ function buildGridGeometry(
     for (const [s, e] of skirtToEdge) nrm.setXYZ(s, nrm.getX(e), nrm.getY(e), nrm.getZ(e));
     nrm.needsUpdate = true;
   }
+
+  // Record which vertices `stitchNormals` needs to look at: only a vertex on this
+  // tile's BORDER can coincide with another tile's. The four edge rows of the
+  // lattice (corners once — double-counting one would bias its own average
+  // toward this tile), plus every skirt vertex, since an adjacent tile drops
+  // its apron from the same shared edge to the same depth and lands on the
+  // same positions. Everything interior is unique to this tile: it would sum
+  // with nothing but itself and be written back the unit vector it already
+  // holds. At the production n=65 that is 516 of 4485 vertices — the rest is
+  // a provable no-op, and skipping it is what keeps the pass affordable now
+  // that the whole base globe is region-served.
+  const border = new Set<number>();
+  for (let i = 0; i < n; i++) {
+    border.add(i); // top row
+    border.add((n - 1) * n + i); // bottom row
+    border.add(i * n); // left column
+    border.add(i * n + (n - 1)); // right column
+  }
+  for (let v = n * n; v < pos.length / 3; v++) border.add(v); // every skirt vertex
+  geom.userData.stitchIndices = Uint32Array.from(border);
   return geom;
+}
+
+/** The vertices of `g` that could coincide with a neighbouring tile's — the
+ * record `buildGridGeometry` leaves behind. Falls back to every vertex for a
+ * geometry built some other way, so `stitchNormals` stays correct (just
+ * slower) on anything that isn't one of our grid tiles. */
+export function stitchCandidateIndices(g: THREE.BufferGeometry): Uint32Array {
+  const recorded = g.userData.stitchIndices as Uint32Array | undefined;
+  if (recorded !== undefined) return recorded;
+  const count = g.getAttribute('position').count;
+  const all = new Uint32Array(count);
+  for (let i = 0; i < count; i++) all[i] = i;
+  return all;
 }
 
 /** Build a whole cube face (the level-0 tile) — the pre-LOD convenience form.
@@ -1033,37 +1066,77 @@ export function buildFaceGeometry(
  * the real interior slope — the two one-sided normals disagree and the
  * directional light draws a shading crease (worst at 60× relief). The
  * proper cure is a 1-node halo in the region export, which needs the wasm
- * producer; until then the caller scopes this pass to the handful of mounted
- * region tiles (never the whole globe — that was the O(all-vertices) cost T2
- * deleted). Keying on the exact float32 position triple is safe because
- * shared edge vertices are built bit-identically (`regionPatchUnits` derives
- * them from the same `param`/`faceUnit`). */
+ * producer; until then this pass stands in for it.
+ *
+ * Visits only each geometry's `stitchCandidateIndices` — its border and skirt
+ * vertices, the only ones that can coincide with another tile's. The interior
+ * is a provable no-op (see that record's comment). This scope is not an
+ * optimization of a pass that was once cheap: The Cascade region-serves the
+ * whole base globe, so the caller's "handful of mounted region tiles" became
+ * ~100 of them, and a whole-lattice walk reintroduced exactly the
+ * O(all-vertices) cost T2 had deleted — measured at 192 ms per call, 51 calls
+ * across a boot-plus-zoom, i.e. 90% of all build-queue time.
+ *
+ * Keying on the exact float32 position triple is safe because shared edge
+ * vertices are built bit-identically (`regionPatchUnits` derives them from the
+ * same `param`/`faceUnit`). */
 export function stitchNormals(geoms: THREE.BufferGeometry[]): void {
-  const sums = new Map<string, [number, number, number]>();
-  const keyAt = (pos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number) =>
-    `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
+  type Sum = [number, number, number];
+  // Position → summed normal, keyed without building a string per vertex: the
+  // old `${x},${y},${z}` cost three number→string conversions and a concat on
+  // every visited vertex, and at ~100 mounted region tiles that allocation was
+  // the bulk of the pass. Nesting Maps on the coordinates themselves is exact
+  // (a float32 widens to a double losslessly, so the bit-identity this
+  // function relies on survives) and keeps `-0` and `+0` colliding, because
+  // `Map` compares keys with SameValueZero just as `${-0}` === "0" did. Hashing
+  // the float32 bit patterns instead would split those two and leave a
+  // hairline seam wherever a coordinate lands exactly on zero.
+  const sums = new Map<number, Map<number, Map<number, Sum>>>();
+  const bucketAt = (x: number, y: number): Map<number, Sum> => {
+    let byY = sums.get(x);
+    if (byY === undefined) {
+      byY = new Map();
+      sums.set(x, byY);
+    }
+    let byZ = byY.get(y);
+    if (byZ === undefined) {
+      byZ = new Map();
+      byY.set(y, byZ);
+    }
+    return byZ;
+  };
+  const accumulators: Sum[][] = [];
   for (const g of geoms) {
     const pos = g.getAttribute('position');
     const nrm = g.getAttribute('normal');
-    for (let i = 0; i < pos.count; i++) {
-      const key = keyAt(pos, i);
-      const s = sums.get(key);
-      if (s) {
-        s[0] += nrm.getX(i);
-        s[1] += nrm.getY(i);
-        s[2] += nrm.getZ(i);
-      } else {
-        sums.set(key, [nrm.getX(i), nrm.getY(i), nrm.getZ(i)]);
+    const candidates = stitchCandidateIndices(g);
+    // Each visited vertex's accumulator, remembered so the write-back pass
+    // below doesn't repeat the lookup.
+    const mine = new Array<Sum>(candidates.length);
+    for (let c = 0; c < candidates.length; c++) {
+      const i = candidates[c]!;
+      const byZ = bucketAt(pos.getX(i), pos.getY(i));
+      const z = pos.getZ(i);
+      let s = byZ.get(z);
+      if (s === undefined) {
+        s = [0, 0, 0];
+        byZ.set(z, s);
       }
+      s[0] += nrm.getX(i);
+      s[1] += nrm.getY(i);
+      s[2] += nrm.getZ(i);
+      mine[c] = s;
     }
+    accumulators.push(mine);
   }
-  for (const g of geoms) {
-    const pos = g.getAttribute('position');
-    const nrm = g.getAttribute('normal') as THREE.BufferAttribute;
-    for (let i = 0; i < pos.count; i++) {
-      const [x, y, z] = sums.get(keyAt(pos, i))!;
+  for (let gi = 0; gi < geoms.length; gi++) {
+    const nrm = geoms[gi]!.getAttribute('normal') as THREE.BufferAttribute;
+    const candidates = stitchCandidateIndices(geoms[gi]!);
+    const mine = accumulators[gi]!;
+    for (let c = 0; c < candidates.length; c++) {
+      const [x, y, z] = mine[c]!;
       const len = Math.hypot(x, y, z) || 1;
-      nrm.setXYZ(i, x / len, y / len, z / len);
+      nrm.setXYZ(candidates[c]!, x / len, y / len, z / len);
     }
     nrm.needsUpdate = true;
   }

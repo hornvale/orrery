@@ -140,6 +140,14 @@ function pump(view: ReturnType<typeof createGlobeView>, camera?: THREE.Camera, n
 const buildCountHost = globalThis as { __slotBuildCount?: number };
 const slotBuilds = (): number => buildCountHost.__slotBuildCount ?? 0;
 
+/** How many whole-globe region stitches `globe.ts` has run — its
+ * `__stitchCount` hook, the same monotonic globalThis counter as
+ * `__slotBuildCount` above, so a test takes a difference against a baseline. */
+const stitchCountHost = globalThis as { __stitchCount?: number; __swapCount?: number };
+const stitches = (): number => stitchCountHost.__stitchCount ?? 0;
+/** Region swaps performed — `globe.ts`'s `__swapCount`, likewise monotonic. */
+const swaps = (): number => stitchCountHost.__swapCount ?? 0;
+
 // Lift the drain's per-frame TIME budget for the whole globe suite so the build
 // queue drains at the count cap (MAX_BUILDS_PER_FRAME) on any machine. Without
 // this, a slow CI box drains ~1 tile/frame while a fast dev box drains ~6, so a
@@ -293,6 +301,53 @@ test('a spinning world keeps the finer LOD_MIN_LEVEL base — the lattice patche
   pump(view, camera);
   expect(tileMeshesByKey(view).size).toBe(6 * 4 ** LOD_MIN_LEVEL);
 });
+
+test('a streaming cascade does not pay a whole-globe region stitch per arriving patch', () => {
+  // `stitchMountedRegions` reconciles normals across ALL mounted region tiles,
+  // so its cost scales with the mounted set, not with what just changed. Firing
+  // it on every drain-completion meant re-stitching the whole globe once per
+  // handful of arriving patches — 51 whole-globe passes across a boot plus a
+  // deep zoom, 90% of all build-queue time, and the terrain-load stutter
+  // itself. It is now deferred up to STITCH_MAX_DEFERRAL_FRAMES while the
+  // cascade is busy.
+  //
+  // Deliberately NOT a "wait for the cascade to go idle" gate: a spinning globe
+  // sweeps new tiles into the leaf set continuously, so at zoom the cascade
+  // need never go quiet, and gating on that would leave the seams permanent.
+  const stitchBase = stitches(); // the counters are monotonic across the suite
+  const swapBase = swaps();
+  const requested: TileId[] = [];
+  const view = createGlobeView(markerTiles([]), spinningSys(), [], (t) => {
+    requested.push(t);
+  });
+  view.setLens(moistureLens); // see regionFixture's doc — the fixture has no ice fields
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0, 0, GLOBE_RADIUS * 40);
+  pump(view, camera);
+
+  // Feed the cascade one frame at a time, delivering everything it asks for as
+  // it asks — so a patch lands, swaps in, and re-dirties the region set on
+  // essentially every frame. This is the streaming boot, slowed to one frame
+  // per step so the deferral window is countable rather than inferred.
+  const FRAMES = 90; // 3 × STITCH_MAX_DEFERRAL_FRAMES
+  let delivered = 0;
+  for (let f = 0; f < FRAMES; f++) {
+    view.update(0, camera);
+    const batch = requested.slice(delivered);
+    delivered = requested.length;
+    for (const t of batch) view.onRegion(tileKey(t), regionFixture(t.face, t.level, t.ix, t.iy, TILE_QUADS));
+  }
+
+  // Non-vacuous: patches genuinely landed and swapped in over those frames.
+  expect(swaps() - swapBase).toBeGreaterThan(20);
+  // ...yet the whole-globe pass ran a handful of times, not once per swap. The
+  // bound is FRAMES / STITCH_MAX_DEFERRAL_FRAMES, plus one for the undelayed
+  // first stitch and one for a frame where the cascade happened to be idle.
+  expect(stitches() - stitchBase).toBeLessThanOrEqual(FRAMES / 30 + 2);
+  // ...and it did keep running: deferral must not become suppression, or the
+  // seams it exists to remove would never be removed at all.
+  expect(stitches() - stitchBase).toBeGreaterThan(0);
+}, 60_000);
 
 test('resumes requesting once delivered patches settle, and a failed patch frees its slot too', () => {
   const requested: TileId[] = [];

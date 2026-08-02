@@ -14,6 +14,7 @@ import {
   quantizeBands,
   sampleElevationBilinear,
   sampleTile,
+  stitchCandidateIndices,
   stitchNormals,
   tileIndex,
 } from './worldMesh';
@@ -788,6 +789,108 @@ describe('analytic normals (buildGridGeometry)', () => {
       expect(nrmA.getX(ia)).toBeCloseTo(nrmB.getX(ib), 6);
       expect(nrmA.getY(ia)).toBeCloseTo(nrmB.getY(ib), 6);
       expect(nrmA.getZ(ia)).toBeCloseTo(nrmB.getZ(ib), 6);
+    }
+  });
+});
+
+// Only a vertex on a tile's BORDER can coincide with another tile's, so the
+// stitch has no business reading the ~88% of the lattice that is interior:
+// an interior position is unique to its tile, sums with nothing but itself,
+// and gets written back the unit vector it already held. Skipping it is what
+// makes the pass affordable now that The Cascade region-serves the whole base
+// globe (`stitchMountedRegions` sees ~100 geometries, not "a handful").
+describe('stitch candidates (the border-only scope)', () => {
+  const skirtless = (): THREE.BufferGeometry =>
+    buildRegionTileGeometry(slopedRegion(0, 3, 0, 0, 8), 2, 60, ignoreColor);
+  const skirted = (): THREE.BufferGeometry =>
+    buildRegionTileGeometry(slopedRegion(0, 3, 0, 0, 8), 2, 60, ignoreColor, 0.01);
+
+  it('records exactly the four edge rows of the lattice, corners counted once', () => {
+    const n = 9; // samples 8 + 1
+    const got = new Set(stitchCandidateIndices(skirtless()));
+    const want = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      want.add(i); // top row
+      want.add((n - 1) * n + i); // bottom row
+      want.add(i * n); // left column
+      want.add(i * n + (n - 1)); // right column
+    }
+    expect(got).toEqual(want);
+    // 4n - 4, not 4n: a double-counted corner would be summed twice into its
+    // own average and bias the stitched normal toward this tile.
+    expect(got.size).toBe(4 * n - 4);
+  });
+
+  it('includes every skirt vertex — an adjacent tile drops its apron from the same edge to the same depth', () => {
+    const geom = skirted();
+    const n = 9;
+    const candidates = stitchCandidateIndices(geom);
+    const total = geom.getAttribute('position').count;
+    expect(total).toBeGreaterThan(n * n); // the fixture really does have a skirt
+    for (let v = n * n; v < total; v++) expect(candidates).toContain(v);
+    expect(new Set(candidates).size).toBe(candidates.length); // no duplicates
+  });
+
+  it('treats -0 and +0 as the same position, as the old string key did', () => {
+    // A cube-sphere face axis can produce a signed zero, and two tiles need not
+    // agree on its sign. The original key was `${x},${y},${z}`, and `${-0}` is
+    // "0", so the two collided. Any faster key must keep that: hashing the
+    // float32 BIT PATTERNS would not (0x80000000 vs 0x00000000) and would leave
+    // a hairline seam wherever a component lands exactly on zero.
+    const mk = (zeroX: number, normal: [number, number, number]): THREE.BufferGeometry => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([zeroX, 1, 0]), 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normal), 3));
+      return g;
+    };
+    const a = mk(0, [1, 0, 0]);
+    const b = mk(-0, [0, 1, 0]);
+
+    stitchNormals([a, b]);
+
+    // Averaged together (not left as two one-sided normals).
+    const half = Math.SQRT1_2;
+    for (const g of [a, b]) {
+      expect(g.getAttribute('normal').getX(0)).toBeCloseTo(half, 6);
+      expect(g.getAttribute('normal').getY(0)).toBeCloseTo(half, 6);
+    }
+  });
+
+  it('falls back to every vertex for a geometry the grid builder did not make', () => {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
+    expect([...stitchCandidateIndices(geom)]).toEqual([0, 1, 2]);
+  });
+
+  it('leaves interior normals bit-identical while still closing the seam', () => {
+    const samples = 64; // TILE_QUADS — see the seam test above for why
+    const gA = buildRegionTileGeometry(slopedRegion(0, 3, 0, 0, samples), 2, 60, ignoreColor);
+    const gB = buildRegionTileGeometry(slopedRegion(0, 3, 1, 0, samples), 2, 60, ignoreColor);
+    const n = samples + 1;
+    const before = Float32Array.from(gA.getAttribute('normal').array);
+
+    stitchNormals([gA, gB]);
+
+    const after = gA.getAttribute('normal').array;
+    const border = new Set(stitchCandidateIndices(gA));
+    let interior = 0;
+    for (let v = 0; v < n * n; v++) {
+      if (border.has(v)) continue;
+      expect(after[3 * v]).toBe(before[3 * v]);
+      expect(after[3 * v + 1]).toBe(before[3 * v + 1]);
+      expect(after[3 * v + 2]).toBe(before[3 * v + 2]);
+      interior++;
+    }
+    expect(interior).toBe((n - 2) * (n - 2)); // the whole interior really was checked
+
+    // ...and the shared edge still agrees (the seam test's assertion, kept
+    // here so a scope regression can't pass by simply doing nothing).
+    const nrmA = gA.getAttribute('normal');
+    const nrmB = gB.getAttribute('normal');
+    for (let row = 0; row < n; row++) {
+      expect(nrmA.getX(row * n + (n - 1))).toBeCloseTo(nrmB.getX(row * n), 6);
+      expect(nrmA.getY(row * n + (n - 1))).toBeCloseTo(nrmB.getY(row * n), 6);
+      expect(nrmA.getZ(row * n + (n - 1))).toBeCloseTo(nrmB.getZ(row * n), 6);
     }
   });
 });

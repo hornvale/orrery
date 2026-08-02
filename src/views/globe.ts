@@ -697,9 +697,18 @@ export function createGlobeView(
    * documents, rather than smoothing across it. */
   function stitchMountedRegions(): void {
     if (activeStyle === 'voxel') return;
+    const t0 = performance.now();
     const regionGeoms: THREE.BufferGeometry[] = [];
     for (const slot of tileSlots.values()) if (slot.isRegion) regionGeoms.push(slot.geom);
     if (regionGeoms.length > 1) stitchNormals(regionGeoms);
+    // How many whole-globe stitches have run, and how long they have cost —
+    // the same globalThis instrumentation pattern as `__btCount`/`__btMs`.
+    // `globe.test.ts` reads the count to assert a streaming cascade does not
+    // pay one of these per arriving patch; `e2e/stutter-probe.spec.ts` reads
+    // both, this pass having once been 90% of all build-queue time.
+    const g = globalThis as { __stitchMs?: number; __stitchCount?: number };
+    g.__stitchMs = (g.__stitchMs ?? 0) + (performance.now() - t0);
+    g.__stitchCount = (g.__stitchCount ?? 0) + 1;
   }
 
   /** Dispose+unmount one slot, if present. The other half of `buildTileSlot`
@@ -805,6 +814,13 @@ export function createGlobeView(
   // mid-refinement.
   const retiringKeys = new Set<string>();
   let regionDirtyPending = false; // a region tile built/left since the last stitch
+  // Frames a whole-globe region stitch may be deferred while the cascade is
+  // still fetching (see the stitch site in `drainBuildQueue`). ~half a second
+  // at 60fps: long enough that a streaming cascade pays a few stitches instead
+  // of one per arriving patch, short enough that the seam it trades away is
+  // gone before the eye settles on it.
+  const STITCH_MAX_DEFERRAL_FRAMES = 30;
+  let framesSinceStitch = STITCH_MAX_DEFERRAL_FRAMES; // the first stitch is never delayed
   const BUILD_BUDGET_MS = 5; // per-frame time budget (governs production pacing)
   const MAX_BUILDS_PER_FRAME = 6; // hard count cap (governs when builds are ~free, e.g. tests)
   // The camera direction the drain orders by, in the globe's LOCAL frame (the
@@ -995,10 +1011,33 @@ export function createGlobeView(
         }
       }
     }
-    // Region stitch only when the set is stable (queue drained, none retiring).
-    if (regionDirtyPending && buildQueue.length === 0 && retiringKeys.size === 0) {
+    // Region stitch when the set is stable (queue drained, none retiring) —
+    // but at most once every STITCH_MAX_DEFERRAL_FRAMES while the cascade is
+    // still fetching.
+    //
+    // `stitchMountedRegions` costs time proportional to the MOUNTED region set,
+    // not to what just changed, so firing it on every drain-completion
+    // re-stitched the whole globe once per handful of arriving patches — 51
+    // whole-globe passes across a boot plus a deep zoom, and 90% of all
+    // build-queue time. Rate-limiting it while patches stream collapses that to
+    // a few passes, at the cost of a shading seam that can persist for up to
+    // the deferral window: the same "hold detail during motion, resolve on
+    // settle" bargain `gateRefinement` already makes for LOD.
+    //
+    // The rate limit is DEFERRAL, not suppression: `regionDirtyPending` stays
+    // set, so a skipped stitch is owed and paid on the next eligible frame.
+    // Gating on the cascade being quiet instead would starve — a spinning
+    // globe sweeps new tiles into the leaf set continuously, so at zoom the
+    // cascade need never go idle and the seams would be permanent rather than
+    // transient. An idle cascade only earns a stitch SOONER, never the right
+    // to skip one.
+    framesSinceStitch++;
+    const cascadeBusy = cascade.pending > 0 || cascade.inFlight > 0;
+    const stitchDue = !cascadeBusy || framesSinceStitch >= STITCH_MAX_DEFERRAL_FRAMES;
+    if (regionDirtyPending && buildQueue.length === 0 && retiringKeys.size === 0 && stitchDue) {
       stitchMountedRegions();
       regionDirtyPending = false;
+      framesSinceStitch = 0;
     }
     const g = globalThis as { __btMs?: number };
     g.__btMs = (g.__btMs ?? 0) + (performance.now() - t0);
