@@ -776,6 +776,15 @@ function mountViews(
     syncUrl(true);
   }, CONTROL_PERSIST_DEBOUNCE_MS);
   store.subscribe(persistControls);
+  // The debounce's one hole: a close, a reload or a back-navigation INSIDE
+  // the quiet window drops the pending write, so the setting the viewer just
+  // made is silently gone on the next load — a regression against the
+  // synchronous persist this replaced, and the common case now that seven
+  // sliders exist (release the drag, close the tab). `pagehide`, not
+  // `unload`: `unload` is unreliable-to-ignored on mobile Safari, which is
+  // the platform this whole surface is built for. Flushing when nothing is
+  // pending is a no-op, so this needs no condition.
+  window.addEventListener('pagehide', () => { persistControls.flush(); });
 
   // URL first, local as the fallback — `resolveControls` is the one place
   // that rule lives, so it has its own unit test rather than being an inline

@@ -226,4 +226,37 @@ describe('the control registry', () => {
     expect(writes[0]).toBe('winds:1'); // and it is the FINAL value, not the first or a stale one
     vi.useRealTimers();
   });
+
+  // The other half of that debounce. Trailing-edge means the last write is
+  // still only SCHEDULED for 250 ms, so closing or reloading inside the
+  // window drops it — the viewer's setting is silently gone next load, which
+  // is a regression against the synchronous persist this replaced and the
+  // COMMON case now that the dither ships seven sliders (let go of the drag,
+  // close the tab). `main.ts` is not importable, so — same precedent as the
+  // rung-switch test above — this rebuilds its two lines of wiring
+  // (`store.subscribe(persist)` plus a `pagehide` listener calling
+  // `persist.flush()`) over the REAL registry, store and codec.
+  it('flushes the pending write on pagehide, so closing inside the debounce window does not lose the last setting', () => {
+    vi.useFakeTimers();
+    const r = buildRegistry(deps());
+    const store = new ControlStore(r);
+    const writes: string[] = [];
+    const persist = debounce(() => writes.push(encodeControls(store.nonDefaults())), 250);
+    store.subscribe(persist);
+    const onPagehide = (): void => { persist.flush(); };
+    window.addEventListener('pagehide', onPagehide);
+    try {
+      store.set('dither-dot-scale', 2.5); // a slider drag settling
+      expect(writes).toHaveLength(0); // scheduled, not written — this is what a close would lose
+
+      window.dispatchEvent(new Event('pagehide'));
+      expect(writes).toEqual(['dither-dot-scale:2.5']); // landed, with the settled value
+
+      vi.advanceTimersByTime(250);
+      expect(writes).toHaveLength(1); // and exactly once — the flush cleared the timer
+    } finally {
+      window.removeEventListener('pagehide', onPagehide);
+      vi.useRealTimers();
+    }
+  });
 });
