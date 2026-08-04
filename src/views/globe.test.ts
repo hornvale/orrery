@@ -1008,6 +1008,61 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
   expect(smoothGeom.getAttribute('position').count).toBe(beforeCount);
 });
 
+/** True iff `m` is the dither material — `createDitherMaterial` is the only
+ * thing that hangs `ditherUniforms` off a material's userData. (What the
+ * material's GLSL actually DRAWS is unverifiable here: happy-dom has no WebGL,
+ * so nothing in this suite compiles a shader.) */
+const isDither = (m: THREE.Material): boolean => 'ditherUniforms' in m.userData;
+
+test('setSurface swaps every mounted tile to the dither material, and back — with no geometry rebuild', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  const mounted = () => [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mounted().length).toBeGreaterThan(0);
+  expect(mounted().every((m) => !isDither(m))).toBe(true);
+
+  // The swap is a pointer per mesh: `uv` is built unconditionally (Task 12)
+  // precisely so no tile has to be re-cut for it.
+  const before = slotBuilds();
+  globe.setSurface('dither');
+  expect(mounted().every(isDither)).toBe(true);
+  expect(slotBuilds()).toBe(before);
+
+  globe.setSurface('standard');
+  expect(mounted().every((m) => !isDither(m))).toBe(true);
+  expect(slotBuilds()).toBe(before);
+});
+
+test('a tile built after the surface swap wears the dither material too', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  // setStyle re-cuts every selected tile through `buildTileSlot`, which is the
+  // only place a tile's material is chosen — so this is the regression guard
+  // for a fresh slot silently reverting to the standard material.
+  globe.setStyle('voxel');
+  pump(globe);
+  const mats = [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mats.length).toBeGreaterThan(0);
+  expect(mats.every(isDither)).toBe(true);
+});
+
+test('setSurface and setStyle stay independent: voxel flat-shades whichever material is worn', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  const dither = surfaceMaterial(globe);
+  expect(isDither(dither)).toBe(true);
+  expect(dither.flatShading).toBe(false);
+  globe.setStyle('voxel');
+  expect(dither.flatShading).toBe(true);
+  // …and the standard material, unworn right now, tracked it as well, so
+  // switching back does not show a smooth-shaded voxel globe.
+  globe.setSurface('standard');
+  pump(globe);
+  expect(surfaceMaterial(globe).flatShading).toBe(true);
+});
+
 test('setStyle queues its rebuild instead of re-cutting every mounted tile inline', () => {
   const view = createGlobeView(markerTiles([]), spinningSys(), [], () => {});
   // Far enough out that the settled leaf set is exactly the base set, so the

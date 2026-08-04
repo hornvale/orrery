@@ -40,6 +40,7 @@ import {
 } from './cubeSphere';
 import { createCascade, sortCameraFacingFirst } from './cascade';
 import { regionPatchUnits } from './regionPatch';
+import { type DitherSettings, type DitherUniforms, createDitherMaterial } from './styles/dither3d';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { createCurrents } from './currents';
@@ -279,6 +280,10 @@ function placeMarker(m: Marker, reliefScale: number): void {
  * exposed on the HUD; the switch itself never throws. */
 export type GlobeStyle = 'smooth' | 'voxel';
 
+/** Which MATERIAL the globe's tiles wear — orthogonal to `GlobeStyle`, which
+ * chooses the GEOMETRY they are built from. Mirrors `Look.globeSurface`. */
+export type SurfaceStyle = 'standard' | 'dither';
+
 /** The globe view's public surface: a mountable object graph plus the
  * per-frame driver a caller (main.ts's rAF loop) needs. */
 export interface GlobeView {
@@ -347,6 +352,18 @@ export interface GlobeView {
    * blocks. Switching families triggers a full rebuild; the switch itself
    * is always safe, never throws. */
   setStyle(style: GlobeStyle): void;
+  /** Swap which MATERIAL the mounted tiles wear: `standard` is the plain lit
+   * `MeshStandardMaterial`; `dither` is the surface-stable fractal dither
+   * (`./styles/dither3d`), which quantizes the LIT colour so the honest
+   * terminator's falloff becomes the dot-density gradient. Orthogonal to
+   * `setStyle` — both materials track the style's `flatShading`, so voxel +
+   * dither composes even though no Look pairs them today. Costs one pointer
+   * per mounted mesh: no geometry rebuild, no shader recompile. */
+  setSurface(surface: SurfaceStyle): void;
+  /** Live-tune the dither material's uniforms. A no-op on the picture while
+   * `setSurface('standard')` is active — the uniforms are still updated, so
+   * switching back shows them. */
+  setDitherSettings(s: Partial<DitherSettings>): void;
 }
 
 /** Diff two tile-leaf sets by key: `added` are `next` tiles whose key was not
@@ -451,6 +468,32 @@ export function createGlobeView(
   const colorAt = (i: number) => activeLens.colorAt(tiles, i, lastDay ?? 0, seasonalCtx);
 
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+
+  // Two materials, swapped by reference — NOT one material whose
+  // onBeforeCompile is mutated. Mutating it would force a shader recompile on
+  // every Look switch, and this repo has spent real effort amortizing hitches
+  // (see `drainBuildQueue`). Both are built up front; the swap is a pointer.
+  const standardMaterial = material;
+  const dither = createDitherMaterial();
+  const ditherUniforms = dither.material.userData.ditherUniforms as DitherUniforms;
+  let activeSurface: SurfaceStyle = 'standard';
+  const surfaceMaterial = (): THREE.MeshStandardMaterial =>
+    activeSurface === 'dither' ? dither.material : standardMaterial;
+
+  /** Swap which material every mounted tile wears. No geometry rebuild: the
+   * `uv` attribute is built unconditionally (see `faceSpaceUv`) precisely so
+   * this switch costs nothing but a pointer per mesh. */
+  function setSurface(surface: SurfaceStyle): void {
+    if (surface === activeSurface) return;
+    activeSurface = surface;
+    const m = surfaceMaterial();
+    for (const slot of tileSlots.values()) slot.mesh.material = m;
+  }
+
+  function setDitherSettings(s: Partial<DitherSettings>): void {
+    dither.setSettings(s);
+  }
+
   const tileGridN = TILE_QUADS + 1;
 
   // The globe's surface is a per-tile-CDLOD set of cube-sphere tiles at varying
@@ -654,7 +697,7 @@ export function createGlobeView(
       // Ask for the region if it would sharpen this tile (see above).
       if (wantsRegion) cascade.submit([t]);
     }
-    const mesh = new THREE.Mesh(geom, material);
+    const mesh = new THREE.Mesh(geom, surfaceMaterial());
     mesh.name = `globe-tile-${key}`;
     spinGroup.add(mesh);
     return {
@@ -1311,9 +1354,13 @@ export function createGlobeView(
     const nextFamily = geometryFamilyOf(activeStyle);
     // Voxel flat-shades: a blocky surface reads as such only without
     // smooth-shaded normals blurring the cliffs. Voxel's own per-cell flat
-    // normals already agree with this.
-    material.flatShading = activeStyle === 'voxel';
-    material.needsUpdate = true;
+    // normals already agree with this. Both surface materials take it, so the
+    // two axes stay independent: a style switch under the dither surface must
+    // still flat-shade, and a surface switch under voxel must not un-do it.
+    for (const m of [standardMaterial, dither.material]) {
+      m.flatShading = activeStyle === 'voxel';
+      m.needsUpdate = true;
+    }
     // As in `setTrueRelief`: `enqueueRebuildAll` iterates `currentSelected`
     // only, so a mounted-but-RETIRING tile keeps its OLD style for the few
     // frames before disposal. Deliberate and disclosed, not a hole.
@@ -1378,6 +1425,10 @@ export function createGlobeView(
     // whole point of freezing the mesh instead of the light.
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = seasonalSpinZ(sys, day, seasonalHold);
+    // The dither's radial-compensation term reads gl_FragCoord against the
+    // viewport, so it has to track a resize. Cheap enough to just set every
+    // frame rather than hang a resize listener off the view.
+    ditherUniforms.uViewport.value.set(window.innerWidth, window.innerHeight);
     ocean.update(day);
     if (currentsOn) currents?.update(day);
     if (cloudsOn) clouds?.update(day);
@@ -1433,6 +1484,8 @@ export function createGlobeView(
     setSeasonalHold,
     setDayHold,
     setStyle,
+    setSurface,
+    setDitherSettings,
     onRegion,
     onRegionError,
   };

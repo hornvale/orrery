@@ -239,9 +239,12 @@ test('the Look roster: every Look option renders the globe non-blank (Task 3)', 
   // ".hud-map-style" in the diorama roster below). Voxel crosses a geometry
   // family and re-cuts the whole 95-tile selection through the amortized
   // queue. Measured under a 6x CPU throttle: ~38s for voxel, on top of the
-  // boot mount — comfortably inside the timeout below. `dither3d` has no
-  // material yet (Stage 5) — it renders as smooth/standard, same floor as
-  // `natural`.
+  // boot mount — comfortably inside the timeout below. `dither3d` crosses no
+  // geometry family (its Look is smooth); it swaps the surface MATERIAL, which
+  // costs one pointer per mounted mesh and one shader compile — so its floor
+  // here is `natural`'s. That compile is exactly what this assertion is worth
+  // most for: a GLSL error fails silently to a black globe, which shows up as
+  // a tiny PNG rather than as a thrown exception.
   test.setTimeout(480_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });

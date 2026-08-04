@@ -585,6 +585,7 @@ function mountViews(
       const look = lookById(id);
       stylePipeline.setPasses(look.postPasses(tiles));
       globeView.setStyle(look.globeMesh);
+      globeView.setSurface(look.globeSurface);
       mapView.setStyle(look.mapRung);
       // A Look's own settings appear and disappear with it, so availability
       // is re-evaluated against the NEW lookId — the store's own notify
