@@ -11,6 +11,7 @@ import {
   buildVoxelRegionTileGeometryIndexed,
   buildVoxelTileGeometry,
   buildVoxelTileGeometryIndexed,
+  faceSpaceUv,
   quantizeBands,
   sampleElevationBilinear,
   sampleTile,
@@ -25,7 +26,7 @@ import { biomeColorForName } from './biomePalette';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import type { TilesScene } from '../sim/scene';
 import { regionPatchUnits } from './regionPatch';
-import { unitLatLon } from './cubeSphere';
+import { TILE_QUADS, unitLatLon } from './cubeSphere';
 
 /** A colorizer these geometry-shape tests don't care about — they assert
  * positions and normals, not colors, so any deterministic RGB stands in. */
@@ -1148,5 +1149,49 @@ describe('buildVoxelHeightfieldGeometry', () => {
     });
     expect(triangleCount(geom)).toBe(samples * samples * 2 + 4 * samples * 2);
     expect(hasWallBetweenEqualCells(geom)).toBe(false);
+  });
+});
+
+describe('face-space tile UVs', () => {
+  const N = TILE_QUADS + 1;
+
+  // `faceSpaceUv` takes only { level, ix, iy } — a fresh object literal
+  // carrying `face` too would trip TypeScript's excess-property check, so
+  // these literals omit it. Passing a whole TileId or RegionScene (as the
+  // builders do) is fine: excess-property checking applies to literals only.
+  it('spans [0,1] across a whole face at level 0', () => {
+    expect(faceSpaceUv({ level: 0, ix: 0, iy: 0 }, 0, N)).toEqual([0, 0]);
+    expect(faceSpaceUv({ level: 0, ix: 0, iy: 0 }, N * N - 1, N)).toEqual([1, 1]);
+  });
+
+  it('gives adjacent same-level tiles a shared edge value, so density never resets at a tile boundary', () => {
+    // right edge of tile (level 1, ix 0) === left edge of tile (level 1, ix 1)
+    const rightEdge = faceSpaceUv({ level: 1, ix: 0, iy: 0 }, N - 1, N);
+    const leftEdge = faceSpaceUv({ level: 1, ix: 1, iy: 0 }, 0, N);
+    expect(rightEdge[0]).toBe(leftEdge[0]);
+  });
+
+  it('THE INVARIANT: the same surface point carries the same UV at every level', () => {
+    // The face's centre. At level 1 it is tile (1,1)'s corner (0,0);
+    // at level 2 it is tile (2,2)'s corner (0,0); at level 3, tile (4,4)'s.
+    for (const level of [1, 2, 3, 4]) {
+      const half = 1 << (level - 1);
+      const uv = faceSpaceUv({ level, ix: half, iy: half }, 0, N);
+      expect(uv).toEqual([0.5, 0.5]);
+    }
+  });
+
+  it('a refined child re-derives its parent’s own corner UV exactly', () => {
+    const parent = faceSpaceUv({ level: 2, ix: 1, iy: 3 }, 0, N);
+    const child = faceSpaceUv({ level: 3, ix: 2, iy: 6 }, 0, N);
+    expect(child).toEqual(parent);
+  });
+
+  it('builds a uv attribute onto a tile geometry, one per position', () => {
+    const geom = buildTileGeometry(flatTiles(), { face: 0, level: 1, ix: 0, iy: 0 }, 1, 0, () => [0, 0, 0], 0);
+    const uv = geom.getAttribute('uv');
+    expect(uv).toBeDefined();
+    expect(uv.itemSize).toBe(2);
+    expect(uv.count).toBe(geom.getAttribute('position').count);
   });
 });
