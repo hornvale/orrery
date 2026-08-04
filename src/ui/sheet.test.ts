@@ -14,6 +14,20 @@ function fakeControls(log: string[] = []): Control[] {
       help: 'the second one',
       available: (ctx) => ctx.rung === 'globe' ? { ok: true } : { ok: false, reason: 'globe only' },
       apply: () => {} },
+    // Applies only on the globe rung; when it doesn't, it must not render
+    // AT ALL — no wrapper, no reason line. Distinct from `beta` above, which
+    // stays rendered (disabled) off the globe rung.
+    { kind: 'toggle', id: 'omega', label: 'Omega', group: 'layers', default: false,
+      applies: (ctx) => ctx.rung === 'globe',
+      apply: () => {} },
+    // Composes both predicates on one control: ALWAYS applies (it's
+    // relevant on every rung) but is unavailable — with a reason — on the
+    // system rung specifically. Proves `applies: true` + `available: false`
+    // still renders, disabled, with the reason (not hidden).
+    { kind: 'toggle', id: 'sigma', label: 'Sigma', group: 'layers', default: false,
+      applies: () => true,
+      available: (ctx) => ctx.rung === 'system' ? { ok: false, reason: 'sigma reason' } : { ok: true },
+      apply: () => {} },
     { kind: 'choice', id: 'gamma', label: 'Gamma', group: 'look',
       options: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }],
       default: 'one', apply: (v) => { log.push(`gamma:${v}`); } },
@@ -142,6 +156,36 @@ describe('the sheet renderer', () => {
     expect(beta.querySelector('.control-reason')).toBeNull();
   });
 
+  it('a non-applying control renders nothing at all — no wrapper, no reason line', () => {
+    const { el } = mount([], SYSTEM);
+    expect(el.querySelector('[data-control="omega"]')).toBeNull();
+    expect(el.textContent).not.toContain('Omega');
+  });
+
+  it('an applying control renders normally once its context applies', () => {
+    const { el } = mount([], GLOBE);
+    const omega = el.querySelector('[data-control="omega"]');
+    expect(omega).not.toBeNull();
+    expect(omega!.classList.contains('unavailable')).toBe(false);
+  });
+
+  it('a control that applies but is unavailable still renders, disabled, with its reason', () => {
+    const { el } = mount([], SYSTEM);
+    const sigma = el.querySelector('[data-control="sigma"]')!;
+    expect(sigma).not.toBeNull();
+    expect(sigma.classList.contains('unavailable')).toBe(true);
+    expect((sigma.querySelector('button') as HTMLButtonElement).disabled).toBe(true);
+    expect(sigma.querySelector('.control-reason')!.textContent).toBe('sigma reason');
+  });
+
+  it('a control with neither predicate renders normally, on any context', () => {
+    const { el } = mount([], SYSTEM);
+    const alpha = el.querySelector('[data-control="alpha"]')!;
+    expect(alpha).not.toBeNull();
+    expect(alpha.classList.contains('unavailable')).toBe(false);
+    expect(alpha.querySelector('.control-reason')).toBeNull();
+  });
+
   it('renders a controls help text as its caption', () => {
     const { el } = mount();
     expect(el.querySelector('[data-control="beta"] .control-help')!.textContent)
@@ -176,6 +220,40 @@ describe('the sheet renderer', () => {
     const { el, sheet } = mount();
     sheet.setTab('look');
     expect(el.querySelector('[data-control="gamma"] .control-legend')).toBeNull();
+  });
+
+  it('renders a brief empty state when every control in the active group turns out non-applying', () => {
+    const controls: Control[] = [
+      { kind: 'toggle', id: 'only-globe', label: 'Only globe', group: 'layers', default: false,
+        applies: (ctx) => ctx.rung === 'globe', apply: () => {} },
+    ];
+    const store = new ControlStore(controls);
+    const sheet = buildSheet({ controls, store, tabs: TABS });
+    sheet.render(SYSTEM);
+    expect(sheet.element.querySelector('[data-control="only-globe"]')).toBeNull();
+    const empty = sheet.element.querySelector('.sheet-empty');
+    expect(empty).not.toBeNull();
+    expect(empty!.textContent).toBeTruthy();
+
+    // And once the context makes it apply, the empty state gives way to the
+    // real control — it isn't stuck on forever.
+    sheet.render(GLOBE);
+    expect(sheet.element.querySelector('[data-control="only-globe"]')).not.toBeNull();
+    expect(sheet.element.querySelector('.sheet-empty')).toBeNull();
+  });
+
+  it('does NOT show the empty state when a group has no applying controls but does have an extra', () => {
+    const controls: Control[] = [
+      { kind: 'toggle', id: 'only-globe', label: 'Only globe', group: 'layers', default: false,
+        applies: (ctx) => ctx.rung === 'globe', apply: () => {} },
+    ];
+    const store = new ControlStore(controls);
+    const extra = document.createElement('div');
+    extra.id = 'bespoke-extra';
+    const sheet = buildSheet({ controls, store, tabs: TABS, extras: { layers: [extra] } });
+    sheet.render(SYSTEM);
+    expect(sheet.element.querySelector('#bespoke-extra')).toBe(extra);
+    expect(sheet.element.querySelector('.sheet-empty')).toBeNull();
   });
 
   it('appends a groups extras after its controls, and only in that group', () => {

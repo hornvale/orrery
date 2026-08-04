@@ -60,4 +60,17 @@ describe('the dither Looks settings', () => {
     if (dot.kind === 'slider') dot.apply(2.5);
     expect(seen).toEqual([{ dotScale: 2.5 }]);
   });
+
+  // These are "not applicable when another Look is active", not "broken" —
+  // nothing about the world is wrong when dither3d isn't selected, so they
+  // gate via `applies` (hidden outright) rather than `available` (rendered
+  // disabled with a reason).
+  it('gates every dither setting on the active Look via applies, not available', () => {
+    for (const c of ditherSettingControls(() => {})) {
+      expect(c.applies, `${c.id} should gate via applies`).toBeTypeOf('function');
+      expect(c.available, `${c.id} should not also gate via available`).toBeUndefined();
+      expect(c.applies!({ rung: 'globe', tiles: {} as never, lookId: 'dither3d' })).toBe(true);
+      expect(c.applies!({ rung: 'globe', tiles: {} as never, lookId: 'natural' })).toBe(false);
+    }
+  });
 });

@@ -88,31 +88,32 @@ export function lookById(id: string): Look {
  * Seven entries, and the sheet renderer, the codec and their tests need no
  * edit at all. That is the registry earning its keep. */
 export function ditherSettingControls(onChange: (s: Partial<DitherSettings>) => void): Control[] {
-  const available = (ctx: { lookId: string }) =>
-    ctx.lookId === 'dither3d'
-      ? { ok: true as const }
-      : { ok: false as const, reason: 'the dither3d Look only' };
+  // Not applicable when another Look is active — hidden outright rather than
+  // shown disabled, per the split between "not applicable here" (this) and
+  // "applicable, but this world lacks it" (`available`, over in the layers'
+  // winds/currents/clouds).
+  const applies = (ctx: { lookId: string }) => ctx.lookId === 'dither3d';
   return [
     {
       kind: 'choice', id: 'dither-colour', label: 'Colour mode', group: 'look',
       help: 'Grayscale is the stronger image, and it makes temperature, moisture, precip, unrest and plates indistinguishable. Colour dithers each channel against the same pattern, so the lens still reads.',
       options: [{ id: 'colour', label: 'colour' }, { id: 'grayscale', label: 'grayscale' }],
       default: DITHER_DEFAULTS.colourMode,
-      available,
+      applies,
       apply: (v) => onChange({ colourMode: v as DitherSettings['colourMode'] }),
     },
     {
       kind: 'slider', id: 'dither-dot-scale', label: 'Dot scale', group: 'look',
       min: 0.25, max: 4, step: 0.05, default: DITHER_DEFAULTS.dotScale,
       format: (v) => `${v.toFixed(2)}×`,
-      available,
+      applies,
       apply: (v) => onChange({ dotScale: v }),
     },
     {
       kind: 'slider', id: 'dither-contrast', label: 'Contrast', group: 'look',
       min: 0.4, max: 3, step: 0.05, default: DITHER_DEFAULTS.contrast,
       format: (v) => v.toFixed(2),
-      available,
+      applies,
       apply: (v) => onChange({ contrast: v }),
     },
     {
@@ -120,7 +121,7 @@ export function ditherSettingControls(onChange: (s: Partial<DitherSettings>) => 
       help: '0 shades by dot COUNT (Bayer); 1 shades by dot SIZE (halftone).',
       min: 0, max: 1, step: 0.05, default: DITHER_DEFAULTS.variability,
       format: (v) => v.toFixed(2),
-      available,
+      applies,
       apply: (v) => onChange({ variability: v }),
     },
     {
@@ -128,20 +129,20 @@ export function ditherSettingControls(onChange: (s: Partial<DitherSettings>) => 
       help: 'Softens dots along the stretched axis at a grazing angle.',
       min: 0, max: 1, step: 0.05, default: DITHER_DEFAULTS.stretch,
       format: (v) => v.toFixed(2),
-      available,
+      applies,
       apply: (v) => onChange({ stretch: v }),
     },
     {
       kind: 'toggle', id: 'dither-invert', label: 'Invert dots', group: 'look',
       default: DITHER_DEFAULTS.invert,
-      available,
+      applies,
       apply: (v) => onChange({ invert: v }),
     },
     {
       kind: 'toggle', id: 'dither-radial', label: 'Radial compensation', group: 'look',
       help: 'Counteracts the density falloff toward the screen edge under a perspective projection.',
       default: DITHER_DEFAULTS.radialCompensation,
-      available,
+      applies,
       apply: (v) => onChange({ radialCompensation: v }),
     },
   ];

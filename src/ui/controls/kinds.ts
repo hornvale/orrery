@@ -46,6 +46,20 @@ interface ControlBase {
   group: GroupId;
   /** Caption shown beneath the control. */
   help?: string;
+  /** Whether this control is relevant to what's on screen at all. Absent
+   * means always. False means the control is not rendered — not merely
+   * disabled — because there is nothing here worth telling the viewer: an
+   * inactive Look's own settings, `waves`/`glint`/`night-fill` off the
+   * globe, `relief` off the globe, `distance` off the system rung.
+   *
+   * Composes with `available`: a control can apply here and still be
+   * unavailable. That combination is for the opposite case — the control
+   * IS relevant to what's on screen, but this particular world lacks the
+   * data (`winds` on a tidally locked world, `currents` where none are
+   * emitted, `clouds` under a clear sky). There, the absence is a fact
+   * about the world worth showing, so it stays rendered and disabled with
+   * its reason rather than silently vanishing. */
+  applies?(ctx: ControlContext): boolean;
   /** Absent means always available. */
   available?(ctx: ControlContext): Availability;
 }
@@ -94,4 +108,10 @@ export function defaultValueOf(c: Control): ControlValue | undefined {
  * always available. */
 export function availabilityOf(c: Control, ctx: ControlContext): Availability {
   return c.available ? c.available(ctx) : AVAILABLE;
+}
+
+/** Whether `c` is relevant to `ctx` at all. Controls with no predicate
+ * always apply — see `applies` above for the distinction from `available`. */
+export function appliesTo(c: Control, ctx: ControlContext): boolean {
+  return c.applies ? c.applies(ctx) : true;
 }

@@ -108,15 +108,57 @@ describe('the control registry', () => {
     expect(ids(buildRegistry(withSetting))).toContain('dot-scale');
   });
 
-  it('gates relief to the globe rung and distance to the system rung', () => {
+  // `relief`/`distance`/`waves`/`glint`/`night-fill` are all "not applicable
+  // on this rung", not "applicable but broken" — nothing is wrong with the
+  // world, they're just off-topic here, so they gate on `applies` (hidden
+  // outright) rather than `available` (rendered disabled with a reason).
+  it('gates relief/waves/glint/night-fill to the globe rung and distance to the system rung, via applies — not available', () => {
     const r = buildRegistry(deps());
-    const relief = r.find((c) => c.id === 'relief')!;
-    const distance = r.find((c) => c.id === 'distance')!;
     const ctx = (rung: 'system' | 'globe' | 'map') => ({ rung, tiles: {} as never, lookId: 'natural' });
-    expect(relief.available!(ctx('globe')).ok).toBe(true);
-    expect(relief.available!(ctx('system')).ok).toBe(false);
-    expect(distance.available!(ctx('system')).ok).toBe(true);
-    expect(distance.available!(ctx('globe')).ok).toBe(false);
+    for (const id of ['relief', 'waves', 'glint', 'night-fill']) {
+      const c = r.find((x) => x.id === id)!;
+      expect(c.applies, `${id} should gate via applies`).toBeTypeOf('function');
+      expect(c.available, `${id} should not also gate via available`).toBeUndefined();
+      expect(c.applies!(ctx('globe'))).toBe(true);
+      expect(c.applies!(ctx('system'))).toBe(false);
+    }
+    const distance = r.find((c) => c.id === 'distance')!;
+    expect(distance.applies).toBeTypeOf('function');
+    expect(distance.available).toBeUndefined();
+    expect(distance.applies!(ctx('system'))).toBe(true);
+    expect(distance.applies!(ctx('globe'))).toBe(false);
+  });
+
+  // winds/currents/clouds are the OTHER case: they ARE globe overlays
+  // (`applies` hides them off the globe rung), but whether THIS world has
+  // the data they show is a fact worth telling the viewer — so that gate
+  // stays on `available`, with its reason intact.
+  it('gates winds/currents/clouds to the globe rung via applies, while keeping their data gate on available with its exact reason', () => {
+    const r = buildRegistry(deps());
+    const ctx = (rung: 'system' | 'globe' | 'map', tiles: unknown) => ({ rung, tiles, lookId: 'natural' });
+    const lockedTiles = { circulationBands: null, currentEast: [0], currentNorth: [0], cloudType: [0] };
+    const dataTiles = { circulationBands: [1], currentEast: [1], currentNorth: [0], cloudType: [1] };
+
+    const winds = r.find((c) => c.id === 'winds')!;
+    const currents = r.find((c) => c.id === 'currents')!;
+    const clouds = r.find((c) => c.id === 'clouds')!;
+
+    for (const c of [winds, currents, clouds]) {
+      expect(c.applies!(ctx('globe', dataTiles) as never)).toBe(true);
+      expect(c.applies!(ctx('system', dataTiles) as never)).toBe(false);
+      expect(c.applies!(ctx('map', dataTiles) as never)).toBe(false);
+    }
+
+    expect(winds.available!(ctx('globe', lockedTiles) as never))
+      .toEqual({ ok: false, reason: 'no circulation bands: this world is tidally locked' });
+    expect(currents.available!(ctx('globe', lockedTiles) as never))
+      .toEqual({ ok: false, reason: 'no ocean-current data: this world is tidally locked' });
+    expect(clouds.available!(ctx('globe', lockedTiles) as never))
+      .toEqual({ ok: false, reason: 'no clouds: every tile reports a clear sky' });
+
+    expect(winds.available!(ctx('globe', dataTiles) as never).ok).toBe(true);
+    expect(currents.available!(ctx('globe', dataTiles) as never).ok).toBe(true);
+    expect(clouds.available!(ctx('globe', dataTiles) as never).ok).toBe(true);
   });
 
   it('gives the lens control a legend, so its colour key renders', () => {

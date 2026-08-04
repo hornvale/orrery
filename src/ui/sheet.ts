@@ -1,9 +1,10 @@
 /** Renders the control registry as a tabbed sheet. Knows NOTHING about any
- * individual control — it walks `controls`, groups by `group`, and asks each
- * one's `available()` whether to disable it. That is the whole point: adding
- * a control edits the registry, not this file and not its test. */
+ * individual control — it walks `controls`, groups by `group`, skips any
+ * that don't `applies()` to the current context, and asks each of the rest's
+ * `available()` whether to disable it. That is the whole point: adding a
+ * control edits the registry, not this file and not its test. */
 import type { Control, ControlContext, GroupId } from './controls/kinds';
-import { availabilityOf } from './controls/kinds';
+import { appliesTo, availabilityOf } from './controls/kinds';
 import type { ControlStore } from './controls/store';
 
 export interface SheetTab {
@@ -56,11 +57,25 @@ export function buildSheet(opts: {
     lastCtx = ctx;
     markTabs();
     body.replaceChildren();
+    let shown = 0;
     for (const c of controls) {
       if (c.group !== active) continue;
+      if (!appliesTo(c, ctx)) continue;
       body.appendChild(renderControl(c, ctx, store));
+      shown++;
     }
-    for (const extra of opts.extras?.[active] ?? []) body.appendChild(extra);
+    const extras = opts.extras?.[active] ?? [];
+    for (const extra of extras) body.appendChild(extra);
+    // Every control in the active group can turn out non-applying at once
+    // (e.g. the Layers tab's three overlays are all globe-only) — a blank
+    // box then reads as broken rather than as "nothing applies here". Only
+    // when there's also no bespoke extra (the Time tab's date field would
+    // otherwise make an occupied tab look empty).
+    if (shown === 0 && extras.length === 0) {
+      const empty = el('div', 'sheet-empty');
+      empty.textContent = 'Nothing here applies to the current view.';
+      body.appendChild(empty);
+    }
   }
 
   function setTab(group: GroupId): void {

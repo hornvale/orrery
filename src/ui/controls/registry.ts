@@ -53,10 +53,11 @@ export interface RegistryDeps {
   lensLegend(): LegendRow[];
 }
 
-const globeOnly = (ctx: ControlContext) =>
-  ctx.rung === 'globe' ? AVAILABLE : { ok: false as const, reason: 'the globe rung only' };
-const systemOnly = (ctx: ControlContext) =>
-  ctx.rung === 'system' ? AVAILABLE : { ok: false as const, reason: 'the system rung only' };
+// Rung gates are `applies`, not `available`: a control that isn't the
+// globe/system rung's business isn't a fact about the world worth reporting
+// with a reason — it's simply not on screen, so it's hidden outright.
+const isGlobeRung = (ctx: ControlContext) => ctx.rung === 'globe';
+const isSystemRung = (ctx: ControlContext) => ctx.rung === 'system';
 
 export function buildRegistry(d: RegistryDeps): Control[] {
   return [
@@ -85,7 +86,7 @@ export function buildRegistry(d: RegistryDeps): Control[] {
         { id: 'true', label: 'true' },
       ],
       default: 'schematic',
-      available: globeOnly,
+      applies: isGlobeRung,
       apply: (v) => d.setTrueRelief(v === 'true'),
     },
     {
@@ -93,27 +94,32 @@ export function buildRegistry(d: RegistryDeps): Control[] {
       help: 'Schematic compresses moon orbits onto even rungs for legibility. True is to the documents — the bodies all but vanish against the orbit’s sweep.',
       options: [{ id: 'schematic', label: 'schematic' }, { id: 'true', label: 'true' }],
       default: 'schematic',
-      available: systemOnly,
+      applies: isSystemRung,
       apply: (v) => d.setTrueDistance(v === 'true'),
     },
     {
       kind: 'toggle', id: 'waves', label: 'Waves', group: 'look',
-      default: true, available: globeOnly, apply: (v) => d.setWaves(v),
+      default: true, applies: isGlobeRung, apply: (v) => d.setWaves(v),
     },
     {
       kind: 'toggle', id: 'glint', label: 'Sun glint', group: 'look',
-      default: true, available: globeOnly, apply: (v) => d.setGlint(v),
+      default: true, applies: isGlobeRung, apply: (v) => d.setGlint(v),
     },
     {
       kind: 'toggle', id: 'night-fill', label: 'Night fill', group: 'look',
       help: 'Brighten the unlit far side so its terrain and temperature stay readable, instead of the default honest dark terminator.',
-      default: false, available: globeOnly, apply: (v) => d.setNightFill(v),
+      default: false, applies: isGlobeRung, apply: (v) => d.setNightFill(v),
     },
 
     // ---- Layers -----------------------------------------------------------
     {
       kind: 'toggle', id: 'winds', label: 'Winds', group: 'layers',
       default: false,
+      // A globe overlay: meaningless on the System/Map rungs, so hidden
+      // there. On the globe it stays rendered, disabled with the reason,
+      // when THIS world lacks the data — that absence is a fact about the
+      // world worth showing, not a "not applicable here".
+      applies: isGlobeRung,
       available: (ctx) => ctx.tiles.circulationBands !== null
         ? AVAILABLE
         : { ok: false, reason: 'no circulation bands: this world is tidally locked' },
@@ -122,6 +128,7 @@ export function buildRegistry(d: RegistryDeps): Control[] {
     {
       kind: 'toggle', id: 'currents', label: 'Ocean currents', group: 'layers',
       default: false,
+      applies: isGlobeRung,
       available: (ctx) =>
         ctx.tiles.currentEast.some((v) => v !== 0) || ctx.tiles.currentNorth.some((v) => v !== 0)
           ? AVAILABLE
@@ -131,6 +138,7 @@ export function buildRegistry(d: RegistryDeps): Control[] {
     {
       kind: 'toggle', id: 'clouds', label: 'Clouds', group: 'layers',
       default: false,
+      applies: isGlobeRung,
       available: (ctx) => ctx.tiles.cloudType.some((t) => t > 0)
         ? AVAILABLE
         : { ok: false, reason: 'no clouds: every tile reports a clear sky' },
