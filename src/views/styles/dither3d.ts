@@ -38,6 +38,18 @@ export interface DitherSettings {
   radialCompensation: boolean;
 }
 
+/** The screen-space period of one dither cell, in DEVICE pixels, at
+ * `dotScale: 1`. The whole point of the technique is that this number does not
+ * change with camera distance — `lvl` below is solved for it. */
+export const DITHER_DOT_PX = 4;
+
+/** The slice the fractional blend starts from. The blend spans exactly one
+ * octave, `[BLEND_BASE, BLEND_BASE+1]`, and the two FINEST slices are the
+ * right pair: slice 0 is a 1×1 Bayer, i.e. a CONSTANT 0.5, so blending
+ * 0↔1 would make the pattern vanish entirely on every ring of the globe where
+ * `lvl` happens to be an integer. */
+const BLEND_BASE = Math.max(DITHER_LEVELS - 2, 0);
+
 export const DITHER_DEFAULTS: DitherSettings = {
   colourMode: 'colour',
   dotScale: 1,
@@ -53,24 +65,59 @@ const DITHER_CHUNK = /* glsl */ `
   // dots surface-stable: as the surface nears the camera this shrinks, the
   // level index rises, and the pattern subdivides into MORE dots rather
   // than bigger ones.
+  //
+  // max(), not min(): the COARSER axis sets the level, so a grazing or
+  // skirt-like surface (one axis with almost no UV extent, hence almost no
+  // derivative) never asks for a level finer than it can actually resolve.
   vec2 duv = vec2(length(dFdx(vDitherUv)), length(dFdy(vDitherUv)));
   float footprint = max(max(duv.x, duv.y), 1e-8);
-  // Which fractal level this pixel sits at. log2 of the footprint, so a
-  // doubling of distance steps exactly one slice.
-  float lvl = clamp(-log2(footprint * uDotScale), 0.0, float(DITHER_LEVELS_C) - 1.0);
-  float sliceT = lvl / max(float(DITHER_LEVELS_C) - 1.0, 1.0);
 
-  // Anisotropy: where the surface is stretched (a grazing angle), soften
-  // along the stretched axis so dots smear rather than alias.
-  float aniso = duv.x / max(duv.y, 1e-8);
+  // The fractal level, solved so that one dither CELL covers exactly
+  // uDotScale × DITHER_DOT_PX device pixels no matter how far away the
+  // surface is. Its two halves do different jobs and must not double-count:
+  //
+  //   floor(lvl) -> the UV scale, exp2(floor(lvl)): which OCTAVE of the
+  //                 pattern this pixel is on.
+  //   fract(lvl) -> the slice blend: where between two adjacent Bayer orders
+  //                 we sit WITHIN that octave.
+  //
+  // Slice k holds a 2^k Bayer, so cells-per-UV-unit is
+  // exp2(floor(lvl)) · 2^(BASE+fract(lvl)) = exp2(lvl + BASE) — continuous
+  // and monotone THROUGH each octave boundary, because the UV scale doubling
+  // is exactly cancelled by dropping back one slice. Screen period is then
+  // 1/(cells · footprint) = uDotScale · DITHER_DOT_PX, independent of
+  // distance. (The earlier version drove the slice index from the ABSOLUTE
+  // level as well as scaling the UV; the two multiplied, so the dots halved
+  // at every octave and then froze surface-locked at the clamp.)
+  //
+  // The clamp is a float-precision guard, not a design limit: exp2(20) leaves
+  // a UV product around 10^6, where fp32 still resolves a small fraction of a
+  // cell. Screen-stability holds everywhere inside it.
+  float lvl = clamp(-log2(footprint * uDotScale * DITHER_DOT_PX) - DITHER_BLEND_BASE, -6.0, 20.0);
+
+  // Anisotropy: where the surface is stretched on screen, one dither cell
+  // would otherwise come out rectangular. Cell period along x is
+  // 1/(cells · bias · duv.x) and along y is 1/(cells · duv.y), so they are
+  // equal exactly when bias = duv.y/duv.x. Applied to the x axis ALONE —
+  // a scalar on both axes changes dot SIZE with grazing angle instead of
+  // squaring the cell up, which is the opposite of compensating.
+  float aniso = duv.y / max(duv.x, 1e-8);
   float bias = mix(1.0, clamp(aniso, 0.25, 4.0), uStretch);
 
-  vec2 dotUv = vDitherUv * exp2(floor(lvl)) * bias;
+  vec2 dotUv = vDitherUv * exp2(floor(lvl)) * vec2(bias, 1.0);
+  // Half-texel centred: slice i's own texel centre is (i+0.5)/depth, so an
+  // integer level lands exactly ON a slice rather than 83% of the way to it —
+  // which is what preserves the centred normalization ditherTexture.ts built
+  // the slices around.
+  float sliceT = (DITHER_BLEND_BASE + fract(lvl) + 0.5) / DITHER_DEPTH;
   float threshold = texture(uDither, vec3(fract(dotUv), sliceT)).r;
   if (uInvert > 0.5) threshold = 1.0 - threshold;
 
   // Radial compensation: the perceived density falls off toward the screen
   // edge under a perspective projection; nudge the threshold back.
+  // uViewport is the DRAWING BUFFER size, which is what gl_FragCoord counts
+  // in — filling it from window.innerWidth put the "centre" at the quarter
+  // point on a retina display and blew the frame out to white.
   if (uRadial > 0.5) {
     vec2 ndc = gl_FragCoord.xy / uViewport * 2.0 - 1.0;
     threshold -= 0.06 * dot(ndc, ndc);
@@ -116,6 +163,12 @@ export interface DitherUniforms {
 export function createDitherMaterial(): {
   material: THREE.MeshStandardMaterial;
   setSettings(s: Partial<DitherSettings>): void;
+  /** The DRAWING BUFFER size in device pixels — `renderer.getDrawingBufferSize`,
+   * never `window.innerWidth`. `gl_FragCoord` counts device pixels, so on a
+   * DPR-2 display the CSS size puts the radial term's centre at the screen's
+   * quarter point and drives `dot(ndc,ndc)` to 9, blowing the frame to white
+   * across one diagonal. */
+  setViewport(width: number, height: number): void;
 } {
   const uniforms: DitherUniforms = {
     uDither: { value: createDitherTexture() },
@@ -144,7 +197,9 @@ export function createDitherMaterial(): {
       .replace(
         '#include <common>',
         `#include <common>
-         #define DITHER_LEVELS_C ${DITHER_LEVELS}
+         #define DITHER_DEPTH ${DITHER_LEVELS.toFixed(1)}
+         #define DITHER_BLEND_BASE ${BLEND_BASE.toFixed(1)}
+         #define DITHER_DOT_PX ${DITHER_DOT_PX.toFixed(1)}
          precision highp sampler3D;
          uniform sampler3D uDither;
          uniform float uDotScale, uContrast, uVariability, uStretch, uInvert, uRadial, uGrayscale;
@@ -165,6 +220,9 @@ export function createDitherMaterial(): {
 
   return {
     material,
+    setViewport(width, height) {
+      uniforms.uViewport.value.set(Math.max(width, 1), Math.max(height, 1));
+    },
     setSettings(s) {
       if (s.colourMode !== undefined) uniforms.uGrayscale.value = s.colourMode === 'grayscale' ? 1 : 0;
       if (s.dotScale !== undefined) uniforms.uDotScale.value = s.dotScale;

@@ -395,6 +395,7 @@ function mountViews(
     setCaptionFor(view);
   }
 
+  const drawingBuffer = new THREE.Vector2();
   function resize(): void {
     systemRenderer.setSize(window.innerWidth, window.innerHeight);
     globeRenderer.setSize(window.innerWidth, window.innerHeight);
@@ -405,6 +406,13 @@ function mountViews(
     systemCamera.updateProjectionMatrix();
     globeCamera.aspect = aspect;
     globeCamera.updateProjectionMatrix();
+    // The dither material's radial term measures `gl_FragCoord` — DEVICE
+    // pixels — so it needs the drawing buffer, not the CSS size the three
+    // `setSize` calls above take. On a DPR-2 display those differ by 2× and
+    // the term blows the frame out to white; ask the renderer rather than
+    // re-deriving `min(devicePixelRatio, 2)` here and drifting from it.
+    globeRenderer.getDrawingBufferSize(drawingBuffer);
+    globeView.setViewport(drawingBuffer.x, drawingBuffer.y);
   }
   resize();
   window.addEventListener('resize', resize);

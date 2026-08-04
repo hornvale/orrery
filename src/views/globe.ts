@@ -40,7 +40,7 @@ import {
 } from './cubeSphere';
 import { createCascade, sortCameraFacingFirst } from './cascade';
 import { regionPatchUnits } from './regionPatch';
-import { type DitherSettings, type DitherUniforms, createDitherMaterial } from './styles/dither3d';
+import { type DitherSettings, createDitherMaterial } from './styles/dither3d';
 import { createOcean } from './ocean';
 import { createWinds } from './winds';
 import { createCurrents } from './currents';
@@ -355,15 +355,28 @@ export interface GlobeView {
   /** Swap which MATERIAL the mounted tiles wear: `standard` is the plain lit
    * `MeshStandardMaterial`; `dither` is the surface-stable fractal dither
    * (`./styles/dither3d`), which quantizes the LIT colour so the honest
-   * terminator's falloff becomes the dot-density gradient. Orthogonal to
-   * `setStyle` — both materials track the style's `flatShading`, so voxel +
-   * dither composes even though no Look pairs them today. Costs one pointer
-   * per mounted mesh: no geometry rebuild, no shader recompile. */
+   * terminator's falloff becomes the dot-density gradient.
+   *
+   * Costs one pointer per mounted mesh — no geometry rebuild, because the
+   * smooth builders write the `uv` the dither reads unconditionally. It is not
+   * free the FIRST time `dither` is selected: three compiles that material's
+   * program on the next frame it is rendered, one hitch, once per view. Both
+   * materials existing up front is what bounds it to once rather than once per
+   * Look switch.
+   *
+   * `dither` is not applied over VOXEL geometry, which carries no `uv` (see
+   * `surfaceMaterial`). The request is remembered, so returning to a smooth
+   * style brings the dither back on its own. */
   setSurface(surface: SurfaceStyle): void;
   /** Live-tune the dither material's uniforms. A no-op on the picture while
-   * `setSurface('standard')` is active — the uniforms are still updated, so
+   * the standard material is worn — the uniforms are still updated, so
    * switching back shows them. */
   setDitherSettings(s: Partial<DitherSettings>): void;
+  /** Tell the dither material the renderer's DRAWING BUFFER size (device
+   * pixels, i.e. `renderer.getDrawingBufferSize`, NOT `window.innerWidth`):
+   * its radial-compensation term measures `gl_FragCoord` against it. Call at
+   * boot and on every resize. */
+  setViewport(width: number, height: number): void;
 }
 
 /** Diff two tile-leaf sets by key: `added` are `next` tiles whose key was not
@@ -475,23 +488,60 @@ export function createGlobeView(
   // (see `drainBuildQueue`). Both are built up front; the swap is a pointer.
   const standardMaterial = material;
   const dither = createDitherMaterial();
-  const ditherUniforms = dither.material.userData.ditherUniforms as DitherUniforms;
+  // The surface the CALLER asked for. What is actually worn can differ — see
+  // `surfaceMaterial` — so this is the request, remembered across a style
+  // switch that cannot honour it.
   let activeSurface: SurfaceStyle = 'standard';
-  const surfaceMaterial = (): THREE.MeshStandardMaterial =>
-    activeSurface === 'dither' ? dither.material : standardMaterial;
 
-  /** Swap which material every mounted tile wears. No geometry rebuild: the
-   * `uv` attribute is built unconditionally (see `faceSpaceUv`) precisely so
-   * this switch costs nothing but a pointer per mesh. */
-  function setSurface(surface: SurfaceStyle): void {
-    if (surface === activeSurface) return;
-    activeSurface = surface;
+  /** Which material a tile should wear right now.
+   *
+   * The dither shader reads the face-space `uv` attribute and its screen-space
+   * derivatives. The SMOOTH builders write one per vertex, skirts included
+   * (`faceSpaceUv`) — but the VOXEL builders do not: `makeVertexWriter.finish`
+   * sets position/normal/color and nothing else. Under voxel, three's
+   * always-declared `attribute vec2 uv` therefore reads (0,0) at every vertex,
+   * the derivative collapses to zero, `lvl` pins to its clamp and the globe
+   * renders a near-solid white sheet.
+   *
+   * Rather than draw that, the dither is simply not APPLIED over voxel
+   * geometry. Threading a `uv` through both voxel builders' top and wall
+   * emission is the alternative, and it is a bigger change than this Look
+   * needs: no Look in the roster pairs them, and a wall quad's face-space UV
+   * is degenerate along its vertical axis anyway, so it would buy a
+   * questionable picture for real complexity. The request is kept, not
+   * discarded — returning to a smooth style restores the dither with no
+   * further call. */
+  const surfaceMaterial = (): THREE.MeshStandardMaterial =>
+    activeSurface === 'dither' && activeStyle !== 'voxel' ? dither.material : standardMaterial;
+
+  /** Re-seat every mounted tile on whatever `surfaceMaterial()` now resolves
+   * to. Cheap (one pointer per mesh) and idempotent, so both entry points
+   * that can change the answer — `setSurface` and `setStyle` — just call it. */
+  function applySurfaceMaterial(): void {
     const m = surfaceMaterial();
     for (const slot of tileSlots.values()) slot.mesh.material = m;
   }
 
+  /** Swap which material every mounted tile wears. No geometry rebuild: the
+   * smooth builders write the `uv` attribute unconditionally (see
+   * `faceSpaceUv`) precisely so this switch costs nothing but a pointer per
+   * mesh. */
+  function setSurface(surface: SurfaceStyle): void {
+    if (surface === activeSurface) return;
+    activeSurface = surface;
+    applySurfaceMaterial();
+  }
+
   function setDitherSettings(s: Partial<DitherSettings>): void {
     dither.setSettings(s);
+  }
+
+  /** The renderer's DRAWING BUFFER size, in device pixels — see
+   * `createDitherMaterial().setViewport`. Driven from `main.ts`'s `resize`,
+   * where the renderer (and therefore the real pixel ratio) is in scope; the
+   * globe view has no renderer of its own to ask. */
+  function setViewport(width: number, height: number): void {
+    dither.setViewport(width, height);
   }
 
   const tileGridN = TILE_QUADS + 1;
@@ -1361,6 +1411,12 @@ export function createGlobeView(
       m.flatShading = activeStyle === 'voxel';
       m.needsUpdate = true;
     }
+    // Crossing into or out of voxel changes which material `surfaceMaterial()`
+    // resolves to (voxel geometry carries no `uv`, so it cannot wear the
+    // dither) — re-seat the mounted tiles now rather than waiting on the
+    // amortized rebuild, which would leave them wearing the wrong one for the
+    // frames in between.
+    applySurfaceMaterial();
     // As in `setTrueRelief`: `enqueueRebuildAll` iterates `currentSelected`
     // only, so a mounted-but-RETIRING tile keeps its OLD style for the few
     // frames before disposal. Deliberate and disclosed, not a hole.
@@ -1425,10 +1481,6 @@ export function createGlobeView(
     // whole point of freezing the mesh instead of the light.
     light.position.copy(latLonToUnit(sub.lat, 0)).multiplyScalar(LIGHT_DISTANCE);
     spinGroup.rotation.z = seasonalSpinZ(sys, day, seasonalHold);
-    // The dither's radial-compensation term reads gl_FragCoord against the
-    // viewport, so it has to track a resize. Cheap enough to just set every
-    // frame rather than hang a resize listener off the view.
-    ditherUniforms.uViewport.value.set(window.innerWidth, window.innerHeight);
     ocean.update(day);
     if (currentsOn) currents?.update(day);
     if (cloudsOn) clouds?.update(day);
@@ -1486,6 +1538,7 @@ export function createGlobeView(
     setStyle,
     setSurface,
     setDitherSettings,
+    setViewport,
     onRegion,
     onRegionError,
   };

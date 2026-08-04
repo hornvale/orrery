@@ -1037,17 +1037,45 @@ test('a tile built after the surface swap wears the dither material too', () => 
   const globe = makeGlobe();
   pump(globe);
   globe.setSurface('dither');
-  // setStyle re-cuts every selected tile through `buildTileSlot`, which is the
-  // only place a tile's material is chosen — so this is the regression guard
-  // for a fresh slot silently reverting to the standard material.
-  globe.setStyle('voxel');
+  // `setTrueRelief` re-cuts every selected tile through `buildTileSlot` —
+  // the only place a tile's material is chosen — WITHOUT leaving the smooth
+  // geometry family, so this isolates "a fresh slot silently reverted to the
+  // standard material" from the voxel fallback the next test covers.
+  globe.setTrueRelief(true);
   pump(globe);
   const mats = [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
   expect(mats.length).toBeGreaterThan(0);
   expect(mats.every(isDither)).toBe(true);
 });
 
-test('setSurface and setStyle stay independent: voxel flat-shades whichever material is worn', () => {
+test('the dither is not applied over voxel geometry, which carries no uv — and returns when smooth does', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  expect(isDither(surfaceMaterial(globe))).toBe(true);
+
+  // Voxel geometry is built by `makeVertexWriter`, which writes
+  // position/normal/color only. With no `uv`, three's always-declared
+  // `attribute vec2 uv` reads (0,0) everywhere, the dither's derivative
+  // collapses and the globe renders near-solid white — so the pairing must
+  // fall back rather than draw it. Asserted on the ATTRIBUTE, not just the
+  // material pointer: this test is worthless if the premise ever changes
+  // silently (give voxel a `uv` and it fails here, which is the prompt to
+  // delete the fallback).
+  globe.setStyle('voxel');
+  pump(globe);
+  expect(baseTileMesh(globe).geometry.getAttribute('uv')).toBeUndefined();
+  const mats = [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mats.every((m) => !isDither(m))).toBe(true);
+
+  // The REQUEST survives the detour: no second setSurface call is needed.
+  globe.setStyle('smooth');
+  pump(globe);
+  expect(baseTileMesh(globe).geometry.getAttribute('uv')).toBeDefined();
+  expect(isDither(surfaceMaterial(globe))).toBe(true);
+});
+
+test('setStyle flat-shades both materials, so the surface and geometry axes compose in either order', () => {
   const globe = makeGlobe();
   pump(globe);
   globe.setSurface('dither');
@@ -1055,9 +1083,9 @@ test('setSurface and setStyle stay independent: voxel flat-shades whichever mate
   expect(isDither(dither)).toBe(true);
   expect(dither.flatShading).toBe(false);
   globe.setStyle('voxel');
+  // The dither material is not WORN under voxel, but it still tracked the
+  // flag — so returning to smooth does not show a stale shading mode.
   expect(dither.flatShading).toBe(true);
-  // …and the standard material, unworn right now, tracked it as well, so
-  // switching back does not show a smooth-shaded voxel globe.
   globe.setSurface('standard');
   pump(globe);
   expect(surfaceMaterial(globe).flatShading).toBe(true);
