@@ -12,6 +12,22 @@ describe('the Bayer matrices', () => {
     expect(bayerMatrix(1)).toEqual([0, 2, 3, 1]);
   });
 
+  // A pure regression pin, not a derivation: the shipped values were checked
+  // by hand twice, independently, and agreed. What is missing is a test that
+  // can FAIL if they change. "Is a permutation of 0..n^2-1" holds for many
+  // wrong matrices, and the fractal-average property below only constrains
+  // the four-offset set to sum to 6 — so a transposition or a swapped pair
+  // introduced at level 2 or finer passes both existing tests silently, and
+  // level >= 2 is where every visible dither cell actually comes from.
+  it('is the canonical 4x4 at level 2 — the actual values, not just a permutation of them', () => {
+    expect(bayerMatrix(2)).toEqual([
+      0, 2, 8, 10,
+      3, 1, 11, 9,
+      12, 14, 4, 6,
+      15, 13, 7, 5,
+    ]);
+  });
+
   it('is a permutation of 0..size^2-1 at every level', () => {
     for (let level = 0; level < DITHER_LEVELS; level++) {
       const m = bayerMatrix(level);

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildRegistry, rateId, SHEET_TABS, type RegistryDeps } from './registry';
 import { LENSES } from '../../views/lens';
-import { LOOKS } from '../../views/look';
+import { LOOKS, ditherSettingControls } from '../../views/look';
 import type { Control } from './kinds';
 import { ControlStore } from './store';
 import { encodeControls } from './codec';
@@ -11,7 +11,16 @@ import { SPEED_POLICY, SpeedMemory, clampMult } from '../../time/speedPolicy';
 import type { ZoomTarget } from '../../views/zoom';
 
 /** Every dep is a no-op recorder: the registry test cares about the SHAPE of
- * the control list, not what any apply does. */
+ * the control list, not what any apply does.
+ *
+ * `lookSettings` returns the REAL dither settings, not `[]`. Stubbing it
+ * empty is what it was, and it quietly exempted the seven newest controls in
+ * the app from every invariant below — unique id, URL-safe id, group has a
+ * tab, choice default is one of its own options, slider default is inside its
+ * own range. Those are exactly the invariants a hand-written control block is
+ * most likely to break, so the guard has to see them: 22 controls here, not
+ * 15. (`main.ts` passes the same function, closing over the live material's
+ * `setSettings`; only the callback differs, and no invariant here reads it.) */
 function deps(): RegistryDeps {
   const nop = () => {};
   return {
@@ -20,7 +29,7 @@ function deps(): RegistryDeps {
     setTrueDistance: nop, setHoldSpin: nop, setHoldSeason: nop, setRate: nop,
     reroll: nop, share: nop,
     rungDefaultRate: () => 1,
-    lookSettings: () => [],
+    lookSettings: () => ditherSettingControls(() => {}),
     lensLegend: () => [],
   };
 }
@@ -72,6 +81,20 @@ describe('the control registry', () => {
     expect(look.kind).toBe('choice');
     if (lens.kind === 'choice') expect(lens.options.map((o) => o.id)).toEqual(LENSES.map((l) => l.id));
     if (look.kind === 'choice') expect(look.options.map((o) => o.id)).toEqual(LOOKS.map((l) => l.id));
+  });
+
+  // The tripwire on `deps()` itself. Every invariant above is only worth what
+  // its fixture covers, and with `lookSettings: () => []` the fixture covered
+  // 15 controls while the app shipped 22 — the seven newest, the dither's
+  // own, sat outside the guard built to catch precisely their kind of
+  // mistake. This fails the moment that stub comes back, and says why.
+  it('feeds the dither Look\'s own settings through the same invariants, so none of them is exempt', () => {
+    const registered = new Set(ids(buildRegistry(deps())));
+    const settings = ditherSettingControls(() => {});
+    expect(settings.length).toBeGreaterThan(0);
+    for (const c of settings) {
+      expect(registered.has(c.id), `${c.id} is not in the registry the invariants above run over`).toBe(true);
+    }
   });
 
   it('merges the active Looks own settings into the list', () => {
