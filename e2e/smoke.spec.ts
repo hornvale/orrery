@@ -204,12 +204,15 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   expect(errors).toEqual([]);
 });
 
-test('the globe geometry styles: every .hud-style option renders the globe non-blank (The Massing, Task 7)', async ({ page }) => {
-  // Voxel crosses a geometry family and re-cuts the whole 95-tile selection
-  // through the amortized queue. Measured under a 6x CPU throttle: ~38s for
-  // voxel, on top of the boot mount — comfortably inside the timeout below.
-  // (Formerly three styles crossed a family here — terraced and faceted were
-  // deleted in Task 2.)
+test('the Look roster: every .hud-look option renders the globe non-blank (Task 3)', async ({ page }) => {
+  // One labeled Look axis replaces the three separate style/globe-style/
+  // map-style rosters this test supersedes (formerly ".hud-style" here and
+  // ".hud-map-style" in the diorama roster below). Voxel crosses a geometry
+  // family and re-cuts the whole 95-tile selection through the amortized
+  // queue. Measured under a 6x CPU throttle: ~38s for voxel, on top of the
+  // boot mount — comfortably inside the timeout below. `dither3d` has no
+  // material yet (Stage 5) — it renders as smooth/standard, same floor as
+  // `natural`.
   test.setTimeout(480_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -219,10 +222,10 @@ test('the globe geometry styles: every .hud-style option renders the globe non-b
   await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
-  // Pause the clock (same reason as the lens/style rosters above: a running
+  // Pause the clock (same reason as the lens roster above: a running
   // day can drift two captures onto the dark night side).
   await page.locator('.hud-bottom button').first().click();
-  // Rotate to bring land into view so each style has real relief to act on.
+  // Rotate to bring land into view so each Look has real relief to act on.
   const box = (await globeCanvas.boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
@@ -234,25 +237,22 @@ test('the globe geometry styles: every .hud-style option renders the globe non-b
     await page.waitForTimeout(150);
   }
 
-  // This is a DIFFERENT axis from `.hud-styles`/`[data-style]` above (the
-  // Idioms' screen-space post-process roster) — `.hud-style` is The
-  // Massing's globe geometry/shading dropdown (smooth/voxel).
-  const styleSelect = page.locator('.hud-style');
-  await expect(styleSelect).toHaveCount(1);
+  const lookSelect = page.locator('.hud-look');
+  await expect(lookSelect).toHaveCount(1);
 
-  for (const style of ['smooth', 'voxel']) {
-    await styleSelect.selectOption(style);
+  for (const look of ['natural', 'voxel', 'dither3d', 'pixel']) {
+    await lookSelect.selectOption(look);
     await expect(globeCanvas).toBeVisible();
     // The rebuild is amortized across frames — wait for the queue to drain,
     // not for a fixed 400ms (see `waitForGlobeIdle`).
     await waitForGlobeIdle(page);
     const shot = await globeCanvas.screenshot();
-    // A geometry rebuild that throws (or a style that renders nothing) still
+    // A geometry rebuild that throws (or a Look that renders nothing) still
     // yields a compositor frame, but a blank/degenerate one compresses to a
-    // tiny PNG — the same non-blank floor the lens/style-roster tests above
-    // use, not a pixel-baseline comparison (none exists; WebGL is too noisy
-    // for one).
-    expect(shot.length, `${style} rendered blank`).toBeGreaterThan(5_000);
+    // tiny PNG — the same non-blank floor the lens roster test above uses,
+    // not a pixel-baseline comparison (none exists; WebGL is too noisy for
+    // one).
+    expect(shot.length, `${look} rendered blank`).toBeGreaterThan(5_000);
   }
 
   expect(errors).toEqual([]);
@@ -270,7 +270,7 @@ test('the globe deep zoom: wheel-zooming to the new near limit in voxel style do
   // Pause the clock so the world doesn't spin under the zoom.
   await page.locator('.hud-bottom button').first().click();
 
-  await page.locator('.hud-style').selectOption('voxel');
+  await page.locator('.hud-look').selectOption('voxel');
   await waitForGlobeIdle(page); // the voxel rebuild is queued, ~16 frames of it
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
@@ -400,48 +400,6 @@ test('the vantage: the wheel no longer switches views, only zooms', async ({ pag
   expect(opacities[2]).toBe('0'); // the map never faded in
 });
 
-test('the diorama: every .hud-map-style option renders the map non-blank (The Diorama, Task 4)', async ({ page }) => {
-  test.setTimeout(240_000);
-  const errors: string[] = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
-  page.on('pageerror', (err) => errors.push(String(err)));
-
-  await page.goto('#seed=42');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-
-  // The Map view is not URL-addressable (only system/globe are) — reach it
-  // by selecting Globe first (sets the center the map will show) and then
-  // Map from the HUD dropdown, same as the round-trip test above.
-  await page.locator('.hud-view').selectOption('globe');
-  // A settle before crossing to the map, not a readiness dependency: nothing
-  // this test asserts reads the globe's tiles (it screenshots the MAP), so it
-  // does not pay for a full 96-tile drain.
-  await page.waitForTimeout(2_500);
-  await page.locator('.hud-view').selectOption('map');
-  await page.waitForTimeout(3_000); // region fetch + mount
-
-  const mapStyleSelect = page.locator('.hud-map-style');
-  await expect(mapStyleSelect).toHaveCount(1);
-
-  for (const style of ['voxel', 'pixel']) {
-    await mapStyleSelect.selectOption(style);
-    // A VIEWPORT screenshot, not an element/locator one — the WebGL canvas
-    // continuously re-renders, so a locator screenshot's stability wait can
-    // time out (same idiom as "the map rung" test above).
-    await page.waitForTimeout(500);
-    const shot = await page.screenshot();
-    // A style rebuild that throws (or renders nothing) still yields a
-    // compositor frame, but a blank/degenerate one compresses to a tiny
-    // PNG — the same non-blank floor The Massing's Task-7 style roster uses,
-    // not a pixel-baseline comparison (none exists; WebGL is too noisy for
-    // one, and Step 3's isometric framing pass is a controller visual check,
-    // not a stored golden here).
-    expect(shot.length, `${style} rendered blank`).toBeGreaterThan(5_000);
-  }
-
-  expect(errors).toEqual([]);
-});
-
 test('the diorama: switching back to pixel restores the flat map (The Diorama, Task 4)', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -458,11 +416,11 @@ test('the diorama: switching back to pixel restores the flat map (The Diorama, T
   await page.locator('.hud-view').selectOption('map');
   await page.waitForTimeout(3_000);
 
-  const mapStyleSelect = page.locator('.hud-map-style');
-  // voxel is the default (main.ts wires `hud.setMapStyle('voxel')` before the
-  // first frame) — switch away and back to exercise the kept flat-map path
-  // rather than just reading mount state.
-  await mapStyleSelect.selectOption('pixel');
+  const lookSelect = page.locator('.hud-look');
+  // `natural` (mapRung: voxel) is the default (main.ts wires
+  // `hud.setLook(naturalLook)` before the first frame) — switch to `pixel`
+  // to exercise the kept flat-map path rather than just reading mount state.
+  await lookSelect.selectOption('pixel');
   await page.waitForTimeout(500);
   const pixelShot = await page.screenshot();
   expect(pixelShot.length).toBeGreaterThan(5_000);
@@ -491,16 +449,16 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   const mapCanvas = page.locator('canvas.view-canvas').nth(2);
   await expect(mapCanvas).toBeVisible();
 
-  const mapStyleSelect = page.locator('.hud-map-style');
-  await expect(mapStyleSelect).toHaveCount(1);
+  const lookSelect = page.locator('.hud-look');
+  await expect(lookSelect).toHaveCount(1);
 
   // pixel is the overworld renderer's entry point (mapView.ts's pixel
-  // branch builds `overworldTexture`) — select it and confirm a real,
-  // non-blank frame lands. A VIEWPORT screenshot, not an element/locator
-  // one, per the same rationale as the diorama tests (the WebGL canvas
-  // continuously re-renders, so a locator screenshot's stability wait can
-  // time out).
-  await mapStyleSelect.selectOption('pixel');
+  // branch builds `overworldTexture`) — select the `pixel` Look and confirm
+  // a real, non-blank frame lands. A VIEWPORT screenshot, not an
+  // element/locator one, per the same rationale as the diorama tests (the
+  // WebGL canvas continuously re-renders, so a locator screenshot's
+  // stability wait can time out).
+  await lookSelect.selectOption('pixel');
   await page.waitForTimeout(500);
   const pixelShot = await page.screenshot();
   expect(pixelShot.length).toBeGreaterThan(5_000);
@@ -508,9 +466,9 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   // Round-trip: pixel -> voxel -> pixel must stay clean (no leaked GPU
   // resources/state from tearing down and rebuilding the overworld texture
   // twice) and still render.
-  await mapStyleSelect.selectOption('voxel');
+  await lookSelect.selectOption('voxel');
   await page.waitForTimeout(500);
-  await mapStyleSelect.selectOption('pixel');
+  await lookSelect.selectOption('pixel');
   await page.waitForTimeout(500);
   const roundTripShot = await page.screenshot();
   expect(roundTripShot.length).toBeGreaterThan(5_000);
@@ -518,7 +476,7 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   expect(errors).toEqual([]);
 });
 
-test('the style roster: every render style renders the globe non-blank and transformed', async ({ page }) => {
+test('the Look roster: the pixel Look transforms the globe frame via its post-process pass', async ({ page }) => {
   test.setTimeout(240_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -543,29 +501,30 @@ test('the style roster: every render style renders the globe non-blank and trans
     await page.waitForTimeout(150);
   }
 
-  // A style shader that fails to compile (e.g. a GLSL reserved-word variable)
-  // renders the whole globe black — a very short, highly-compressible PNG. The
-  // >5000-byte non-blank check catches that; the not-equal-to-photoreal check
-  // confirms the style actually transformed the frame.
-  const styleButtons = page.locator('[data-style]');
-  expect(await styleButtons.count()).toBeGreaterThanOrEqual(2);
+  // A post-process shader that fails to compile (e.g. a GLSL reserved-word
+  // variable) renders the whole globe black — a very short,
+  // highly-compressible PNG. The >5000-byte non-blank check catches that;
+  // the not-equal-to-natural check confirms the Look actually transformed
+  // the frame.
+  const lookSelect = page.locator('.hud-look');
+  await expect(lookSelect).toHaveCount(1);
 
-  await page.locator('[data-style="photoreal"]').click();
-  // These styles are screen-space post-process, not tile geometry — but the
-  // baseline still has to be a FULLY BUILT globe, or the later diffs record
-  // the amortized mount finishing rather than the style transforming.
+  await lookSelect.selectOption('natural');
+  // `natural` is screen-space post-process free (no passes), but the
+  // baseline still has to be a FULLY BUILT globe, or the later diff records
+  // the amortized mount finishing rather than the Look transforming.
   await waitForGlobeIdle(page);
   await page.waitForTimeout(250);
-  const photoreal = await globeCanvas.screenshot();
-  expect(photoreal.length).toBeGreaterThan(5_000);
+  const natural = await globeCanvas.screenshot();
+  expect(natural.length).toBeGreaterThan(5_000);
 
-  for (const id of ['pixel-art']) {
-    await page.locator(`[data-style="${id}"]`).click();
+  for (const id of ['pixel']) {
+    await lookSelect.selectOption(id);
     await expect(globeCanvas).toBeVisible();
     await page.waitForTimeout(300);
     const shot = await globeCanvas.screenshot();
     expect(shot.length, `${id} rendered blank`).toBeGreaterThan(5_000);
-    expect(shot.equals(photoreal), `${id} did not transform the frame`).toBe(false);
+    expect(shot.equals(natural), `${id} did not transform the frame`).toBe(false);
   }
 
   expect(errors).toEqual([]);

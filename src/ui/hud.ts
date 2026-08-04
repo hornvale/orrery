@@ -1,32 +1,8 @@
 import { LENSES, type Lens, type LegendEntry } from '../views/lens';
-import { STYLES, type RenderStyle } from '../views/renderStyle';
-import type { GlobeStyle } from '../views/globe';
-import type { MapStyle } from '../views/mapView';
+import { LOOKS, type Look } from '../views/look';
 import type { EclipseEvent } from '../sim/scene';
 import { eclipseMarkPositions } from './eclipseMarks';
 import type { ZoomTarget } from '../views/zoom';
-
-/** The Massing's globe geometry/shading styles, offered on the HUD's
- * `style-select` dropdown — one entry per `GlobeStyle` variant, in the same
- * order as the type union. A distinct axis from `STYLES`/`RenderStyle`
- * above (that one is a post-process pipeline over the rendered frame; this
- * one picks the globe mesh's own geometry and shading). */
-export const GLOBE_STYLES: Array<{ id: GlobeStyle; label: string }> = [
-  { id: 'smooth', label: 'smooth' },
-  { id: 'voxel', label: 'voxel' },
-];
-
-/** The Diorama's map rung styles, offered on the HUD's `map-style-select`
- * dropdown — one entry per `MapStyle` variant, in the same order as the
- * type union. A THIRD axis, distinct from both `STYLES`/`RenderStyle`
- * (a post-process pipeline over the rendered frame) and `GLOBE_STYLES`/
- * `GlobeStyle` above (the globe mesh's own geometry/shading) — this one
- * picks the map rung's own rendering: the isometric heightfield diorama
- * vs. today's flat pixel-art map. */
-export const MAP_STYLES: Array<{ id: MapStyle; label: string }> = [
-  { id: 'voxel', label: 'voxel' },
-  { id: 'pixel', label: 'pixel' },
-];
 
 export const SPEED_STEPS: Array<{ label: string; mult: number }> = [
   { label: '1×', mult: 1 },
@@ -52,19 +28,9 @@ export interface HudCallbacks {
   onScrub(day: number): void;
   /** The viewer picked a lens (by `Lens.id`). */
   onLens(id: string): void;
-  /** The viewer picked a render style (by `RenderStyle.id`). */
-  onStyle(id: string): void;
-  /** The viewer picked a globe geometry/shading style (The Massing's
-   * `GlobeStyle`) from the HUD's style-select dropdown. A distinctly named
-   * control from `onStyle` above — that one is the unrelated post-process
-   * `RenderStyle` axis; this one is the globe mesh's own geometry/shading. */
-  onGlobeStyle(id: GlobeStyle): void;
-  /** The viewer picked a map rung rendering style (The Diorama's
-   * `MapStyle`) from the HUD's map-style-select dropdown. A THIRD,
-   * distinctly named control from `onStyle` (the post-process `RenderStyle`
-   * axis) and `onGlobeStyle` (the globe mesh's own geometry/shading) above —
-   * this one is the map rung's own rendering. */
-  onMapStyle(id: MapStyle): void;
+  /** The viewer picked a Look (by `Look.id`) — the globe mesh, surface, map
+   * rung and post-process passes all follow from this one choice. */
+  onLook(id: string): void;
   /** The viewer toggled the prevailing-wind overlay. Never fires while the
    * control is disabled (no circulation bands) — the browser's own
    * `disabled` attribute blocks the click before this callback is reached. */
@@ -120,19 +86,10 @@ export interface Hud {
   setDay(day: number): void;
   /** Show `lens` as active: mark its button, draw its legend, show its caption. */
   setLens(lens: Lens, legend: LegendEntry[]): void;
-  /** Show `style` as active: mark its button. */
-  setStyle(style: RenderStyle): void;
-  /** Reflects `style` on the globe-style select, without firing
-   * `onGlobeStyle` (the controller driving the style, not the viewer picking
-   * one) — mirrors `setView`'s contract. Distinct from `setStyle` above
-   * (the unrelated post-process `RenderStyle` axis). */
-  setGlobeStyle(style: GlobeStyle): void;
-  /** Reflects `style` on the map-style select, without firing `onMapStyle`
-   * (the controller driving the style, not the viewer picking one) —
-   * mirrors `setGlobeStyle`'s contract. Distinct from `setStyle` (the
-   * unrelated post-process `RenderStyle` axis) and `setGlobeStyle` (the
-   * globe mesh's own geometry/shading). */
-  setMapStyle(style: MapStyle): void;
+  /** Reflects `look` on the Look picker, without firing `onLook` (the
+   * controller driving the choice, not the viewer picking one) — mirrors
+   * `setView`'s contract. */
+  setLook(look: Look): void;
   /** Enables or disables the winds toggle. When unavailable, `reason` names
    * why (a tidally locked world has no circulation bands) — shown next to
    * the disabled button rather than the control silently vanishing. */
@@ -297,54 +254,21 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   const legendBox = el('div', 'hud-legend');
   const lensCaption = el('div', 'hud-caption');
 
-  // The style picker (The Idioms, Task 1): one button per registered style
-  // (STYLES), the same generic way as the lens row above — no per-style
-  // branch. Each button carries `data-style` so a later task's smoke test
-  // can address it directly.
-  const styleRow = el('div', 'hud-styles');
-  const styleButtons = new Map<string, HTMLButtonElement>();
-  for (const style of STYLES) {
-    const b = el('button', '', style.label);
-    b.dataset.style = style.id;
-    b.addEventListener('click', () => cb.onStyle(style.id));
-    styleButtons.set(style.id, b);
-    styleRow.appendChild(b);
-  }
-
-  // The Massing's globe geometry/shading style picker: a `<select>` (not a
-  // button row like the lens/RenderStyle rows above) — a dropdown scales to
-  // a 5th variant without crowding the panel. Construction mirrors
-  // `viewSelect` above (options built from a list, `change` reports the
-  // chosen id). Shown alongside the lens/style rows with no extra per-view
-  // show/hide: the HUD has no existing mechanism gating those rows by view,
-  // so this control doesn't invent one either — it is visible in every view,
-  // same as its neighbors.
-  const globeStyleSelect = el('select', 'hud-style');
-  globeStyleSelect.name = 'style-select';
-  for (const gs of GLOBE_STYLES) {
+  // One labeled Look picker replaces the style button row and both
+  // unlabeled dropdowns. Temporary: Stage 3 deletes this whole module in
+  // favour of the registry-driven sheet.
+  const lookRow = el('div', 'hud-looks');
+  lookRow.append(el('span', 'hud-look-label', 'Look'));
+  const lookSelect = el('select', 'hud-look');
+  lookSelect.name = 'look-select';
+  for (const look of LOOKS) {
     const o = document.createElement('option');
-    o.value = gs.id;
-    o.textContent = gs.label;
-    globeStyleSelect.appendChild(o);
+    o.value = look.id;
+    o.textContent = look.label;
+    lookSelect.appendChild(o);
   }
-  globeStyleSelect.addEventListener('change', () => cb.onGlobeStyle(globeStyleSelect.value as GlobeStyle));
-
-  // The Diorama's map rung style picker: same dropdown construction as
-  // `globeStyleSelect` above, kept as a distinctly named/classed control (a
-  // THIRD axis alongside `styleRow`/`RenderStyle` and `globeStyleSelect`/
-  // `GlobeStyle`). Visible alongside its neighbors with no per-view
-  // show/hide — same rationale as `globeStyleSelect`: the HUD has no
-  // existing mechanism gating these rows by view, so this control doesn't
-  // invent one either.
-  const mapStyleSelect = el('select', 'hud-map-style');
-  mapStyleSelect.name = 'map-style-select';
-  for (const ms of MAP_STYLES) {
-    const o = document.createElement('option');
-    o.value = ms.id;
-    o.textContent = ms.label;
-    mapStyleSelect.appendChild(o);
-  }
-  mapStyleSelect.addEventListener('change', () => cb.onMapStyle(mapStyleSelect.value as MapStyle));
+  lookSelect.addEventListener('change', () => cb.onLook(lookSelect.value));
+  lookRow.append(lookSelect);
 
   // The prevailing-wind overlay: an overlay, not a lens (it composes with
   // whichever lens is active), but the lens panel is the one HUD container
@@ -396,7 +320,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
   oceanRow.append(wavesToggle, glintToggle, nightFillToggle);
 
   const lensPanel = el('div', 'hud hud-lens-panel');
-  lensPanel.append(lensRow, styleRow, globeStyleSelect, mapStyleSelect, legendBox, lensCaption, windsRow, currentsRow, cloudsRow, oceanRow);
+  lensPanel.append(lensRow, lookRow, legendBox, lensCaption, windsRow, currentsRow, cloudsRow, oceanRow);
 
   root.append(topLeft, topRight, bottom, scrubberRow, lensPanel);
   const hud: Hud = {
@@ -434,11 +358,7 @@ export function buildHud(root: HTMLElement, seed: string, cb: HudCallbacks): Hud
       }
       lensCaption.textContent = lens.caption;
     },
-    setStyle(style) {
-      for (const [id, b] of styleButtons) b.classList.toggle('active', id === style.id);
-    },
-    setGlobeStyle: (style) => { globeStyleSelect.value = style; },
-    setMapStyle: (style) => { mapStyleSelect.value = style; },
+    setLook: (look) => { lookSelect.value = look.id; },
     setWindsAvailable: (available, reason) => {
       (windsToggle as HTMLButtonElement).disabled = !available;
       windsReason.textContent = available ? '' : (reason ?? '');

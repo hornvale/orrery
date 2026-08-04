@@ -29,7 +29,8 @@ import {
 } from './views/cubeSphere';
 import { createMapView } from './views/mapView';
 import { lensById, naturalLens } from './views/lens';
-import { StylePipeline, styleById } from './views/renderStyle';
+import { StylePipeline } from './views/stylePipeline';
+import { lookById, naturalLook } from './views/look';
 import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
 import { SPEED_POLICY, SpeedMemory, clampMult, reconcileDayHold } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
@@ -307,7 +308,7 @@ function mountViews(
   // an empty pass chain — an EffectComposer whose only pass is the base
   // RenderPass renders identically to the old direct `renderer.render` call.
   const stylePipeline = new StylePipeline(globeRenderer, globeScene, globeCamera, tiles);
-  stylePipeline.setStyle(styleById('photoreal'));
+  stylePipeline.setPasses(naturalLook.postPasses(tiles));
 
   // The zoom itself (src/views/zoom.ts): CLOSE_OFFSET is a small, arbitrary
   // "just arrived" framing for the system camera's dolly target (aesthetic,
@@ -646,18 +647,12 @@ function mountViews(
       globeView.setLens(lens);
       hud.setLens(lens, lens.legend(tiles));
     },
-    onStyle(id) {
-      const style = styleById(id);
-      stylePipeline.setStyle(style);
-      hud.setStyle(style);
-    },
-    onGlobeStyle(id) {
-      globeView.setStyle(id);
-      hud.setGlobeStyle(id);
-    },
-    onMapStyle(id) {
-      mapView.setStyle(id);
-      hud.setMapStyle(id);
+    onLook(id) {
+      const look = lookById(id);
+      stylePipeline.setPasses(look.postPasses(tiles));
+      globeView.setStyle(look.globeMesh);
+      mapView.setStyle(look.mapRung);
+      hud.setLook(look);
     },
     onWinds() {
       windsOn = !windsOn;
@@ -722,9 +717,7 @@ function mountViews(
   hud.setDay(day % system.world.yearDays);
   updateDateLine();
   hud.setLens(naturalLens, naturalLens.legend(tiles)); // the picker and the globe agree from the first frame
-  hud.setStyle(styleById('photoreal')); // the picker and the pipeline agree from the first frame
-  hud.setGlobeStyle('smooth'); // the picker and the globe's default GlobeStyle agree from the first frame
-  hud.setMapStyle('voxel'); // the picker and the map view's default MapStyle agree from the first frame
+  hud.setLook(naturalLook);
   hud.setWindsAvailable(
     tiles.circulationBands !== null,
     'no circulation bands: this world is tidally locked',
