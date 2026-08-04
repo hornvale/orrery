@@ -50,8 +50,14 @@ canvas { display: block; touch-action: none; }   /* a globe drag must never scro
 .status-chip { flex: 0 1 auto; min-width: 0; min-height: var(--tap); padding: 0 10px;
   background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 999px;
   font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.status-seed { flex: 0 1 auto; min-width: 0; color: var(--dim); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
+/* The seed is the ONLY on-screen display of the world's seed anywhere in
+   the app (the overflow button's `world` tab holds just Reroll/Share —
+   registry.ts — neither shows the value), so unlike the lens/date chips
+   above it must NOT be allowed to shrink: `flex: none` keeps its
+   JS-shortened text (statusBar.ts's `shortSeedLabel`, last-6-digits) always
+   fully on screen. The lens/date chips absorb the rest of the squeeze
+   instead — already-established behaviour, unchanged here. */
+.status-seed { flex: none; color: var(--dim); white-space: nowrap; }
 .status-overflow { flex: none; min-width: var(--tap); min-height: var(--tap); background: var(--chip);
   color: inherit; border: 1px solid #2f3a58; border-radius: 10px; font: inherit; cursor: pointer; }
 
@@ -131,16 +137,6 @@ canvas { display: block; touch-action: none; }   /* a globe drag must never scro
 .eclipse-solar { background: #e8b34a; border-color: #a97a1e; }
 .eclipse-lunar { background: #7d8fc7; border-color: #4a5a91; }
 .eclipse-annular { box-shadow: inset 0 0 0 2px rgba(5, 8, 18, 0.85); }
-
-/* On a narrow phone the status bar's own content — nav + lens chip + date
-   chip + seed + overflow — does not fit legibly on one row even once
-   shrinking is directed away from the nav (see .status-chip above): the
-   date chip would still be squeezed to a sliver. The seed text is the one
-   piece already duplicated elsewhere (the overflow button's World tab), so
-   it is what gives way, not the date. */
-@media (max-width: 480px) {
-  .status-seed { display: none; }
-}
 
 /* ---- desktop: the dock becomes a left column ---- */
 @media (min-width: 760px) {

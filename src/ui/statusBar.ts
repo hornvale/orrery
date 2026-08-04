@@ -62,7 +62,13 @@ export function buildStatusBar(cb: {
 
   element.append(seg, lens, spacer, date, seed, overflow);
 
-  let seedText = '';
+  // This span is the ONLY on-screen display of the seed anywhere in the
+  // app — the `world` tab the overflow button opens holds just Reroll and
+  // Share (registry.ts), neither of which shows the value. A u64 seed can
+  // run to 20 digits, which does not fit a phone-width status bar next to
+  // the nav, the lens chip and the date chip, so it is shown shortened
+  // (last 6 digits) with the full value in `title` — never hidden outright.
+  let rawSeed = '';
   return {
     element,
     setRung: (v) => {
@@ -70,12 +76,26 @@ export function buildStatusBar(cb: {
     },
     setDate: (s) => { date.textContent = s; },
     setLens: (label) => { lens.textContent = label; },
-    setSeed: (s) => { seedText = `seed ${s}`; seed.textContent = seedText; },
+    setSeed: (s) => {
+      rawSeed = s;
+      seed.textContent = shortSeedLabel(s);
+      seed.title = `seed ${s}`;
+    },
     flashShared: () => {
       seed.textContent = 'copied ✓';
-      setTimeout(() => { seed.textContent = seedText; }, 1500);
+      setTimeout(() => { seed.textContent = shortSeedLabel(rawSeed); }, 1500);
     },
   };
+}
+
+/** `seed 42` in full for anything short enough to just fit. A long u64 seed
+ * (up to 20 digits) shortens to `#…<last 6 digits>` — the `#` marks it as an
+ * identifier rather than a lens/date label, and dropping the word "seed"
+ * buys back the few characters that make the difference between fitting a
+ * 375px-wide status bar and not. The full value is always still reachable
+ * via the `title` attribute set above. */
+function shortSeedLabel(s: string): string {
+  return s.length > 6 ? `#…${s.slice(-6)}` : `seed ${s}`;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string): HTMLElementTagNameMap[K] {
