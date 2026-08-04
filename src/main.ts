@@ -208,9 +208,14 @@ function mountViews(
   stage.append(systemCanvas, globeCanvas, mapCanvas);
   app.append(stage);
 
+  // The scale caption: the client's honesty disclosure (decision 0022) —
+  // the relief exaggeration factor, the schematic moon rungs, the derived
+  // ice line, the seasonal hold. It is NOT appended to `app` here: it goes
+  // into the console dock as its footer (see `buildConsoleUi`'s `footer`),
+  // because a free-floating absolute element at bottom-left is painted
+  // underneath the dock at both breakpoints.
   const caption = document.createElement('div');
   caption.className = 'scale-caption';
-  app.append(caption);
 
   const systemRenderer = new THREE.WebGLRenderer({ canvas: systemCanvas, antialias: true });
   systemRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -674,6 +679,7 @@ function mountViews(
     store,
     tabs: SHEET_TABS,
     extras: { time: [dateField.element] },
+    footer: caption,
     onRung: (v) => {
       applyView(v);
       syncUrl(true);

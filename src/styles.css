@@ -151,19 +151,52 @@ canvas { display: block; touch-action: none; }   /* a globe drag must never scro
 .eclipse-lunar { background: #7d8fc7; border-color: #4a5a91; }
 .eclipse-annular { box-shadow: inset 0 0 0 2px rgba(5, 8, 18, 0.85); }
 
+/* ---- the scale caption: the dock's footer ----
+   Not a floating overlay. It used to be `position: absolute; left: 12px;
+   bottom: 12px` on `#app` — which puts it inside the dock's own rectangle at
+   BOTH breakpoints (`left/right/bottom: 0` on a phone, the 260px left column
+   on desktop) with neither element carrying a `z-index`, so tree order
+   decided it and the dock painted straight over the text. Laying it out in
+   the dock is the fix that cannot regress that way; a `z-index` would only
+   have moved the collision on top of the controls. What it carries is a
+   decision-0022 disclosure (the 60x relief exaggeration, the schematic moon
+   rungs, the derived ice line), so it has to be LEGIBLE, not merely present
+   in the DOM — which is all `toContainText` ever checked.
+
+   It lives here, in the dock's own section and BEFORE the desktop media
+   query, rather than down with the preserved non-control-surface rules: the
+   query below raises its cap, and a same-specificity rule later in the file
+   would silently win over it (it did, first time round).
+
+   Bounded and scrollable rather than free-growing: with both holds engaged
+   the globe caption runs ~280 characters, six lines on a 375px phone. The
+   cap keeps the dock from eating the view while the first sentence — the
+   exaggeration factor itself — always fits unscrolled; the partial line at
+   the cap is the affordance that says there is more. `pointer-events` stays
+   at the dock's `auto` so the overflow can actually be scrolled. */
+.scale-caption { flex: none; margin-top: 6px; padding-top: 6px;
+  border-top: 1px solid #1c2540; max-height: 4.8em; overflow-y: auto;
+  -webkit-overflow-scrolling: touch; font-size: 0.65rem; line-height: 1.4;
+  color: #6f7d99; }
+
 /* ---- desktop: the dock becomes a left column ---- */
 @media (min-width: 760px) {
   .console-dock { top: 52px; right: auto; width: 260px; bottom: 0;
     border-radius: 0 12px 0 0; border-right: 1px solid var(--edge); border-top: none;
     max-height: none; }
   .sheet-body { padding-bottom: 12px; }
+  /* The column is only 239px of text width, so the same caption wraps to
+     roughly twice the lines it takes across a 355px phone row — measured, the
+     globe caption's first sentence (the 60x disclosure itself) ran past the
+     phone's cap and was clipped mid-word. The column has vertical room a
+     phone does not, so it gets a taller box: seven lines, which fits every
+     caption except the both-holds-engaged globe one. */
+  .scale-caption { max-height: 9.8em; }
 }
 
 /* ---- non-control-surface rules, preserved verbatim ---- */
 .body-label { color: #9fb0c8; font-size: 0.7rem; text-shadow: 0 0 4px #000;
   pointer-events: none; white-space: nowrap; }
-.scale-caption { position: absolute; left: 12px; bottom: 12px; max-width: 260px;
-  font-size: 0.65rem; color: #6f7d99; pointer-events: none; }
 .status { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
 .view-stage { position: absolute; inset: 0; }
 .view-canvas { position: absolute; inset: 0; width: 100%; height: 100%; transition: none; }

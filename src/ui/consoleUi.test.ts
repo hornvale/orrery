@@ -48,6 +48,25 @@ describe('the console', () => {
     expect([...dock.children].map((c) => c.className)).toEqual(['sheet', 'transport']);
   });
 
+  // The scale caption carries decision 0022's honesty disclosures (the relief
+  // exaggeration factor, the schematic moon rungs). Appended to `#app` beside
+  // the console it was a `position: absolute` sibling of the dock with no
+  // `z-index`, so the dock — later in tree order — painted over it and the
+  // text was invisible at every viewport width. Inside the dock's own flex
+  // column it cannot be covered by the dock.
+  it('lays the footer out inside the dock, below the transport, so nothing can paint over it', () => {
+    const controls = fakeControls();
+    const store = new ControlStore(controls);
+    const footer = document.createElement('div');
+    footer.className = 'scale-caption';
+    const consoleUi = buildConsoleUi({
+      controls, store, tabs: TABS, footer,
+      onRung: () => {}, onPlayPause: () => {}, onScrub: () => {}, onEclipseMark: () => {},
+    });
+    const dock = consoleUi.element.querySelector('.console-dock')!;
+    expect([...dock.children].map((c) => c.className)).toEqual(['sheet', 'transport', 'scale-caption']);
+  });
+
   it('renders the world group — which has no tab of its own — from the overflow', () => {
     const log: string[] = [];
     const { el } = mount(log);

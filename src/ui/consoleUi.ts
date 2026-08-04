@@ -32,6 +32,16 @@ export function buildConsoleUi(opts: {
   /** Bespoke chrome (the date field) to append into a group's tab — passed
    * straight through to the sheet, which appends it as an opaque node. */
   extras?: Partial<Record<GroupId, HTMLElement[]>>;
+  /** A tab-independent footer for the dock (the scale caption), appended
+   * below the transport as an opaque node. It belongs to the DOCK rather than
+   * to any tab because what it says describes the RENDER — the rung, the
+   * relief exaggeration, the seasonal hold — not the controls on screen, so
+   * it must stay readable whichever tab is open. Laying it out inside the
+   * dock, rather than floating it over the viewport, is what keeps it from
+   * being painted under the dock (it was: both were `position: absolute`
+   * siblings with no `z-index`, so tree order won and the dock covered it at
+   * both breakpoints). */
+  footer?: HTMLElement;
 }): ConsoleUi {
   const sheet = buildSheet({ controls: opts.controls, store: opts.store, tabs: opts.tabs, extras: opts.extras });
   const statusBar = buildStatusBar({
@@ -58,6 +68,7 @@ export function buildConsoleUi(opts: {
   const dock = document.createElement('div');
   dock.className = 'console-dock';
   dock.append(sheet.element, transport.element);
+  if (opts.footer) dock.append(opts.footer);
   element.append(statusBar.element, dock);
 
   return {
