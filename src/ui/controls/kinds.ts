@@ -1,7 +1,8 @@
 /** A CONTROL is one thing the viewer can change, described as data rather
  * than wired by hand. Four kinds cover the whole surface; anything that
- * doesn't fit stays bespoke (the day scrubber and the info card, by
- * decision — see the Console spec §1).
+ * doesn't fit stays bespoke. There are exactly THREE such exceptions, by
+ * decision (Console spec §1): the day scrubber, the info card, and the date
+ * field.
  *
  * The point of the indirection is that adding a control costs ONE entry:
  * the sheet renderer, the URL codec and the availability/disabled treatment

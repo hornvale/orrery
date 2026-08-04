@@ -13,9 +13,11 @@ Presentation here is deliberately non-deterministic (hornvale decision
 
 ## Lenses
 
-The globe view has six selectable lenses plus one overlay (the HUD's lens
-panel, bottom-left). Each owns its own colormap, legend, and caption —
-adding a lens costs one file (`src/views/lens.ts`), never a HUD edit.
+The globe view has seven selectable lenses plus one overlay. They live on the
+console's **Lens** tab (the dock — full-width at the bottom on a phone, a
+left column on desktop); the winds overlay is on the **Layers** tab. Each
+lens owns its own colormap, legend, and caption — adding one costs a single
+file (`src/views/lens.ts`), and the picker builds itself from `LENSES`.
 
 | Lens | Caption |
 | --- | --- |
@@ -23,6 +25,7 @@ adding a lens costs one file (`src/views/lens.ts`), never a HUD edit.
 | `topographic` | elevation through the atlas hypsometric ramp, relative to sea level; colors are a cartographic convention, not the ground's actual hue. |
 | `temperature` | surface temperature on the shown day, diverging about freezing and clamped at ±40 °C; the seasonal curve is the producer's own evaluator, not a client invention. The one *living* lens — it repaints as the clock runs, the rest are static. |
 | `moisture` | the climate model's dimensionless moisture index (0-1) — not rainfall: no mm/yr calibration exists, and inventing one would be invented precision. |
+| `precip` | annual precipitation, mm/yr — the moisture index mapped to an Earth-ranged total (spec §5); a documented approximation, not a measured climatology. |
 | `unrest` | tectonic unrest, dimensionless (0-1) — highest along young convergent boundaries, near zero in old interiors; a static present-day snapshot read off plate geometry, not a simulation of seismicity. |
 | `plates` | tectonic plates, colored so neighbours differ — a map coloring, not identities: a plate's id is an arbitrary label and carries no order or meaning across worlds. |
 | *winds* (overlay) | prevailing-wind bands, arrowed by latitude — composes with whichever lens is active; disabled on a tidally locked world (no circulation bands). |

@@ -1,5 +1,6 @@
-/** Jump to a date. BESPOKE chrome, not a registry control — a third exception
- * alongside the day scrubber and the info card (Console spec §1).
+/** Jump to a date. BESPOKE chrome, not a registry control — the third of the
+ * registry's three exceptions, alongside the day scrubber and the info card
+ * (Console spec §1; `kinds.ts` names the same three).
  *
  * Text entry needs parsing, validation, and an invalid state, none of which
  * the four control kinds model. Inventing a `text` kind for one consumer would

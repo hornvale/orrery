@@ -144,10 +144,10 @@ const DITHER_CHUNK = /* glsl */ `
   }
 `;
 
-/** The uniform block the material owns. Exposed on `material.userData` so
- * `globe.ts` can keep `uViewport` current per frame and the tests can read the
- * plumbing without a GL context (happy-dom has no WebGL, so nothing here
- * compiles the GLSL — see this file's test). */
+/** The uniform block the material owns. Exposed on `material.userData` so the
+ * tests can read the plumbing without a GL context (happy-dom has no WebGL,
+ * so nothing here compiles the GLSL — see this file's test). Writes go
+ * through `setSettings`/`setViewport` below, never through `userData`. */
 export interface DitherUniforms {
   uDither: { value: THREE.Data3DTexture };
   uDotScale: { value: number };
@@ -214,7 +214,10 @@ export function createDitherMaterial(): {
   // onBeforeCompile was assigned after construction.
   material.needsUpdate = true;
 
-  // Exposed for the tests and for `globe.ts`'s per-frame viewport update.
+  // Exposed for the tests only. `uViewport` is NOT refreshed per frame: it
+  // changes only when the drawing buffer does, so `main.ts`'s `resize` (the
+  // one place the renderer's real pixel ratio is in scope) drives it through
+  // `globeView.setViewport` -> `setViewport` below, at boot and on resize.
   material.userData.ditherUniforms = uniforms;
   material.userData.ditherChunk = DITHER_CHUNK;
 

@@ -324,9 +324,10 @@ function mountViews(
   globeControls.maxDistance = globeReach * 2;
 
   // The render-STYLE pipeline (The Idioms, Task 1): screen-space skins over
-  // the globe frame, orthogonal to the data lens. Photoreal (the default) is
-  // an empty pass chain — an EffectComposer whose only pass is the base
-  // RenderPass renders identically to the old direct `renderer.render` call.
+  // the globe frame, orthogonal to the data lens. `natural` — the default
+  // Look, and the one that replaced the old "photoreal" style — declares no
+  // post passes at all, so the composer's only pass is the base RenderPass
+  // and the frame is identical to the old direct `renderer.render` call.
   const stylePipeline = new StylePipeline(globeRenderer, globeScene, globeCamera, tiles);
   stylePipeline.setPasses(naturalLook.postPasses(tiles));
 

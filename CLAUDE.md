@@ -84,13 +84,23 @@ root-cache browser is invisible to the test run).
   tabbed renderer over the registry), `statusBar.ts` (rung buttons, lens/date
   chips, the seed), `transport.ts` (play/pause, the day scrubber, eclipse
   marks), `consoleUi.ts` (assembles the three), `dateField.ts` (the "jump to a
-  date" chrome), `inspect.ts`, `seed.ts`, `infoCard.ts`. The day scrubber and
-  the date field are deliberate BESPOKE exceptions to the registry — neither
-  fits the four generic control kinds (a scrubber must distinguish a user
-  drag from autoplay driving it; a date field needs text parsing and an
-  invalid state) — so they stay hand-wired chrome rather than being forced
-  into a kind that doesn't fit them.
-- `src/state/url.ts` — deep-link state (seed/view/day in the hash).
+  date" chrome), `inspect.ts`, `seed.ts`, `infoCard.ts`. THREE things are
+  deliberate BESPOKE exceptions to the registry — the day scrubber, the info
+  card, and the date field. None fits the four generic control kinds (a
+  scrubber must distinguish a user drag from autoplay driving it; the info
+  card is output, not a control at all; a date field needs text parsing and
+  an invalid state) — so they stay hand-wired chrome rather than being forced
+  into a kind that doesn't fit them. `kinds.ts` and `dateField.ts` name the
+  same three; keep all three documents in step.
+- `src/state/` — the state that outlives a frame. `url.ts` is the deep link:
+  `seed`/`view`/`day` plus `c=`, the control blob (`ui/controls/codec.ts`
+  encodes only what differs from default, so a plain link stays plain).
+  `persist.ts` mirrors that same blob into localStorage and owns the
+  precedence rule — URL first, local as the fallback. `debounce.ts` is the
+  250 ms trailing-edge wrapper the persistence write runs behind (a slider
+  drag would otherwise clear Safari's `replaceState` rate limit); its
+  `flush()` is what `main.ts`'s `pagehide` listener calls so the last write
+  survives a close inside the window.
 
 ## The two patterns you'll reuse
 
