@@ -35,7 +35,7 @@ import { lensById, naturalLens, type Lens } from './views/lens';
 import { StylePipeline } from './views/stylePipeline';
 import { lookById, naturalLook } from './views/look';
 import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
-import { SPEED_POLICY, SpeedMemory, clampMult, reconcileDayHold } from './time/speedPolicy';
+import { DayHoldCoupling, SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
 import { randomSeed } from './ui/seed';
@@ -547,6 +547,20 @@ function mountViews(
     return clamped;
   }
 
+  /** The day hold's whole relationship with the clock: engaging it drops a
+   * fast rate to a watchable one, and any OTHER rate change reconciles it
+   * back off. Both live in one object so the drop cannot cancel itself
+   * through `applyRate`'s picker write-back (see `DayHoldCoupling`). */
+  const dayHold = new DayHoldCoupling({
+    seasonalHoldMult: SEASONAL_HOLD_MULT,
+    mult: () => daysPerSecond * 86400,
+    watchableMult: () => SPEED_POLICY[view].defaultMult,
+    applyRate: (mult) => { applyRate(mult); },
+    setDayHold: (on) => globeView.setDayHold(on),
+    held: () => store.get('hold-season') === true,
+    setHeld: syncDayHold,
+  });
+
   // THE registry: one entry per control, each `apply` closing over the view
   // handle it drives. No callback interface, no per-control HUD setter trio.
   const registry = buildRegistry({
@@ -587,32 +601,18 @@ function mountViews(
       applySeasonalHold(daysPerSecond * 86400);
     },
     setHoldSeason: (on) => {
-      globeView.setDayHold(on);
-      if (on) {
-        // "Ensure a spinning (non-seasonal-hold) rate": the diurnal pulse is
-        // a once-per-day cycle, so at the fast rates that auto-engage the
-        // seasonal hold (Task 9) a whole day races by between frames and the
-        // pulse reads as noise, not a watchable cycle. Drop to the rung's
-        // default watchable pace in that case. `hold-spin` (the user's own
-        // explicit freeze choice) is untouched — this holds the season, not
-        // the spin, so it composes rather than overriding.
-        if (daysPerSecond * 86400 > SEASONAL_HOLD_MULT) applyRate(SPEED_POLICY[view].defaultMult);
-      }
+      // Pins the season and, at a fast rate, drops to a watchable pace.
+      // `hold-spin` (the user's own explicit freeze choice) is untouched —
+      // this holds the season, not the spin, so it composes rather than
+      // overriding.
+      dayHold.engage(on);
       setCaptionFor(view);
     },
     setRate: (mult) => {
-      const clamped = applyRate(mult);
       // Watch-a-day and the fast seasonal-hold regime are mutually exclusive
-      // (see setHoldSeason above) — a fast pick here disengages an active
-      // day-hold rather than composing with it (setHoldSeason already guards
-      // the other direction, engaging day-hold at a fast rate).
-      reconcileDayHold(
-        store.get('hold-season') === true,
-        clamped,
-        SEASONAL_HOLD_MULT,
-        globeView.setDayHold,
-        syncDayHold,
-      );
+      // — a fast pick here disengages an active day-hold rather than
+      // composing with it (the coupling guards the other direction).
+      dayHold.reconcile(applyRate(mult));
     },
     reroll: () => {
       // A different seed reloads via the hashchange listener below — the
