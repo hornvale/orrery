@@ -41,6 +41,7 @@ import { DayHoldCoupling, SPEED_POLICY, SpeedMemory, clampMult } from './time/sp
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
 import { loadLocalControls, resolveControls, saveLocalControls } from './state/persist';
+import { debounce } from './state/debounce';
 import { randomSeed } from './ui/seed';
 import type { WorkerErrorKind } from './sim/worker';
 
@@ -69,6 +70,14 @@ const MAP_CAPTION = 'the flat map: a region, drawn.';
  * Task 8 raised the cap itself, this crosses it) — the active clock mult
  * crossing it engages the seasonal hold (Task 9). */
 const SEASONAL_HOLD_MULT = 86400;
+
+/** How long the control-persistence write (localStorage + `syncUrl`) waits
+ * for quiet before it runs. A slider's `input` event fires on every drag
+ * tick — Stage 5 adds the first ones — and without this, a two-second drag
+ * at 60fps clears Safari's ~100-`history.replaceState`-calls-per-30s limit
+ * easily. Debounced on the PERSISTENCE side only: the control's own `apply`
+ * (the render) still runs at full rate on every `store.set`, unthrottled. */
+const CONTROL_PERSIST_DEBOUNCE_MS = 250;
 
 /** The plain "still generating" state — replaced by either a mounted world
  * or one of `renderError`'s distinct failure screens. */
@@ -736,12 +745,19 @@ function mountViews(
   // restore still leaves the URL (and thus Share) reflecting what's
   // actually on screen, rather than the address bar catching up only once
   // the viewer touches something.
-  store.subscribe(() => {
+  //
+  // Debounced (see `CONTROL_PERSIST_DEBOUNCE_MS`): `store.set` itself still
+  // notifies, and the control's own `apply` still repaints, on every call —
+  // only the write below waits for quiet, and it always reads `store`
+  // fresh when it finally runs, so a burst's LAST value is what lands, never
+  // a stale one from mid-drag.
+  const persistControls = debounce(() => {
     const encoded = encodeControls(store.nonDefaults());
     saveLocalControls(encoded);
     state.controls = encoded;
     syncUrl(true);
-  });
+  }, CONTROL_PERSIST_DEBOUNCE_MS);
+  store.subscribe(persistControls);
 
   // URL first, local as the fallback — `resolveControls` is the one place
   // that rule lives, so it has its own unit test rather than being an inline

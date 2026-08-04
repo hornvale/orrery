@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { buildRegistry, SHEET_TABS, type RegistryDeps } from './registry';
+import { describe, expect, it, vi } from 'vitest';
+import { buildRegistry, rateId, SHEET_TABS, type RegistryDeps } from './registry';
 import { LENSES } from '../../views/lens';
 import { LOOKS } from '../../views/look';
 import type { Control } from './kinds';
 import { ControlStore } from './store';
 import { encodeControls } from './codec';
 import { serializeAppState } from '../../state/url';
+import { debounce } from '../../state/debounce';
+import { SPEED_POLICY, SpeedMemory, clampMult } from '../../time/speedPolicy';
+import type { ZoomTarget } from '../../views/zoom';
 
 /** Every dep is a no-op recorder: the registry test cares about the SHAPE of
  * the control list, not what any apply does. */
@@ -128,5 +131,76 @@ describe('the control registry', () => {
     const encoded = encodeControls(store.nonDefaults());
     expect(encoded).toBe('');
     expect(serializeAppState({ seed: '42', view: 'system', day: 0, controls: encoded })).toBe('#seed=42');
+  });
+
+  // The two tests above prove the getter is live under a directly-mocked
+  // `rungDefaultRate`, and that the boot-time picker write-back is a no-op —
+  // but not that main.ts's ACTUAL rung-switch coupling (`view` reassigned,
+  // then `applyRate` re-run, remembered per-rung by `SpeedMemory`) leaves
+  // `nonDefaults()` empty too. `main.ts` isn't importable, so this rebuilds
+  // that coupling the same way `speedPolicy.test.ts`'s `wireRung` rebuilds
+  // the day-hold coupling: the REAL registry, a REAL store, and the REAL
+  // `SpeedMemory`/`clampMult`/`SPEED_POLICY`, with only the view handles
+  // stubbed out.
+  it('stays empty across a real rung switch — the assembled view+applyRate+SpeedMemory coupling, not a mocked default', () => {
+    let view: ZoomTarget = 'system';
+    const speedMemory = new SpeedMemory();
+    let store!: ControlStore;
+
+    function applyRate(mult: number): number {
+      const clamped = clampMult(view, mult);
+      speedMemory.remember(view, clamped);
+      const picked = rateId(clamped);
+      if (store.get('rate') !== picked) store.set('rate', picked);
+      return clamped;
+    }
+
+    const r = buildRegistry({
+      ...deps(),
+      setRate: (mult) => { applyRate(mult); },
+      rungDefaultRate: () => SPEED_POLICY[view].defaultMult,
+    });
+    store = new ControlStore(r);
+
+    // Boot on the system rung.
+    applyRate(speedMemory.restore(view));
+    expect(store.nonDefaults()).toEqual({});
+
+    // applyView's own two steps: reassign `view`, THEN re-apply the rate —
+    // exactly what a rung switch does in main.ts.
+    view = 'globe';
+    applyRate(speedMemory.restore(view));
+    expect(store.nonDefaults()).toEqual({}); // globe's own default, not a stale system one
+
+    // ...and back, so the round trip is proven too.
+    view = 'system';
+    applyRate(speedMemory.restore(view));
+    expect(store.nonDefaults()).toEqual({});
+  });
+
+  // Stage 5 adds the registry's first sliders, whose `input` event fires
+  // `store.set` on every drag tick. `main.ts`'s persistence subscriber must
+  // be debounced on that side (not the control's own `apply`, which still
+  // has to repaint at full rate) or a two-second drag at 60fps clears
+  // Safari's ~100-`history.replaceState`-calls-per-30s limit easily.
+  it('debouncing the persistence subscriber collapses a drag-style burst of store.set into one write, landing the final value', () => {
+    vi.useFakeTimers();
+    const r = buildRegistry(deps());
+    const store = new ControlStore(r);
+    const writes: string[] = [];
+    const persist = debounce(() => writes.push(encodeControls(store.nonDefaults())), 250);
+    store.subscribe(persist);
+
+    // Stands in for a slider's rapid `input` events (no slider is registered
+    // yet — Stage 5 adds the first ones) — toggling back and forth 30 times,
+    // ending on the value the "drag" actually settles at.
+    for (let i = 0; i < 30; i++) store.set('winds', i % 2 === 0);
+    store.set('winds', true);
+    expect(writes).toHaveLength(0); // still inside the quiet window — nothing has landed yet
+
+    vi.advanceTimersByTime(250);
+    expect(writes).toHaveLength(1); // 31 sets, ONE persistence write
+    expect(writes[0]).toBe('winds:1'); // and it is the FINAL value, not the first or a stale one
+    vi.useRealTimers();
   });
 });
