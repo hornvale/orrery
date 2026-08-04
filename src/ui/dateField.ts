@@ -58,6 +58,19 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   go.dataset.date = 'go';
   go.textContent = 'Go';
 
+  // `setDate` is the clock's write path, called every unpaused animation
+  // frame (main.ts's `updateDateLine`). Without a guard it would overwrite
+  // whatever the viewer is mid-typing on the very next frame — unusable
+  // during playback, which is the moment a jump is most wanted. "Being
+  // edited" is a dirty flag, not focus: a viewer can focus the field and
+  // walk away without typing, and that must still resume tracking rather
+  // than freeze the field forever. The flag goes dirty on a real `input`
+  // event, and clean again on a successful submit (the edit is now spent)
+  // or on blur if the value is exactly what the clock last wrote (nothing
+  // was actually changed, so there is nothing left to protect).
+  let dirty = false;
+  let lastSynced = '';
+
   function submit(): void {
     const parsed = parseDateEntry(input.value);
     if (!parsed) {
@@ -65,11 +78,16 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
       return;
     }
     element.classList.remove('invalid');
+    dirty = false;
     cb.onJump(parsed.year, parsed.dayOfYear);
   }
 
   go.addEventListener('click', submit);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  input.addEventListener('input', () => { dirty = true; });
+  input.addEventListener('blur', () => {
+    if (input.value === lastSynced) dirty = false;
+  });
 
   row.append(input, go);
   element.append(label, row);
@@ -77,7 +95,9 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   return {
     element,
     setDate: (year, dayOfYear) => {
-      input.value = `${year} ${dayOfYear}`;
+      lastSynced = `${year} ${dayOfYear}`;
+      if (dirty) return; // an edit is in progress — do not clobber it
+      input.value = lastSynced;
       element.classList.remove('invalid');
     },
   };

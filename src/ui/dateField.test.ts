@@ -84,6 +84,80 @@ describe('the date field', () => {
   });
 });
 
+// The clock calls `setDate` every unpaused animation frame (via
+// `updateDateLine`). Without a guard, that clobbers whatever the viewer is
+// mid-typing on the very next frame — the field would be unusable during
+// playback, which is precisely when a jump is most likely wanted. "Being
+// edited" is defined as: dirty since the last real `input` event, and NOT
+// dirty once a submit succeeds or the field is blurred with its value
+// unchanged from what the clock last wrote. Focus alone does not count —
+// a viewer can focus and walk away without typing, and that must resume
+// tracking, not freeze the field forever.
+describe('setDate does not clobber an edit in progress', () => {
+  it('does NOT change the value while the viewer has typed something', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    input.value = '99 1';
+    input.dispatchEvent(new Event('input'));
+    f.setDate(3, 214);
+    expect(input.value).toBe('99 1');
+  });
+
+  it('DOES update an untouched field — the normal clock-tracking path', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    f.setDate(3, 214);
+    expect(input.value).toBe('3 214');
+  });
+
+  it('resumes tracking after a successful submit', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    const go = f.element.querySelector('[data-date="go"]') as HTMLButtonElement;
+    input.value = '5 6';
+    input.dispatchEvent(new Event('input'));
+    go.click();
+    f.setDate(9, 10);
+    expect(input.value).toBe('9 10');
+  });
+
+  it('does NOT resume tracking on a failed submit — the junk stays put for correction', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    const go = f.element.querySelector('[data-date="go"]') as HTMLButtonElement;
+    input.value = 'nonsense';
+    input.dispatchEvent(new Event('input'));
+    go.click();
+    f.setDate(3, 214);
+    expect(input.value).toBe('nonsense');
+  });
+
+  it('resumes tracking on blur if the value is unchanged from what the clock last wrote', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    f.setDate(3, 214);
+    // Some input events fire without a real edit (focus/composition quirks);
+    // re-typing the identical value should still be treated as "walked away
+    // without changing anything" once the field loses focus.
+    input.value = '3 214';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    f.setDate(9, 10);
+    expect(input.value).toBe('9 10');
+  });
+
+  it('does NOT resume tracking on blur while a real edit is still pending', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    f.setDate(3, 214);
+    input.value = '99 1';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    f.setDate(9, 10);
+    expect(input.value).toBe('99 1');
+  });
+});
+
 // `main.ts` is not importable from a test (it boots the whole app on import),
 // so the 1-based-in/0-based-to-the-engine conversion that its `jumpToDate`
 // performs — `rawDateToDay(year - 1, dayOfYear - 1, yearDays)`, verbatim from
