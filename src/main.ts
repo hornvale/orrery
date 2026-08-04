@@ -14,6 +14,7 @@ import './styles.css';
 import { buildConsoleUi } from './ui/consoleUi';
 import { buildRegistry, rateId, rateLabel, SHEET_TABS } from './ui/controls/registry';
 import { ControlStore } from './ui/controls/store';
+import { decodeControls, encodeControls } from './ui/controls/codec';
 import type { ControlContext } from './ui/controls/kinds';
 import { mountInfoCard } from './ui/infoCard';
 import { eclipseInfo, moonInfo, namedTarget, siteInfo, starInfo, worldInfo } from './ui/inspect';
@@ -39,6 +40,7 @@ import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './v
 import { DayHoldCoupling, SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
+import { loadLocalControls, resolveControls, saveLocalControls } from './state/persist';
 import { randomSeed } from './ui/seed';
 import type { WorkerErrorKind } from './sim/worker';
 
@@ -471,7 +473,7 @@ function mountViews(
     // the URL contract ahead of that wiring (a reload while on the map rung
     // lands back on the globe, one rung up, rather than erroring).
     const urlView = view === 'map' ? 'globe' : view;
-    const hash = serializeAppState({ seed: state.seed, view: urlView, day });
+    const hash = serializeAppState({ seed: state.seed, view: urlView, day, controls: state.controls });
     if (location.hash !== hash) history.replaceState(null, '', hash);
   }
 
@@ -615,6 +617,7 @@ function mountViews(
       // composing with it (the coupling guards the other direction).
       dayHold.reconcile(applyRate(mult));
     },
+    rungDefaultRate: () => SPEED_POLICY[view].defaultMult,
     reroll: () => {
       // A different seed reloads via the hashchange listener below — the
       // one deliberate full-reload path (module doc comment).
@@ -725,12 +728,37 @@ function mountViews(
   consoleUi.transport.setDay(day % system.world.yearDays);
   consoleUi.transport.setEclipses(eclipses.events, system.world.yearDays);
   updateDateLine();
+
+  // Persist every control change: into localStorage always, into the URL as
+  // a discrete user action (a control change isn't autoplay, so it bypasses
+  // syncUrl's throttle). Subscribing BEFORE restoring means the restore
+  // below flows through this same path, so a silent localStorage-only
+  // restore still leaves the URL (and thus Share) reflecting what's
+  // actually on screen, rather than the address bar catching up only once
+  // the viewer touches something.
+  store.subscribe(() => {
+    const encoded = encodeControls(store.nonDefaults());
+    saveLocalControls(encoded);
+    state.controls = encoded;
+    syncUrl(true);
+  });
+
+  // URL first, local as the fallback — `resolveControls` is the one place
+  // that rule lives, so it has its own unit test rather than being an inline
+  // ternary nobody can exercise in isolation. `decodeControls` is forgiving
+  // (unknown ids ignored, sliders clamped, bad choices dropped), so a stale
+  // or hand-edited blob degrades gracefully rather than erroring.
+  const restored = decodeControls(resolveControls(state.controls, loadLocalControls), registry);
+  for (const [id, v] of Object.entries(restored)) store.set(id, v);
+
   // The store applies nothing at construction, and it does not need to: every
   // default IS the state its view was built in (overlays hidden, waves and
-  // glint on, schematic scale, the natural lens and Look). The RATE is the
-  // exception — the rung's remembered speed is not the `x1` default — so it
-  // is applied here, which also engages the hold and sets the caption.
-  applyRate(speedMemory.restore(view));
+  // glint on, schematic scale, the natural lens and Look, and the rate,
+  // whose default now tracks the rung — see `buildRegistry`'s
+  // `rungDefaultRate`). A restored rate already ran its own apply above (via
+  // `setRate` -> `applyRate`, which also engages the hold and sets the
+  // caption); anything else falls back to the rung's own resting pace here.
+  if (!('rate' in restored)) applyRate(speedMemory.restore(view));
   consoleUi.refresh(ctx());
 
   const infoCard = mountInfoCard(app);

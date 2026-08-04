@@ -37,6 +37,12 @@ export interface RegistryDeps {
   setHoldSpin(on: boolean): void;
   setHoldSeason(on: boolean): void;
   setRate(mult: number): void;
+  /** The rung's own resting rate (`SPEED_POLICY[rung].defaultMult`) — what
+   * boot actually applies, not a fixed `x1`. The rate control's `default`
+   * reads this live (see below) so a session that never touches the rate
+   * control never reports it as "changed" just for existing on a rung whose
+   * resting pace isn't 1×. */
+  rungDefaultRate(): number;
   reroll(): void;
   share(): void;
   /** The active Look's own settings, merged in at build time. Empty until
@@ -135,7 +141,13 @@ export function buildRegistry(d: RegistryDeps): Control[] {
     {
       kind: 'choice', id: 'rate', label: 'Rate', group: 'time',
       options: SPEED_STEPS.map((s) => ({ id: rateId(s.mult), label: s.label })),
-      default: rateId(1),
+      // A getter, not a plain value: the resting rate differs by rung (the
+      // system rung eases in at ~1 mo/s, the globe at 1 hr/s — see
+      // `SPEED_POLICY`), so a fixed `x1` disagreed with what boot actually
+      // applies and every fresh load reported rate as non-default. Reading
+      // it live also means a rung switch that leaves rate untouched never
+      // gets flagged either — only an actual user pick does.
+      get default() { return rateId(d.rungDefaultRate()); },
       apply: (v) => d.setRate(Number(v.replace(/^x/, ''))),
     },
     {

@@ -3,6 +3,9 @@ import { buildRegistry, SHEET_TABS, type RegistryDeps } from './registry';
 import { LENSES } from '../../views/lens';
 import { LOOKS } from '../../views/look';
 import type { Control } from './kinds';
+import { ControlStore } from './store';
+import { encodeControls } from './codec';
+import { serializeAppState } from '../../state/url';
 
 /** Every dep is a no-op recorder: the registry test cares about the SHAPE of
  * the control list, not what any apply does. */
@@ -13,6 +16,7 @@ function deps(): RegistryDeps {
     setWaves: nop, setGlint: nop, setNightFill: nop, setTrueRelief: nop,
     setTrueDistance: nop, setHoldSpin: nop, setHoldSeason: nop, setRate: nop,
     reroll: nop, share: nop,
+    rungDefaultRate: () => 1,
     lookSettings: () => [],
     lensLegend: () => [],
   };
@@ -94,5 +98,35 @@ describe('the control registry', () => {
     const lens = r.find((c) => c.id === 'lens')!;
     expect(lens.kind).toBe('choice');
     if (lens.kind === 'choice') expect(typeof lens.legend).toBe('function');
+  });
+
+  // A static `x1` default for `rate` disagreed with what boot actually
+  // applies (the rung's own default rate, restored via `SpeedMemory`) — so
+  // every fresh load reported rate as "changed" and every plain link carried
+  // an unwanted `c=rate:...`. The fix is a rung-aware default, wired through
+  // the same `RegistryDeps` port pattern `available` already uses for
+  // rung-dependent behaviour.
+  it("tracks the rung's own default rate rather than a fixed x1", () => {
+    let mult = 1;
+    const rate = buildRegistry({ ...deps(), rungDefaultRate: () => mult }).find((c) => c.id === 'rate')!;
+    expect(rate.kind).toBe('choice');
+    if (rate.kind !== 'choice') return;
+    expect(rate.default).toBe('x1');
+    mult = 3600;
+    expect(rate.default).toBe('x3600'); // live — reflects the CURRENT rung, not the boot rung
+  });
+
+  it('boots with rate already at the rung default, so a fresh session serializes an empty control blob', () => {
+    const r = buildRegistry({ ...deps(), rungDefaultRate: () => 2.6e6 });
+    const store = new ControlStore(r);
+    // Mirrors main.ts's boot-time rate application: `applyRate` writes the
+    // picked rate back to the store only when it differs from what's
+    // already there. With the default tracking the rung, it never differs.
+    const picked = 'x2600000';
+    if (store.get('rate') !== picked) store.set('rate', picked);
+    expect(store.nonDefaults()).toEqual({});
+    const encoded = encodeControls(store.nonDefaults());
+    expect(encoded).toBe('');
+    expect(serializeAppState({ seed: '42', view: 'system', day: 0, controls: encoded })).toBe('#seed=42');
   });
 });

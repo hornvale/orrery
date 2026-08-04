@@ -107,6 +107,7 @@ function wireRung(rung: ZoomTarget, startMult: number) {
     lensLegend: () => [],
     setHoldSeason: (on) => dayHold.engage(on),
     setRate: (m) => dayHold.reconcile(applyRate(m)),
+    rungDefaultRate: () => SPEED_POLICY[rung].defaultMult,
   };
   store = new ControlStore(buildRegistry(deps));
   store.set('rate', rateId(startMult)); // the rate the rung starts at
