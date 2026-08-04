@@ -79,8 +79,35 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   let dirty = false;
   let liveValue = ''; // the clock's current text, kept current every `setDate` call regardless of `dirty`
 
+  // A real activation of `go` blurs the input BEFORE the activation itself
+  // completes, on every input method: mouse is pointerdown -> mousedown ->
+  // blur -> ... -> click; touch is pointerdown -> touchstart -> blur (iOS
+  // blurs on touchstart, before the synthetic mousedown compat event) ->
+  // ... -> click; keyboard-Tab is blur (leaving the input) -> focus (landing
+  // on `go`) ->, arbitrarily later, Enter/Space -> click. In every case the
+  // blur handler below would discard the typed text as "abandoned" before
+  // `submit` ever runs. Fighting the blur itself (e.g. `preventDefault` on
+  // `go`'s `mousedown`) only covers the mouse case — iOS's blur-on-touchstart
+  // fires before any mousedown compat event exists to prevent, and Space/
+  // Enter after a Tab is pure keyboard, no pointer event at all.
+  //
+  // So this does not fight focus: it snapshots the being-typed text into
+  // `pendingSubmitValue` at the earliest moment common to all three paths
+  // (mouse/touch: `go`'s own `pointerdown`, which precedes blur on every
+  // platform; keyboard: the blur itself, since Tab-to-Go has no pointerdown
+  // to hook), and `submit` prefers that snapshot over the input's own
+  // (possibly already-reset) value. A fresh `input` event invalidates a
+  // stale snapshot — the viewer has started over, so the old abandoned text
+  // must not resurface on a later, unrelated `go` activation.
+  let pendingSubmitValue: string | null = null;
+  const snapshotPending = (): void => {
+    if (dirty) pendingSubmitValue = input.value;
+  };
+
   function submit(): void {
-    const parsed = parseDateEntry(input.value);
+    const raw = pendingSubmitValue ?? input.value;
+    pendingSubmitValue = null;
+    const parsed = parseDateEntry(raw);
     if (!parsed) {
       element.classList.add('invalid');
       return;
@@ -90,20 +117,15 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
     cb.onJump(parsed.year, parsed.dayOfYear);
   }
 
-  // A real click on `go` is mousedown -> blur (focus leaving the input) ->
-  // mouseup -> click, in that order — so without this, the blur handler
-  // below discards the typed value as "abandoned" a tick before `submit`
-  // ever runs, and a mouse click on Go could never work. `preventDefault`
-  // on mousedown stops the browser's default focus-shift (the actual cause
-  // of the blur), while still letting the click fire normally afterward.
-  // `.click()` calls in tests bypass this entirely (they fire a bare
-  // `click`, no real focus transfer), which is why no unit test caught it —
-  // this is a real-browser-only bug, the kind e2e exists to catch.
-  go.addEventListener('mousedown', (e) => { e.preventDefault(); });
+  go.addEventListener('pointerdown', snapshotPending);
   go.addEventListener('click', submit);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  input.addEventListener('input', () => { dirty = true; });
+  input.addEventListener('input', () => {
+    dirty = true;
+    pendingSubmitValue = null; // a fresh edit outranks any earlier handoff
+  });
   input.addEventListener('blur', () => {
+    snapshotPending(); // preserve a Tab-to-Go (or touchstart-blur) handoff
     dirty = false;
     input.value = liveValue;
     element.classList.remove('invalid');
@@ -119,6 +141,12 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
       if (dirty) return; // an edit is in progress — do not clobber it
       input.value = liveValue;
       element.classList.remove('invalid');
+      // Normal clock-tracking resumed, so any earlier abandoned-edit
+      // snapshot is now stale — without this, a `go` tap with nothing
+      // freshly typed (rare, but possible right after an abandonment) could
+      // resubmit old text instead of doing nothing useful with the current
+      // value.
+      pendingSubmitValue = null;
     },
   };
 }

@@ -64,6 +64,39 @@ describe('the date field', () => {
     expect(f.element.classList.contains('invalid')).toBe(true);
   });
 
+  it('a real blur-before-click handoff (Tab-to-Go, or iOS blurring on touchstart) still submits what was typed, not the discarded value', () => {
+    // A real activation of `go` blurs the input BEFORE the click fires — on
+    // touch, iOS blurs on `touchstart`, before the synthetic `mousedown`
+    // even exists; on keyboard, Tab-to-Go blurs long before Enter/Space.
+    // `.click()` alone (as the other tests here use) never exercises this —
+    // it fires a bare `click`, no blur — so this drives the blur explicitly
+    // to prove the value survives it.
+    let got: [number, number] | null = null;
+    const f = buildDateField({ onJump: (y, d) => { got = [y, d]; } });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    const go = f.element.querySelector('[data-date="go"]') as HTMLButtonElement;
+    input.value = '5 30';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur')); // the handoff: the visible field already resets here
+    expect(input.value).not.toBe('5 30');
+    go.click();
+    expect(got).toEqual([5, 30]);
+  });
+
+  it('a fresh edit after an abandoned one submits the NEW text, not the stale handoff', () => {
+    let got: [number, number] | null = null;
+    const f = buildDateField({ onJump: (y, d) => { got = [y, d]; } });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    const go = f.element.querySelector('[data-date="go"]') as HTMLButtonElement;
+    input.value = '5 30';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur')); // abandoned — '5 30' becomes a pending handoff
+    input.value = '7 8'; // the viewer starts over
+    input.dispatchEvent(new Event('input')); // must drop the stale '5 30' handoff
+    go.click();
+    expect(got).toEqual([7, 8]);
+  });
+
   it('clears the invalid mark once a good value is entered', () => {
     const f = buildDateField({ onJump: () => {} });
     const input = f.element.querySelector('input') as HTMLInputElement;
