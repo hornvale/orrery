@@ -1194,4 +1194,35 @@ describe('face-space tile UVs', () => {
     expect(uv.itemSize).toBe(2);
     expect(uv.count).toBe(geom.getAttribute('position').count);
   });
+
+  it('a skirted tile still has one uv per position, and every skirt vertex carries its source edge vertex\'s UV exactly (not just a matching count)', () => {
+    const tile = { face: 0, level: 1, ix: 0, iy: 0 };
+    const geom = buildTileGeometry(flatTiles(), tile, 2, 60, ignoreColor, 0.2);
+    const uv = geom.getAttribute('uv');
+    const pos = geom.getAttribute('position');
+    expect(uv.count).toBe(pos.count);
+    expect(pos.count).toBeGreaterThan(N * N); // the fixture really does have a skirt
+
+    // The four edges buildGridGeometry drops a skirt from, in the exact order
+    // it appends them — top row, bottom row, left col, right col — each
+    // contributing N consecutive skirt vertices right after the N×N surface
+    // grid. A copy bug that wrote zeros (or copied the wrong source) would
+    // fail this: it compares against the SOURCE vertex's own (generally
+    // nonzero) computed UV, not an independently recomputed expectation.
+    const edges = [
+      Array.from({ length: N }, (_, c) => c), // top row
+      Array.from({ length: N }, (_, c) => (N - 1) * N + c), // bottom row
+      Array.from({ length: N }, (_, r) => r * N), // left col
+      Array.from({ length: N }, (_, r) => r * N + (N - 1)), // right col
+    ];
+    let skirtIdx = N * N;
+    for (const edge of edges) {
+      for (const src of edge) {
+        expect(uv.getX(skirtIdx)).toBe(uv.getX(src));
+        expect(uv.getY(skirtIdx)).toBe(uv.getY(src));
+        skirtIdx++;
+      }
+    }
+    expect(skirtIdx).toBe(uv.count); // consumed every skirt vertex, none left over
+  });
 });
