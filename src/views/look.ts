@@ -14,6 +14,9 @@ import type { TilesScene } from '../sim/scene';
 import type { GlobeStyle } from './globe';
 import type { MapStyle } from './mapView';
 import { pixelArtStyle } from './styles/pixelArt';
+import type { Control } from '../ui/controls/kinds';
+import type { DitherSettings } from './styles/dither3d';
+import { DITHER_DEFAULTS } from './styles/dither3d';
 
 export interface Look {
   /** Stable id — the URL codec writes it and the control registry keys on it. */
@@ -76,4 +79,70 @@ export const LOOKS: readonly Look[] = [naturalLook, voxelLook, dither3dLook, pix
  * before a Look was renamed opens the world rather than erroring. */
 export function lookById(id: string): Look {
   return LOOKS.find((l) => l.id === id) ?? naturalLook;
+}
+
+/** The dither Look's own seven controls. Handed a sink so the Look module
+ * stays free of any view handle — `main.ts` connects it to
+ * `globeView.setDitherSettings`.
+ *
+ * Seven entries, and the sheet renderer, the codec and their tests need no
+ * edit at all. That is the registry earning its keep. */
+export function ditherSettingControls(onChange: (s: Partial<DitherSettings>) => void): Control[] {
+  const available = (ctx: { lookId: string }) =>
+    ctx.lookId === 'dither3d'
+      ? { ok: true as const }
+      : { ok: false as const, reason: 'the dither3d Look only' };
+  return [
+    {
+      kind: 'choice', id: 'dither-colour', label: 'Colour mode', group: 'look',
+      help: 'Grayscale is the stronger image, and it makes temperature, moisture, precip, unrest and plates indistinguishable. Colour dithers each channel against the same pattern, so the lens still reads.',
+      options: [{ id: 'colour', label: 'colour' }, { id: 'grayscale', label: 'grayscale' }],
+      default: DITHER_DEFAULTS.colourMode,
+      available,
+      apply: (v) => onChange({ colourMode: v as DitherSettings['colourMode'] }),
+    },
+    {
+      kind: 'slider', id: 'dither-dot-scale', label: 'Dot scale', group: 'look',
+      min: 0.25, max: 4, step: 0.05, default: DITHER_DEFAULTS.dotScale,
+      format: (v) => `${v.toFixed(2)}×`,
+      available,
+      apply: (v) => onChange({ dotScale: v }),
+    },
+    {
+      kind: 'slider', id: 'dither-contrast', label: 'Contrast', group: 'look',
+      min: 0.4, max: 3, step: 0.05, default: DITHER_DEFAULTS.contrast,
+      format: (v) => v.toFixed(2),
+      available,
+      apply: (v) => onChange({ contrast: v }),
+    },
+    {
+      kind: 'slider', id: 'dither-variability', label: 'Dot size variability', group: 'look',
+      help: '0 shades by dot COUNT (Bayer); 1 shades by dot SIZE (halftone).',
+      min: 0, max: 1, step: 0.05, default: DITHER_DEFAULTS.variability,
+      format: (v) => v.toFixed(2),
+      available,
+      apply: (v) => onChange({ variability: v }),
+    },
+    {
+      kind: 'slider', id: 'dither-stretch', label: 'Stretch smoothness', group: 'look',
+      help: 'Softens dots along the stretched axis at a grazing angle.',
+      min: 0, max: 1, step: 0.05, default: DITHER_DEFAULTS.stretch,
+      format: (v) => v.toFixed(2),
+      available,
+      apply: (v) => onChange({ stretch: v }),
+    },
+    {
+      kind: 'toggle', id: 'dither-invert', label: 'Invert dots', group: 'look',
+      default: DITHER_DEFAULTS.invert,
+      available,
+      apply: (v) => onChange({ invert: v }),
+    },
+    {
+      kind: 'toggle', id: 'dither-radial', label: 'Radial compensation', group: 'look',
+      help: 'Counteracts the density falloff toward the screen edge under a perspective projection.',
+      default: DITHER_DEFAULTS.radialCompensation,
+      available,
+      apply: (v) => onChange({ radialCompensation: v }),
+    },
+  ];
 }

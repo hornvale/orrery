@@ -45,8 +45,8 @@ export interface RegistryDeps {
   rungDefaultRate(): number;
   reroll(): void;
   share(): void;
-  /** The active Look's own settings, merged in at build time. Empty until
-   * Stage 5 gives dither3d its seven. */
+  /** The active Look's own settings, merged in at build time — dither3d's
+   * seven (`ditherSettingControls`); every other Look contributes none. */
   lookSettings(): Control[];
   /** The active lens's legend rows, for the lens control's colour key. Read
    * through a function so it tracks the live lens and the live world. */

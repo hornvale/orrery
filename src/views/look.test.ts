@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LOOKS, lookById, naturalLook } from './look';
+import { LOOKS, ditherSettingControls, lookById, naturalLook } from './look';
 
 describe('the Look roster', () => {
   it('holds exactly the four Looks the Console spec names', () => {
@@ -31,5 +31,33 @@ describe('the Look roster', () => {
       expect(['standard', 'dither']).toContain(look.globeSurface);
       expect(['voxel', 'pixel']).toContain(look.mapRung);
     }
+  });
+});
+
+describe('the dither Looks settings', () => {
+  it('offers all seven', () => {
+    const ids = ditherSettingControls(() => {}).map((c) => c.id);
+    expect(ids).toEqual([
+      'dither-colour', 'dither-dot-scale', 'dither-contrast',
+      'dither-variability', 'dither-stretch', 'dither-invert', 'dither-radial',
+    ]);
+  });
+
+  it('puts every one in the look group, so they render under the Look picker', () => {
+    for (const c of ditherSettingControls(() => {})) expect(c.group).toBe('look');
+  });
+
+  it('defaults colour mode to colour, so the lens survives', () => {
+    const mode = ditherSettingControls(() => {}).find((c) => c.id === 'dither-colour')!;
+    expect(mode.kind).toBe('choice');
+    if (mode.kind === 'choice') expect(mode.default).toBe('colour');
+  });
+
+  it('reports each change as a partial settings patch', () => {
+    const seen: unknown[] = [];
+    const controls = ditherSettingControls((s) => seen.push(s));
+    const dot = controls.find((c) => c.id === 'dither-dot-scale')!;
+    if (dot.kind === 'slider') dot.apply(2.5);
+    expect(seen).toEqual([{ dotScale: 2.5 }]);
   });
 });

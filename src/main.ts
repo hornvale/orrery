@@ -35,7 +35,7 @@ import {
 import { createMapView } from './views/mapView';
 import { lensById, naturalLens, type Lens } from './views/lens';
 import { StylePipeline } from './views/stylePipeline';
-import { lookById, naturalLook } from './views/look';
+import { ditherSettingControls, lookById, naturalLook } from './views/look';
 import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
 import { DayHoldCoupling, SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
@@ -649,7 +649,10 @@ function mountViews(
         () => consoleUi.statusBar.setDate('copy failed — copy the address bar'),
       );
     },
-    lookSettings: () => [], // Stage 5 gives dither3d its seven
+    // Only the active Look's settings are RENDERED, but the store holds every
+    // known control's value — so switching away and back restores the dot
+    // scale, and a shared link carries it either way (see ControlStore).
+    lookSettings: () => ditherSettingControls((s) => globeView.setDitherSettings(s)),
     lensLegend: () => lensById(String(store.get('lens') ?? 'natural')).legend(tiles),
   });
   const store = new ControlStore(registry);
