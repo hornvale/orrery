@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - **No new runtime dependencies.** `CLAUDE.md` opens by calling this a dependency-free three.js app. Dev dependencies are equally out of scope for this plan.
-- **The gate is four commands, all of which must pass before any commit:** `npm test`, `npm run smoke`, `npm run build`, `npm run e2e`. `npm run build` is `tsc --noEmit && vite build` — the typecheck IS the lint; there is no separate linter.
+- **The gate is four commands:** `npm test`, `npm run smoke`, `npm run build`, `npm run e2e`. `npm run build` is `tsc --noEmit && vite build` — the typecheck IS the lint; there is no separate linter.
+- **Gate cadence** (Nathan's pre-flight ruling, matching `CLAUDE.md`'s "run all four before pushing" rather than before every commit): **every task** runs `npm test` and `npm run build` before committing. `npm run smoke` and `npm run e2e` run at each of the **five stage boundaries** (after Tasks 3, 5, 10, 11 and 15) and before the branch is finished. e2e takes ~13 minutes, and some tasks cannot pass it by construction — Task 8 deletes `hud.ts` while the e2e selectors do not move to `data-control` until Task 10 — so a per-task e2e gate is both slow and impossible. Where an individual task below lists `npm run e2e` in its own steps, that task is a stage boundary or genuinely changes e2e-visible behaviour; run it there as written.
 - **The wasm is required for tests.** `npm run wasm:release` fetches the pinned `world-wasm-v14` build. Without `public/hornvale_world.wasm`, ~15 fixture tests fail; that is an environment gap, not a regression.
 - **Vitest environment is `happy-dom`,** not jsdom. DOM tests construct elements directly; there is no `document.body` fixture convention in this repo.
 - **Tests are co-located** as `*.test.ts` next to the module under test.
