@@ -1,4 +1,4 @@
-import { test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Correlate frame gaps with tile BUILDS (systematic-debugging Phase 1 evidence
@@ -61,7 +61,10 @@ test('stutter probe: boot + zoom, gaps joined to builds @perf', async ({ page })
   test.setTimeout(240_000);
   await page.addInitScript(INSTRUMENT);
   await page.goto('#seed=42&view=globe&day=0.25');
-  await page.locator('.hud-top-left').getByText('seed 42').waitFor({ timeout: 150_000 });
+  // A leaf element's own text, not a descendant's — `getByText` searches
+  // descendants of the locator it's chained from, so it cannot match the
+  // status seed span's own text content.
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   // Boot window: the 96-tile base mount and its region cascade.
   await page.waitForFunction(() => ((globalThis as any).__buildPending ?? 1) === 0, null, {

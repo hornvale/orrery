@@ -11,6 +11,7 @@ import {
   buildVoxelRegionTileGeometryIndexed,
   buildVoxelTileGeometry,
   buildVoxelTileGeometryIndexed,
+  faceSpaceUv,
   quantizeBands,
   sampleElevationBilinear,
   sampleTile,
@@ -25,7 +26,7 @@ import { biomeColorForName } from './biomePalette';
 import { loadSeed42Tiles } from '../testHelpers/wasmFixture';
 import type { TilesScene } from '../sim/scene';
 import { regionPatchUnits } from './regionPatch';
-import { unitLatLon } from './cubeSphere';
+import { TILE_QUADS, unitLatLon } from './cubeSphere';
 
 /** A colorizer these geometry-shape tests don't care about — they assert
  * positions and normals, not colors, so any deterministic RGB stands in. */
@@ -1148,5 +1149,80 @@ describe('buildVoxelHeightfieldGeometry', () => {
     });
     expect(triangleCount(geom)).toBe(samples * samples * 2 + 4 * samples * 2);
     expect(hasWallBetweenEqualCells(geom)).toBe(false);
+  });
+});
+
+describe('face-space tile UVs', () => {
+  const N = TILE_QUADS + 1;
+
+  // `faceSpaceUv` takes only { level, ix, iy } — a fresh object literal
+  // carrying `face` too would trip TypeScript's excess-property check, so
+  // these literals omit it. Passing a whole TileId or RegionScene (as the
+  // builders do) is fine: excess-property checking applies to literals only.
+  it('spans [0,1] across a whole face at level 0', () => {
+    expect(faceSpaceUv({ level: 0, ix: 0, iy: 0 }, 0, N)).toEqual([0, 0]);
+    expect(faceSpaceUv({ level: 0, ix: 0, iy: 0 }, N * N - 1, N)).toEqual([1, 1]);
+  });
+
+  it('gives adjacent same-level tiles a shared edge value, so density never resets at a tile boundary', () => {
+    // right edge of tile (level 1, ix 0) === left edge of tile (level 1, ix 1)
+    const rightEdge = faceSpaceUv({ level: 1, ix: 0, iy: 0 }, N - 1, N);
+    const leftEdge = faceSpaceUv({ level: 1, ix: 1, iy: 0 }, 0, N);
+    expect(rightEdge[0]).toBe(leftEdge[0]);
+  });
+
+  it('THE INVARIANT: the same surface point carries the same UV at every level', () => {
+    // The face's centre. At level 1 it is tile (1,1)'s corner (0,0);
+    // at level 2 it is tile (2,2)'s corner (0,0); at level 3, tile (4,4)'s.
+    for (const level of [1, 2, 3, 4]) {
+      const half = 1 << (level - 1);
+      const uv = faceSpaceUv({ level, ix: half, iy: half }, 0, N);
+      expect(uv).toEqual([0.5, 0.5]);
+    }
+  });
+
+  it('a refined child re-derives its parent’s own corner UV exactly', () => {
+    const parent = faceSpaceUv({ level: 2, ix: 1, iy: 3 }, 0, N);
+    const child = faceSpaceUv({ level: 3, ix: 2, iy: 6 }, 0, N);
+    expect(child).toEqual(parent);
+  });
+
+  it('builds a uv attribute onto a tile geometry, one per position', () => {
+    const geom = buildTileGeometry(flatTiles(), { face: 0, level: 1, ix: 0, iy: 0 }, 1, 0, () => [0, 0, 0], 0);
+    const uv = geom.getAttribute('uv');
+    expect(uv).toBeDefined();
+    expect(uv.itemSize).toBe(2);
+    expect(uv.count).toBe(geom.getAttribute('position').count);
+  });
+
+  it('a skirted tile still has one uv per position, and every skirt vertex carries its source edge vertex\'s UV exactly (not just a matching count)', () => {
+    const tile = { face: 0, level: 1, ix: 0, iy: 0 };
+    const geom = buildTileGeometry(flatTiles(), tile, 2, 60, ignoreColor, 0.2);
+    const uv = geom.getAttribute('uv');
+    const pos = geom.getAttribute('position');
+    expect(uv.count).toBe(pos.count);
+    expect(pos.count).toBeGreaterThan(N * N); // the fixture really does have a skirt
+
+    // The four edges buildGridGeometry drops a skirt from, in the exact order
+    // it appends them — top row, bottom row, left col, right col — each
+    // contributing N consecutive skirt vertices right after the N×N surface
+    // grid. A copy bug that wrote zeros (or copied the wrong source) would
+    // fail this: it compares against the SOURCE vertex's own (generally
+    // nonzero) computed UV, not an independently recomputed expectation.
+    const edges = [
+      Array.from({ length: N }, (_, c) => c), // top row
+      Array.from({ length: N }, (_, c) => (N - 1) * N + c), // bottom row
+      Array.from({ length: N }, (_, r) => r * N), // left col
+      Array.from({ length: N }, (_, r) => r * N + (N - 1)), // right col
+    ];
+    let skirtIdx = N * N;
+    for (const edge of edges) {
+      for (const src of edge) {
+        expect(uv.getX(skirtIdx)).toBe(uv.getX(src));
+        expect(uv.getY(skirtIdx)).toBe(uv.getY(src));
+        skirtIdx++;
+      }
+    }
+    expect(skirtIdx).toBe(uv.count); // consumed every skirt vertex, none left over
   });
 });

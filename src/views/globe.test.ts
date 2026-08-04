@@ -969,21 +969,6 @@ function surfaceMaterial(globe: ReturnType<typeof createGlobeView>): THREE.MeshS
   return (mesh as unknown as THREE.Mesh).material as THREE.MeshStandardMaterial;
 }
 
-test('setStyle("faceted") flat-shades the surface material; "smooth" restores smooth shading', () => {
-  const view = createGlobeView(markerTiles([]), spinningSys());
-  const mat = surfaceMaterial(view);
-  expect(mat.flatShading).toBe(false);
-  // `Material.needsUpdate` (three.js) is a write-only accessor — it has no
-  // getter, so reading it back is always `undefined` regardless of what was
-  // set. Spy on the setter itself to confirm `setStyle` actually flips it.
-  const needsUpdateSpy = vi.spyOn(mat, 'needsUpdate', 'set');
-  view.setStyle('faceted');
-  expect(mat.flatShading).toBe(true);
-  expect(needsUpdateSpy).toHaveBeenCalledWith(true);
-  view.setStyle('smooth');
-  expect(mat.flatShading).toBe(false);
-});
-
 test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff walls; "smooth" restores the shared-vertex mesh', () => {
   const globe = makeGlobe(); // real seed-42 terrain — enough relief to produce at least one voxel wall
   const mat = surfaceMaterial(globe);
@@ -1021,6 +1006,89 @@ test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff wal
   expect(smoothGeom).not.toBe(afterGeom);
   expect(smoothGeom.getIndex()).not.toBeNull(); // back to the shared-vertex indexed mesh
   expect(smoothGeom.getAttribute('position').count).toBe(beforeCount);
+});
+
+/** True iff `m` is the dither material — `createDitherMaterial` is the only
+ * thing that hangs `ditherUniforms` off a material's userData. (What the
+ * material's GLSL actually DRAWS is unverifiable here: happy-dom has no WebGL,
+ * so nothing in this suite compiles a shader.) */
+const isDither = (m: THREE.Material): boolean => 'ditherUniforms' in m.userData;
+
+test('setSurface swaps every mounted tile to the dither material, and back — with no geometry rebuild', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  const mounted = () => [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mounted().length).toBeGreaterThan(0);
+  expect(mounted().every((m) => !isDither(m))).toBe(true);
+
+  // The swap is a pointer per mesh: `uv` is built unconditionally (Task 12)
+  // precisely so no tile has to be re-cut for it.
+  const before = slotBuilds();
+  globe.setSurface('dither');
+  expect(mounted().every(isDither)).toBe(true);
+  expect(slotBuilds()).toBe(before);
+
+  globe.setSurface('standard');
+  expect(mounted().every((m) => !isDither(m))).toBe(true);
+  expect(slotBuilds()).toBe(before);
+});
+
+test('a tile built after the surface swap wears the dither material too', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  // `setTrueRelief` re-cuts every selected tile through `buildTileSlot` —
+  // the only place a tile's material is chosen — WITHOUT leaving the smooth
+  // geometry family, so this isolates "a fresh slot silently reverted to the
+  // standard material" from the voxel fallback the next test covers.
+  globe.setTrueRelief(true);
+  pump(globe);
+  const mats = [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mats.length).toBeGreaterThan(0);
+  expect(mats.every(isDither)).toBe(true);
+});
+
+test('the dither is not applied over voxel geometry, which carries no uv — and returns when smooth does', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  expect(isDither(surfaceMaterial(globe))).toBe(true);
+
+  // Voxel geometry is built by `makeVertexWriter`, which writes
+  // position/normal/color only. With no `uv`, three's always-declared
+  // `attribute vec2 uv` reads (0,0) everywhere, the dither's derivative
+  // collapses and the globe renders near-solid white — so the pairing must
+  // fall back rather than draw it. Asserted on the ATTRIBUTE, not just the
+  // material pointer: this test is worthless if the premise ever changes
+  // silently (give voxel a `uv` and it fails here, which is the prompt to
+  // delete the fallback).
+  globe.setStyle('voxel');
+  pump(globe);
+  expect(baseTileMesh(globe).geometry.getAttribute('uv')).toBeUndefined();
+  const mats = [...tileMeshesByKey(globe).values()].map((m) => m.material as THREE.Material);
+  expect(mats.every((m) => !isDither(m))).toBe(true);
+
+  // The REQUEST survives the detour: no second setSurface call is needed.
+  globe.setStyle('smooth');
+  pump(globe);
+  expect(baseTileMesh(globe).geometry.getAttribute('uv')).toBeDefined();
+  expect(isDither(surfaceMaterial(globe))).toBe(true);
+});
+
+test('setStyle flat-shades both materials, so the surface and geometry axes compose in either order', () => {
+  const globe = makeGlobe();
+  pump(globe);
+  globe.setSurface('dither');
+  const dither = surfaceMaterial(globe);
+  expect(isDither(dither)).toBe(true);
+  expect(dither.flatShading).toBe(false);
+  globe.setStyle('voxel');
+  // The dither material is not WORN under voxel, but it still tracked the
+  // flag — so returning to smooth does not show a stale shading mode.
+  expect(dither.flatShading).toBe(true);
+  globe.setSurface('standard');
+  pump(globe);
+  expect(surfaceMaterial(globe).flatShading).toBe(true);
 });
 
 test('setStyle queues its rebuild instead of re-cutting every mounted tile inline', () => {
@@ -1229,52 +1297,4 @@ test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region 
   // tiles' 0.1 — confirms `buildTileSlot`'s voxel branch took the region
   // path (`buildVoxelRegionTileGeometryIndexed`), not the base one.
   expect(afterSample).not.toEqual(beforeSample);
-});
-
-test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded elevation', () => {
-  const globe = makeGlobe(); // real seed-42 terrain — enough relief to distinguish banded from continuous
-  const mat = surfaceMaterial(globe);
-  expect(mat.flatShading).toBe(false);
-
-  const beforeGeom = baseTileMesh(globe).geometry;
-
-  globe.setStyle('terraced');
-  expect(mat.flatShading).toBe(true);
-  // Unlike faceted (a material-only flag flip), banding changes vertex
-  // positions — this must be an actual geometry rebuild, not the same
-  // object reused. Queued, so drain it first (`enqueueRebuildAll`).
-  pump(globe);
-  const afterGeom = baseTileMesh(globe).geometry;
-  expect(afterGeom).not.toBe(beforeGeom);
-
-  // Real terrain has enough relief variation that a continuous (Smooth)
-  // build shows a distinct radius at nearly every vertex; terraced collapses
-  // them onto a small, finite set of band floors — the geometry-level half
-  // of `worldMesh.test.ts`'s `quantizeBands` coverage, confirming globe.ts
-  // actually wires `bandM` through for a real mounted tile.
-  const pos = afterGeom.getAttribute('position');
-  const radii = new Set<number>();
-  for (let i = 0; i < pos.count; i++) {
-    radii.add(Number(Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i)).toFixed(5)));
-  }
-  expect(radii.size).toBeGreaterThan(0);
-  expect(radii.size).toBeLessThan(pos.count / 4); // far fewer bands than vertices
-
-  globe.setStyle('smooth');
-  expect(mat.flatShading).toBe(false);
-
-  // Symmetric with the forward (smooth->terraced) collapse assertion above:
-  // switching back must actually rebuild the geometry away from the banded
-  // set, not merely flip flatShading back. Real terrain has enough relief
-  // variation that a continuous build shows a distinct radius at nearly
-  // every vertex, so the reverse rebuild should recover (most of) that
-  // many-valued distribution rather than staying stuck on the small banded set.
-  pump(globe);
-  const smoothGeom = baseTileMesh(globe).geometry;
-  const smoothPos = smoothGeom.getAttribute('position');
-  const smoothRadii = new Set<number>();
-  for (let i = 0; i < smoothPos.count; i++) {
-    smoothRadii.add(Number(Math.hypot(smoothPos.getX(i), smoothPos.getY(i), smoothPos.getZ(i)).toFixed(5)));
-  }
-  expect(smoothRadii.size).toBeGreaterThan(smoothPos.count / 2); // back to (near-)continuous, not banded
 });

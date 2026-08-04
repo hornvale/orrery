@@ -7,6 +7,7 @@ describe('parseAppState', () => {
       seed: '1337',
       view: 'globe',
       day: 118.3,
+      controls: '',
     });
   });
   it('defaults everything but the seed', () => {
@@ -43,18 +44,33 @@ describe('serializeAppState', () => {
     expect(serializeAppState(defaultAppState('42'))).toBe('#seed=42');
   });
   it('round-trips a full state', () => {
-    const full: AppState = { seed: '1337', view: 'globe', day: 118.3 };
+    const full: AppState = { seed: '1337', view: 'globe', day: 118.3, controls: 'winds:1' };
     expect(parseAppState(serializeAppState(full))).toEqual(full);
   });
   it('rounds day to 4 decimals', () => {
-    expect(serializeAppState({ seed: '1', view: 'system', day: 12.345678 })).toBe('#seed=1&day=12.3457');
+    expect(serializeAppState({ seed: '1', view: 'system', day: 12.345678, controls: '' })).toBe('#seed=1&day=12.3457');
   });
   it('round-trips a negative day', () => {
-    const s: AppState = { seed: '1', view: 'system', day: -3.5 };
+    const s: AppState = { seed: '1', view: 'system', day: -3.5, controls: '' };
     expect(parseAppState(serializeAppState(s))).toEqual(s);
   });
   it('omits day when exactly 0', () => {
-    expect(serializeAppState({ seed: '1', view: 'globe', day: 0 })).toBe('#seed=1&view=globe');
+    expect(serializeAppState({ seed: '1', view: 'globe', day: 0, controls: '' })).toBe('#seed=1&view=globe');
+  });
+});
+
+describe('AppState controls', () => {
+  it('round-trips an encoded control blob', () => {
+    const hash = serializeAppState({ seed: '42', view: 'globe', day: 0, controls: 'look:dither3d,winds:1' });
+    expect(parseAppState(hash)!.controls).toBe('look:dither3d,winds:1');
+  });
+
+  it('omits the control param when nothing differs from default', () => {
+    expect(serializeAppState({ seed: '42', view: 'system', day: 0, controls: '' })).toBe('#seed=42');
+  });
+
+  it('defaults controls to empty when the param is absent', () => {
+    expect(parseAppState('#seed=42')!.controls).toBe('');
   });
 });
 

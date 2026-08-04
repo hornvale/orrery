@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 /** Wait until the globe has actually finished building, rather than sleeping a
  * fixed number of milliseconds and hoping.
@@ -30,8 +30,10 @@ import { expect, test } from '@playwright/test';
  * Strictly `=== 0` (`undefined` → `-1`): before the globe view exists the hook
  * is absent, and treating that as ready would reintroduce the very false-pass
  * this replaces. The trailing double-rAF then guarantees one frame has been
- * RENDERED with the finished set — which also covers the material-only style
- * switches (smooth↔faceted) that legitimately enqueue nothing at all.
+ * RENDERED with the finished set — which also covers a re-select of the
+ * SAME style, which legitimately enqueues nothing at all. (Task 2 deleted
+ * `faceted`, the one style that used to cross no geometry family; every
+ * remaining style switch now enqueues a rebuild.)
  *
  * `expect.poll`, not `waitForFunction`, on purpose: when it does give up, the
  * failure reads `expected 0, received 37` — which distinguishes "the box is
@@ -54,19 +56,36 @@ async function waitForGlobeIdle(
   );
 }
 
+/** Navigates to `hash` and waits for the seed to render — every spec's boot
+ * wait, in one place. The seed is the console's only always-on-screen text,
+ * so it's the one thing every spec can wait on regardless of which rung it
+ * boots into. */
+async function bootSeed42(page: Page, hash = '#seed=42'): Promise<void> {
+  await page.goto(hash);
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
+}
+
+/** Opens the sheet tab that holds `group`, then returns the control's own
+ * root (`[data-control="<id>"]`) — every control now lives behind a tab, so
+ * reaching one is a click-then-locate rather than a bare locate. */
+async function control(page: Page, group: string, id: string) {
+  await page.locator(`.sheet-tab[data-tab="${group}"]`).click();
+  return page.locator(`[data-control="${id}"]`);
+}
+
 test('seed 42 boots, renders, and stays console-clean', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42');
-  // Genesis runs in-browser and takes seconds; the HUD only mounts after.
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  // Genesis runs in-browser and takes seconds; the console only mounts after.
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
   await expect(page.locator('canvas.view-canvas')).toHaveCount(3); // system, globe, map
   await expect(page.locator('.scale-caption')).toContainText('schematic scale');
 
-  // The Vantage: view switching is explicit via the HUD dropdown.
-  await page.locator('.hud-view').selectOption('globe');
+  // The Vantage: view switching is explicit via the status bar's rung buttons.
+  await page.locator('.rung[data-rung="globe"]').click();
   await expect(page.locator('.scale-caption')).toContainText('relief is exaggerated', { timeout: 10_000 });
 
   expect(errors).toEqual([]);
@@ -81,20 +100,28 @@ test('the helm: true scale, inspector, and the capped globe clock', async ({ pag
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   // Per-rung clock: the globe defaults to 1 hr/s, and since The Wandering Sun
   // the fast rates are offered there — picking one freezes the diurnal spin so
   // a year can be watched (the caption says so) rather than blurring the planet.
-  await expect(page.getByRole('button', { name: '1 hr/s' })).toHaveClass(/active/);
-  await expect(page.getByRole('button', { name: '~1 mo/s' })).toBeEnabled();
-  await page.getByRole('button', { name: '~1 mo/s' }).click();
+  // The rate picker lives in the Time tab now. Scoped to the control's own
+  // root, not `page` — the transport's read-only rate chip (`.transport-rate`)
+  // shows the SAME label text ("1 hr/s") outside the sheet, so an unscoped
+  // `getByRole` resolves to both and Playwright's strict mode rejects it.
+  const rate = await control(page, 'time', 'rate');
+  await expect(rate.getByRole('button', { name: '1 hr/s' })).toHaveClass(/active/);
+  await expect(rate.getByRole('button', { name: '~1 mo/s' })).toBeEnabled();
+  await rate.getByRole('button', { name: '~1 mo/s' }).click();
   await expect(page.locator('.scale-caption')).toContainText('holding the daily spin');
 
   // True scale flips the caption to the honest variant, and the label back.
-  await page.getByRole('button', { name: 'true scale' }).click();
+  // The old single "true scale" toggle is now the `relief` control's option
+  // pair (Look tab): `true` / `×${RELIEF_EXAGGERATION}` (schematic).
+  const relief = await control(page, 'look', 'relief');
+  await relief.locator('[data-option="true"]').click();
   await expect(page.locator('.scale-caption')).toContainText('true scale');
-  await page.getByRole('button', { name: 'schematic scale' }).click();
+  await relief.locator('[data-option="schematic"]').click();
 
   // The inspector: the globe fills the viewport center — clicking it is a
   // world card, deterministically. The raycast can only hit a MOUNTED tile,
@@ -121,10 +148,10 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
-  const caption = page.locator('.hud-caption');
+  const caption = page.locator('[data-control="lens"] .control-help');
 
   // Pause the clock: left running, the day keeps advancing for the whole
   // rest of this test, and under real (variable) system load that can spin
@@ -133,7 +160,7 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   // night side, where they'd render byte-identical black frames without
   // either lens actually being broken. A fixed day makes the comparison
   // depend only on the lens, not on how fast this happened to run.
-  await page.locator('.hud-bottom button').first().click();
+  await page.locator('[data-transport="play"]').click();
 
   // `natural` and `topographic` share one code path over OCEAN tiles
   // (both call the same elevationColor) and only diverge over land — so a
@@ -169,7 +196,8 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   // before the first frame), so click it explicitly to fix a baseline
   // rather than diffing the first iteration against mount state — clicking
   // an already-active lens is a real no-op and must NOT look like a failure.
-  await page.locator('.hud-lenses button', { hasText: 'natural' }).click();
+  const lens = await control(page, 'lens', 'lens');
+  await lens.locator('[data-option="natural"]').click();
   // The amortized base mount and the refines the rotation above queued must
   // both have landed before the baseline is fixed — otherwise the baseline is
   // a half-built globe and every later diff is against the wrong picture.
@@ -184,8 +212,11 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   expect(baselineShot.length).toBeGreaterThan(5_000);
   expect(baselineCaption).not.toBe('');
 
-  for (const label of ['topographic', 'temperature', 'moisture', 'precip', 'unrest', 'plates']) {
-    await page.locator('.hud-lenses button', { hasText: label }).click();
+  // The id the codec/registry actually key on, not the picker's display
+  // label — `precip`/`plates` are `precipitationLens`/`plateLens`'s LABELS,
+  // their ids (and therefore their `data-option`) are `precipitation`/`plate`.
+  for (const id of ['topographic', 'temperature', 'moisture', 'precipitation', 'unrest', 'plate']) {
+    await lens.locator(`[data-option="${id}"]`).click();
     await expect(globeCanvas).toBeVisible();
     // Let the repaint land before sampling.
     await page.waitForTimeout(150);
@@ -202,25 +233,31 @@ test('the lens roster: every lens repaints the globe and updates its own caption
   expect(errors).toEqual([]);
 });
 
-test('the globe geometry styles: every .hud-style option renders the globe non-blank (The Massing, Task 7)', async ({ page }) => {
-  // Three of the four styles cross a geometry family, and each of those re-cuts
-  // the whole 95-tile selection through the amortized queue. Measured under a
-  // 6x CPU throttle: ~38s, ~40s and ~44s for voxel/terraced/faceted, on top of
-  // the boot mount — 167s total against the old 240s cap, which is why this
-  // was the test that ran out of budget on CI rather than one that hung.
+test('the Look roster: every Look option renders the globe non-blank (Task 3)', async ({ page }) => {
+  // One labeled Look axis replaces the three separate style/globe-style/
+  // map-style rosters this test supersedes (formerly ".hud-style" here and
+  // ".hud-map-style" in the diorama roster below). Voxel crosses a geometry
+  // family and re-cuts the whole 95-tile selection through the amortized
+  // queue. Measured under a 6x CPU throttle: ~38s for voxel, on top of the
+  // boot mount — comfortably inside the timeout below. `dither3d` crosses no
+  // geometry family (its Look is smooth); it swaps the surface MATERIAL, which
+  // costs one pointer per mounted mesh and one shader compile — so its floor
+  // here is `natural`'s. That compile is exactly what this assertion is worth
+  // most for: a GLSL error fails silently to a black globe, which shows up as
+  // a tiny PNG rather than as a thrown exception.
   test.setTimeout(480_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
-  // Pause the clock (same reason as the lens/style rosters above: a running
+  // Pause the clock (same reason as the lens roster above: a running
   // day can drift two captures onto the dark night side).
-  await page.locator('.hud-bottom button').first().click();
-  // Rotate to bring land into view so each style has real relief to act on.
+  await page.locator('[data-transport="play"]').click();
+  // Rotate to bring land into view so each Look has real relief to act on.
   const box = (await globeCanvas.boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
@@ -232,25 +269,42 @@ test('the globe geometry styles: every .hud-style option renders the globe non-b
     await page.waitForTimeout(150);
   }
 
-  // This is a DIFFERENT axis from `.hud-styles`/`[data-style]` above (the
-  // Idioms' screen-space post-process roster) — `.hud-style` is The
-  // Massing's globe geometry/shading dropdown (smooth/voxel/terraced/faceted).
-  const styleSelect = page.locator('.hud-style');
-  await expect(styleSelect).toHaveCount(1);
+  const look = await control(page, 'look', 'look');
+  await expect(look).toHaveCount(1);
 
-  for (const style of ['smooth', 'voxel', 'terraced', 'faceted']) {
-    await styleSelect.selectOption(style);
+  // `natural` is the roster's first stop, and its frame is the baseline the
+  // dither is diffed against below.
+  let natural: Buffer | undefined;
+
+  for (const id of ['natural', 'voxel', 'dither3d', 'pixel']) {
+    await look.locator(`[data-option="${id}"]`).click();
     await expect(globeCanvas).toBeVisible();
     // The rebuild is amortized across frames — wait for the queue to drain,
     // not for a fixed 400ms (see `waitForGlobeIdle`).
     await waitForGlobeIdle(page);
     const shot = await globeCanvas.screenshot();
-    // A geometry rebuild that throws (or a style that renders nothing) still
+    // A geometry rebuild that throws (or a Look that renders nothing) still
     // yields a compositor frame, but a blank/degenerate one compresses to a
-    // tiny PNG — the same non-blank floor the lens/style-roster tests above
-    // use, not a pixel-baseline comparison (none exists; WebGL is too noisy
-    // for one).
-    expect(shot.length, `${style} rendered blank`).toBeGreaterThan(5_000);
+    // tiny PNG — the same non-blank floor the lens roster test above uses,
+    // not a pixel-baseline comparison (none exists; WebGL is too noisy for
+    // one).
+    expect(shot.length, `${id} rendered blank`).toBeGreaterThan(5_000);
+    if (id === 'natural') natural = shot;
+
+    // A non-blank floor alone cannot see the dither's own failure mode.
+    // `dither3d` is injected into three's stock `physical` shader by three
+    // `String.replace` calls against chunk markers, and `String.replace` on a
+    // marker that is not there is a SILENT no-op: the material still
+    // compiles, the globe still renders, and the frame is simply `natural`
+    // again. `three` is pinned with a caret, so a minor bump that renames a
+    // chunk would ship exactly that and pass this whole test green. Diff it
+    // against `natural`, the way the pixel Look's own test does — the clock
+    // is paused and the camera has not moved since, so the only thing that
+    // can differ is the Look. (dither3d.test.ts pins the injection targets
+    // themselves; this is the end-to-end half of the same guard.)
+    if (id === 'dither3d' && natural) {
+      expect(shot.equals(natural), 'dither3d did not transform the frame — the shader injection is a no-op').toBe(false);
+    }
   }
 
   expect(errors).toEqual([]);
@@ -263,12 +317,13 @@ test('the globe deep zoom: wheel-zooming to the new near limit in voxel style do
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   // Pause the clock so the world doesn't spin under the zoom.
-  await page.locator('.hud-bottom button').first().click();
+  await page.locator('[data-transport="play"]').click();
 
-  await page.locator('.hud-style').selectOption('voxel');
+  const look = await control(page, 'look', 'look');
+  await look.locator('[data-option="voxel"]').click();
   await waitForGlobeIdle(page); // the voxel rebuild is queued, ~16 frames of it
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
@@ -327,16 +382,17 @@ async function waitForOpacities(
   }
 }
 
-test('the map rung: the dropdown crosses to the flat map and back', async ({ page }) => {
+test('the map rung: the status bar crosses to the flat map and back', async ({ page }) => {
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
   await page.waitForTimeout(800); // a settle; this test asserts on the MAP, not on globe tiles
   // pause the clock (same idiom as the other tests)
-  await page.locator('.hud-bottom button').first().click();
+  await page.locator('[data-transport="play"]').click();
 
-  // The Vantage: view switching is explicit via the HUD dropdown — the wheel
-  // no longer crosses views, it only zooms within the active one.
-  await page.locator('.hud-view').selectOption('map');
+  // The Vantage: view switching is explicit via the status bar's rung
+  // buttons — the wheel no longer crosses views, it only zooms within the
+  // active one.
+  await page.locator('.rung[data-rung="map"]').click();
 
   // Let the region fetch + ~1.5s crossfade settle: the map canvas (nth 2)
   // reaches full opacity.
@@ -350,30 +406,30 @@ test('the map rung: the dropdown crosses to the flat map and back', async ({ pag
   expect(mapShot.length).toBeGreaterThan(5000);
 
   // Select back to the globe.
-  await page.locator('.hud-view').selectOption('globe');
+  await page.locator('.rung[data-rung="globe"]').click();
   await waitForOpacities(page, (opacities) => opacities[1] === '1');
 });
 
-test('the vantage: a full round-trip through the dropdown', async ({ page }) => {
+test('the vantage: a full round-trip through the rung buttons', async ({ page }) => {
   await page.goto('#seed=42&view=system');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
-  await page.locator('.hud-view').selectOption('globe');
+  await page.locator('.rung[data-rung="globe"]').click();
   await waitForOpacities(page, (opacities) => opacities[1] === '1');
 
-  await page.locator('.hud-view').selectOption('map');
+  await page.locator('.rung[data-rung="map"]').click();
   await waitForOpacities(page, (opacities) => opacities[2] === '1');
 
-  await page.locator('.hud-view').selectOption('system');
+  await page.locator('.rung[data-rung="system"]').click();
   await waitForOpacities(page, (opacities) => opacities[0] === '1');
 });
 
 test('the vantage: the wheel no longer switches views, only zooms', async ({ page }) => {
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
   await page.waitForTimeout(800); // a settle; this test asserts on canvas OPACITIES, not globe tiles
   // pause the clock (same idiom as the other tests)
-  await page.locator('.hud-bottom button').first().click();
+  await page.locator('[data-transport="play"]').click();
 
   const stage = page.locator('.view-stage');
   const box = (await stage.boundingBox())!;
@@ -398,69 +454,27 @@ test('the vantage: the wheel no longer switches views, only zooms', async ({ pag
   expect(opacities[2]).toBe('0'); // the map never faded in
 });
 
-test('the diorama: every .hud-map-style option renders the map non-blank (The Diorama, Task 4)', async ({ page }) => {
-  test.setTimeout(240_000);
-  const errors: string[] = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
-  page.on('pageerror', (err) => errors.push(String(err)));
-
-  await page.goto('#seed=42');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-
-  // The Map view is not URL-addressable (only system/globe are) — reach it
-  // by selecting Globe first (sets the center the map will show) and then
-  // Map from the HUD dropdown, same as the round-trip test above.
-  await page.locator('.hud-view').selectOption('globe');
-  // A settle before crossing to the map, not a readiness dependency: nothing
-  // this test asserts reads the globe's tiles (it screenshots the MAP), so it
-  // does not pay for a full 96-tile drain.
-  await page.waitForTimeout(2_500);
-  await page.locator('.hud-view').selectOption('map');
-  await page.waitForTimeout(3_000); // region fetch + mount
-
-  const mapStyleSelect = page.locator('.hud-map-style');
-  await expect(mapStyleSelect).toHaveCount(1);
-
-  for (const style of ['voxel', 'pixel']) {
-    await mapStyleSelect.selectOption(style);
-    // A VIEWPORT screenshot, not an element/locator one — the WebGL canvas
-    // continuously re-renders, so a locator screenshot's stability wait can
-    // time out (same idiom as "the map rung" test above).
-    await page.waitForTimeout(500);
-    const shot = await page.screenshot();
-    // A style rebuild that throws (or renders nothing) still yields a
-    // compositor frame, but a blank/degenerate one compresses to a tiny
-    // PNG — the same non-blank floor The Massing's Task-7 style roster uses,
-    // not a pixel-baseline comparison (none exists; WebGL is too noisy for
-    // one, and Step 3's isometric framing pass is a controller visual check,
-    // not a stored golden here).
-    expect(shot.length, `${style} rendered blank`).toBeGreaterThan(5_000);
-  }
-
-  expect(errors).toEqual([]);
-});
-
 test('the diorama: switching back to pixel restores the flat map (The Diorama, Task 4)', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
-  await page.locator('.hud-view').selectOption('globe');
+  await page.locator('.rung[data-rung="globe"]').click();
   // A settle before crossing to the map, not a readiness dependency: nothing
   // this test asserts reads the globe's tiles (it screenshots the MAP), so it
   // does not pay for a full 96-tile drain.
   await page.waitForTimeout(2_500);
-  await page.locator('.hud-view').selectOption('map');
+  await page.locator('.rung[data-rung="map"]').click();
   await page.waitForTimeout(3_000);
 
-  const mapStyleSelect = page.locator('.hud-map-style');
-  // voxel is the default (main.ts wires `hud.setMapStyle('voxel')` before the
-  // first frame) — switch away and back to exercise the kept flat-map path
-  // rather than just reading mount state.
-  await mapStyleSelect.selectOption('pixel');
+  // `natural` (mapRung: voxel) is the default (main.ts wires
+  // `hud.setLook(naturalLook)` before the first frame) — switch to `pixel`
+  // to exercise the kept flat-map path rather than just reading mount state.
+  const look = await control(page, 'look', 'look');
+  await look.locator('[data-option="pixel"]').click();
   await page.waitForTimeout(500);
   const pixelShot = await page.screenshot();
   expect(pixelShot.length).toBeGreaterThan(5_000);
@@ -474,31 +488,31 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   // Map is not URL-addressable — reach it via globe first (same idiom as
   // the diorama tests above).
-  await page.locator('.hud-view').selectOption('globe');
+  await page.locator('.rung[data-rung="globe"]').click();
   // A settle before crossing to the map, not a readiness dependency: nothing
   // this test asserts reads the globe's tiles (it screenshots the MAP), so it
   // does not pay for a full 96-tile drain.
   await page.waitForTimeout(2_500);
-  await page.locator('.hud-view').selectOption('map');
+  await page.locator('.rung[data-rung="map"]').click();
   await page.waitForTimeout(3_000);
 
   const mapCanvas = page.locator('canvas.view-canvas').nth(2);
   await expect(mapCanvas).toBeVisible();
 
-  const mapStyleSelect = page.locator('.hud-map-style');
-  await expect(mapStyleSelect).toHaveCount(1);
+  const look = await control(page, 'look', 'look');
+  await expect(look).toHaveCount(1);
 
   // pixel is the overworld renderer's entry point (mapView.ts's pixel
-  // branch builds `overworldTexture`) — select it and confirm a real,
-  // non-blank frame lands. A VIEWPORT screenshot, not an element/locator
-  // one, per the same rationale as the diorama tests (the WebGL canvas
-  // continuously re-renders, so a locator screenshot's stability wait can
-  // time out).
-  await mapStyleSelect.selectOption('pixel');
+  // branch builds `overworldTexture`) — select the `pixel` Look and confirm
+  // a real, non-blank frame lands. A VIEWPORT screenshot, not an
+  // element/locator one, per the same rationale as the diorama tests (the
+  // WebGL canvas continuously re-renders, so a locator screenshot's
+  // stability wait can time out).
+  await look.locator('[data-option="pixel"]').click();
   await page.waitForTimeout(500);
   const pixelShot = await page.screenshot();
   expect(pixelShot.length).toBeGreaterThan(5_000);
@@ -506,9 +520,9 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   // Round-trip: pixel -> voxel -> pixel must stay clean (no leaked GPU
   // resources/state from tearing down and rebuilding the overworld texture
   // twice) and still render.
-  await mapStyleSelect.selectOption('voxel');
+  await look.locator('[data-option="voxel"]').click();
   await page.waitForTimeout(500);
-  await mapStyleSelect.selectOption('pixel');
+  await look.locator('[data-option="pixel"]').click();
   await page.waitForTimeout(500);
   const roundTripShot = await page.screenshot();
   expect(roundTripShot.length).toBeGreaterThan(5_000);
@@ -516,19 +530,19 @@ test('the overworld: the pixel map style renders non-blank and console-clean, in
   expect(errors).toEqual([]);
 });
 
-test('the style roster: every render style renders the globe non-blank and transformed', async ({ page }) => {
+test('the Look roster: the pixel Look transforms the globe frame via its post-process pass', async ({ page }) => {
   test.setTimeout(240_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe&day=0.1');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   const globeCanvas = page.locator('canvas.view-canvas').nth(1);
   // Pause the clock (same reason as the lens roster: a running day can drift two
   // captures onto the dark night side and make them byte-identical black frames).
-  await page.locator('.hud-bottom button').first().click();
+  await page.locator('[data-transport="play"]').click();
   // Rotate to bring land into view so the styles have real relief/colour to act on.
   const box = (await globeCanvas.boundingBox())!;
   const cx = box.x + box.width / 2;
@@ -541,29 +555,30 @@ test('the style roster: every render style renders the globe non-blank and trans
     await page.waitForTimeout(150);
   }
 
-  // A style shader that fails to compile (e.g. a GLSL reserved-word variable)
-  // renders the whole globe black — a very short, highly-compressible PNG. The
-  // >5000-byte non-blank check catches that; the not-equal-to-photoreal check
-  // confirms the style actually transformed the frame.
-  const styleButtons = page.locator('[data-style]');
-  expect(await styleButtons.count()).toBeGreaterThanOrEqual(5);
+  // A post-process shader that fails to compile (e.g. a GLSL reserved-word
+  // variable) renders the whole globe black — a very short,
+  // highly-compressible PNG. The >5000-byte non-blank check catches that;
+  // the not-equal-to-natural check confirms the Look actually transformed
+  // the frame.
+  const look = await control(page, 'look', 'look');
+  await expect(look).toHaveCount(1);
 
-  await page.locator('[data-style="photoreal"]').click();
-  // These styles are screen-space post-process, not tile geometry — but the
-  // baseline still has to be a FULLY BUILT globe, or the later diffs record
-  // the amortized mount finishing rather than the style transforming.
+  await look.locator('[data-option="natural"]').click();
+  // `natural` is screen-space post-process free (no passes), but the
+  // baseline still has to be a FULLY BUILT globe, or the later diff records
+  // the amortized mount finishing rather than the Look transforming.
   await waitForGlobeIdle(page);
   await page.waitForTimeout(250);
-  const photoreal = await globeCanvas.screenshot();
-  expect(photoreal.length).toBeGreaterThan(5_000);
+  const natural = await globeCanvas.screenshot();
+  expect(natural.length).toBeGreaterThan(5_000);
 
-  for (const id of ['pixel-art', 'cel', 'engraving', 'watercolor']) {
-    await page.locator(`[data-style="${id}"]`).click();
+  for (const id of ['pixel']) {
+    await look.locator(`[data-option="${id}"]`).click();
     await expect(globeCanvas).toBeVisible();
     await page.waitForTimeout(300);
     const shot = await globeCanvas.screenshot();
     expect(shot.length, `${id} rendered blank`).toBeGreaterThan(5_000);
-    expect(shot.equals(photoreal), `${id} did not transform the frame`).toBe(false);
+    expect(shot.equals(natural), `${id} did not transform the frame`).toBe(false);
   }
 
   expect(errors).toEqual([]);
@@ -575,8 +590,8 @@ test('the excursion: dragging the map pans across a tile boundary without errori
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-  await page.locator('.hud-view').selectOption('map');
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
+  await page.locator('.rung[data-rung="map"]').click();
   const mapCanvas = page.locator('canvas.view-canvas').nth(2);
   await expect(mapCanvas).toBeVisible();
   await page.waitForTimeout(2000); // let the ring's eager fetch settle
@@ -603,8 +618,8 @@ test('the excursion: wheel-zoom changes the visible extent within bounds', async
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-  await page.locator('.hud-view').selectOption('map');
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
+  await page.locator('.rung[data-rung="map"]').click();
   const mapCanvas = page.locator('canvas.view-canvas').nth(2);
   await expect(mapCanvas).toBeVisible();
   await page.waitForTimeout(2000);
@@ -627,8 +642,8 @@ test('the excursion: panning toward a face-clamped edge does not error or hang',
   page.on('pageerror', (err) => errors.push(String(err)));
 
   await page.goto('#seed=42&view=globe');
-  await expect(page.locator('.hud-top-left')).toContainText('seed 42', { timeout: 150_000 });
-  await page.locator('.hud-view').selectOption('map');
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
+  await page.locator('.rung[data-rung="map"]').click();
   const mapCanvas = page.locator('canvas.view-canvas').nth(2);
   await expect(mapCanvas).toBeVisible();
   await page.waitForTimeout(2000);
@@ -648,6 +663,77 @@ test('the excursion: panning toward a face-clamped edge does not error or hang',
     await page.mouse.up();
     await page.waitForTimeout(200);
   }
+
+  expect(errors).toEqual([]);
+});
+
+test('the lens legend: swatches render, and change when the active lens changes (Task 10)', async ({ page }) => {
+  // Neither Task 8's registry nor any unit test exercises the legend against
+  // a real world in a real browser — `sheet.test.ts` renders from a FAKE
+  // registry precisely so a real control never touches it (CLAUDE.md). A
+  // legend frozen on the natural lens (never re-rendered for the active
+  // choice) is a real bug that only a live repaint can catch.
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await bootSeed42(page, '#seed=42&view=globe&day=0.1');
+
+  const lens = await control(page, 'lens', 'lens');
+  const rows = lens.locator('.control-legend-row');
+  await expect(rows.first()).toBeVisible();
+  const naturalRowCount = await rows.count();
+  expect(naturalRowCount).toBeGreaterThan(0);
+  const naturalLabels = await lens.locator('.control-legend-label').allTextContents();
+  const naturalSwatches = await lens
+    .locator('.control-swatch')
+    .evaluateAll((els) => els.map((el) => (el as HTMLElement).style.background));
+  expect(naturalSwatches.length).toBe(naturalRowCount);
+
+  // `temperature`'s legend (cold/mid/hot degree bands) shares no label and
+  // no colour with `natural`'s (biome names over a green/tan/blue ramp), so
+  // an unchanged legend after this click can only mean the repaint didn't
+  // happen.
+  await lens.locator('[data-option="temperature"]').click();
+  await expect(rows.first()).toBeVisible();
+  const tempLabels = await lens.locator('.control-legend-label').allTextContents();
+  const tempSwatches = await lens
+    .locator('.control-swatch')
+    .evaluateAll((els) => els.map((el) => (el as HTMLElement).style.background));
+
+  expect(tempLabels).not.toEqual(naturalLabels);
+  expect(tempSwatches).not.toEqual(naturalSwatches);
+
+  expect(errors).toEqual([]);
+});
+
+test('the date field: entering a year and day and pressing Go moves the displayed date (Task 10)', async ({ page }) => {
+  // The day scrubber only spans one year (Task 8b's rationale for the field
+  // existing at all) — nothing else in e2e reaches year 5, so this is the
+  // only browser-level coverage of the jump actually landing.
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await bootSeed42(page, '#seed=42&view=globe');
+
+  // Pause the clock first — left running, the autoplay frame handler
+  // overwrites the status date (and the field, were it not for its own
+  // dirty guard) every frame, which would make the jump's effect
+  // indistinguishable from ordinary playback.
+  await page.locator('[data-transport="play"]').click();
+
+  await page.locator('.sheet-tab[data-tab="time"]').click();
+  const dateStatus = page.locator('[data-status="date"]');
+  const before = await dateStatus.textContent();
+
+  const input = page.locator('.date-field input[type="text"]');
+  await input.fill('5 30');
+  await page.locator('[data-date="go"]').click();
+
+  // `formatRawDate` renders 1-based year/day, matching what was typed.
+  await expect(dateStatus).toContainText('Y5 · Day 30');
+  expect(await dateStatus.textContent()).not.toBe(before);
 
   expect(errors).toEqual([]);
 });

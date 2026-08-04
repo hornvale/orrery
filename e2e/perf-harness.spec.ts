@@ -1,4 +1,4 @@
-import { test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Repo-relative output (was a hard-coded machine scratchpad path — which
@@ -24,7 +24,10 @@ const dump = (name: string, data: string): void => {
 test('perf harness: deep zoom-in @perf', async ({ page }) => {
   test.setTimeout(240_000);
   await page.goto('#seed=42&view=globe&day=0.25');
-  await page.locator('.hud-top-left').getByText('seed 42').waitFor({ timeout: 150_000 });
+  // A leaf element's own text, not a descendant's — `getByText` searches
+  // descendants of the locator it's chained from, so it cannot match the
+  // status seed span's own text content.
+  await expect(page.locator('[data-status="seed"]')).toContainText('seed 42', { timeout: 150_000 });
 
   // Instrument the page: long tasks (>50ms main-thread blocks) + frame gaps.
   await page.evaluate(() => {

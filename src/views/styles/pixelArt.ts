@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { Pass } from 'three/addons/postprocessing/Pass.js';
 import type { TilesScene } from '../../sim/scene';
-import type { RenderStyle } from '../renderStyle';
 import { biomeColorForName } from '../biomePalette';
 
 const MAX_COLORS = 16;
@@ -17,7 +16,7 @@ const MAX_COLORS = 16;
  * A missing/out-of-range legend entry resolves to the empty string, which
  * `biomeColorForName` maps to its own defensive grey fallback. */
 export function biomePalette(tiles: TilesScene): [number, number, number][] {
-  const biome = tiles.biome as unknown as ArrayLike<number>;
+  const biome = (tiles.biome as unknown as ArrayLike<number> | undefined) ?? [];
   const legend = tiles.biomeLegend as unknown as ArrayLike<string> | undefined;
   const counts = new Map<number, number>();
   for (let i = 0; i < biome.length; i++) {
@@ -70,7 +69,7 @@ const vertexShader = /* glsl */ `
   void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
 `;
 
-export const pixelArtStyle: RenderStyle = {
+export const pixelArtStyle = {
   id: 'pixel-art',
   label: 'pixel-art',
   passes(tiles: TilesScene): Pass[] {

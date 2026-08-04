@@ -33,7 +33,8 @@ const RIVER_DRAINAGE_SATURATION = 5.0;
 const RIVER_DRAINAGE_LIGHTEN = 0.12;
 
 /** Curated FLAT pixel-art land palette, keyed by `biomeLegend` name. Distinct
- * from the photoreal biome palette: saturated, reference-map colours, and —
+ * from the `natural` lens's own biome palette: saturated, reference-map
+ * colours, and —
  * critically — ice/alpine are NOT near-white (unlit, a near-white biome reads
  * as a blown-out blob), so every biome stays legible on a flat globe. Names
  * are hornvale's kebab-case `Biome::name`. Visual-pass-tuned. */

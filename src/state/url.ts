@@ -6,10 +6,11 @@ export interface AppState {
   seed: string;
   view: 'system' | 'globe';
   day: number;
+  controls: string;
 }
 
 export function defaultAppState(seed: string): AppState {
-  return { seed, view: 'system', day: 0 };
+  return { seed, view: 'system', day: 0, controls: '' };
 }
 
 function finiteOrNull(v: string | null): number | null {
@@ -32,6 +33,7 @@ export function parseAppState(hash: string): AppState | null {
   if (params.get('view') === 'globe') s.view = 'globe';
   const day = finiteOrNull(params.get('day'));
   if (day !== null) s.day = day;
+  s.controls = params.get('c') ?? '';
   return s;
 }
 
@@ -55,5 +57,9 @@ export function serializeAppState(s: AppState): string {
   const parts = [`seed=${s.seed}`];
   if (s.view !== 'system') parts.push(`view=${s.view}`);
   if (s.day !== 0) parts.push(`day=${s.day.toFixed(4).replace(/\.?0+$/, '')}`);
+  // The control blob. `c` rather than `controls` purely to keep a shared
+  // link short — this is presentation state (decision 0022), not a
+  // documented contract anyone else parses.
+  if (s.controls !== '') parts.push(`c=${s.controls}`);
   return `#${parts.join('&')}`;
 }

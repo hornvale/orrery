@@ -11,11 +11,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ArcballControls } from 'three/addons/controls/ArcballControls.js';
 import './styles.css';
-import { buildHud, type HudCallbacks } from './ui/hud';
+import { buildConsoleUi } from './ui/consoleUi';
+import { buildRegistry, rateId, rateLabel, SHEET_TABS } from './ui/controls/registry';
+import { ControlStore } from './ui/controls/store';
+import { decodeControls, encodeControls } from './ui/controls/codec';
+import type { ControlContext } from './ui/controls/kinds';
 import { mountInfoCard } from './ui/infoCard';
 import { eclipseInfo, moonInfo, namedTarget, siteInfo, starInfo, worldInfo } from './ui/inspect';
 import { clockToDay } from './time/clock';
 import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
+import { buildDateField } from './ui/dateField';
 import { createSystemView } from './views/system';
 import { createGlobeView, GLOBE_RADIUS, RELIEF_EXAGGERATION, seasonalSpinZ, type GlobeView } from './views/globe';
 import {
@@ -28,12 +33,15 @@ import {
   type TileId,
 } from './views/cubeSphere';
 import { createMapView } from './views/mapView';
-import { lensById, naturalLens } from './views/lens';
-import { StylePipeline, styleById } from './views/renderStyle';
+import { lensById, naturalLens, type Lens } from './views/lens';
+import { StylePipeline } from './views/stylePipeline';
+import { ditherSettingControls, lookById, naturalLook } from './views/look';
 import { ZoomController, dollyLookAt, dollyPosition, type ZoomTarget } from './views/zoom';
-import { SPEED_POLICY, SpeedMemory, clampMult, reconcileDayHold } from './time/speedPolicy';
+import { DayHoldCoupling, SPEED_POLICY, SpeedMemory, clampMult } from './time/speedPolicy';
 import type { EclipsesScene, MoonsScene, NeighborsScene, RegionScene, SystemScene, TilesScene } from './sim/scene';
 import { defaultAppState, parseAppState, seedError, serializeAppState, type AppState } from './state/url';
+import { loadLocalControls, resolveControls, saveLocalControls } from './state/persist';
+import { debounce } from './state/debounce';
 import { randomSeed } from './ui/seed';
 import type { WorkerErrorKind } from './sim/worker';
 
@@ -62,6 +70,14 @@ const MAP_CAPTION = 'the flat map: a region, drawn.';
  * Task 8 raised the cap itself, this crosses it) — the active clock mult
  * crossing it engages the seasonal hold (Task 9). */
 const SEASONAL_HOLD_MULT = 86400;
+
+/** How long the control-persistence write (localStorage + `syncUrl`) waits
+ * for quiet before it runs. A slider's `input` event fires on every drag
+ * tick — Stage 5 adds the first ones — and without this, a two-second drag
+ * at 60fps clears Safari's ~100-`history.replaceState`-calls-per-30s limit
+ * easily. Debounced on the PERSISTENCE side only: the control's own `apply`
+ * (the render) still runs at full rate on every `store.set`, unthrottled. */
+const CONTROL_PERSIST_DEBOUNCE_MS = 250;
 
 /** The plain "still generating" state — replaced by either a mounted world
  * or one of `renderError`'s distinct failure screens. */
@@ -192,9 +208,14 @@ function mountViews(
   stage.append(systemCanvas, globeCanvas, mapCanvas);
   app.append(stage);
 
+  // The scale caption: the client's honesty disclosure (decision 0022) —
+  // the relief exaggeration factor, the schematic moon rungs, the derived
+  // ice line, the seasonal hold. It is NOT appended to `app` here: it goes
+  // into the console dock as its footer (see `buildConsoleUi`'s `footer`),
+  // because a free-floating absolute element at bottom-left is painted
+  // underneath the dock at both breakpoints.
   const caption = document.createElement('div');
   caption.className = 'scale-caption';
-  app.append(caption);
 
   const systemRenderer = new THREE.WebGLRenderer({ canvas: systemCanvas, antialias: true });
   systemRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -303,11 +324,12 @@ function mountViews(
   globeControls.maxDistance = globeReach * 2;
 
   // The render-STYLE pipeline (The Idioms, Task 1): screen-space skins over
-  // the globe frame, orthogonal to the data lens. Photoreal (the default) is
-  // an empty pass chain — an EffectComposer whose only pass is the base
-  // RenderPass renders identically to the old direct `renderer.render` call.
+  // the globe frame, orthogonal to the data lens. `natural` — the default
+  // Look, and the one that replaced the old "photoreal" style — declares no
+  // post passes at all, so the composer's only pass is the base RenderPass
+  // and the frame is identical to the old direct `renderer.render` call.
   const stylePipeline = new StylePipeline(globeRenderer, globeScene, globeCamera, tiles);
-  stylePipeline.setStyle(styleById('photoreal'));
+  stylePipeline.setPasses(naturalLook.postPasses(tiles));
 
   // The zoom itself (src/views/zoom.ts): CLOSE_OFFSET is a small, arbitrary
   // "just arrived" framing for the system camera's dolly target (aesthetic,
@@ -319,99 +341,67 @@ function mountViews(
   zoom.jumpTo(view); // the initial view from a deep link never animates in
   setCanvasPointerEvents(view); // initial view never passes through applyView
 
-  // Per-rung true-scale state (Task 8): each rung remembers its own toggle
-  // independently, so switching rungs re-presents whichever state that rung
-  // was left in.
-  const trueScaleOn: Record<ZoomTarget, boolean> = { system: false, globe: false, map: false };
-
-  // The wind overlay is a single globe-wide toggle (not per-rung like
-  // true-scale): it starts hidden, matching `createWinds`'s built geometry.
-  let windsOn = false;
-  // The Gyre's ocean-current advection overlay: same single globe-wide
-  // toggle idiom as winds, starting hidden to match `createCurrents`'s built
-  // geometry.
-  let currentsOn = false;
-  // The Rains' cloud advection overlay: same single globe-wide toggle idiom
-  // as currents, starting hidden to match `createClouds`'s built geometry.
-  let cloudsOn = false;
-  // Ocean-surface effects start on, matching the ocean material defaults; the
-  // HUD reflects that initial state in buildHud.
-  let wavesOn = true;
-  let glintOn = true;
-  // Night-side fill starts off — the default honest dark terminator.
-  let nightFillOn = false;
-
-  // Task 9's seasonal hold: a single flag (not per-rung — it tracks the
-  // active clock mult, which is shared) reflecting whether the globe's
-  // diurnal spin is currently frozen.
+  // Every display toggle the old HUD kept as a local `let` — winds, currents,
+  // clouds, waves, glint, night fill, the spin freeze, the day hold, and the
+  // two true-scale choices — is now a value in the control STORE. Holding a
+  // second copy here would desync the moment one is set without the other,
+  // so these read `store.get(...)` where the value is needed.
+  //
+  // The seasonal hold is the one survivor: it is not a control, it is
+  // DERIVED (the `hold-spin` control OR a clock rate above the threshold),
+  // so it is computed here.
   let seasonalHoldOn = false;
-  // The user's spin-freeze override: when set, the globe's daily rotation is
-  // held at ANY speed (not just above SEASONAL_HOLD_MULT), so seasons/ice are
-  // watchable at the middle rates too. Decouples the spin from the clock.
-  let spinFrozenByUser = false;
-  // Task 6's "watch a day": pins the temperature lens' season so the diurnal
-  // day/night pulse is watchable on its own. Orthogonal to seasonalHoldOn
-  // above (that one freezes the mesh's visual spin; this one freezes the
-  // season) — both may be on at once without conflict.
-  let dayHoldOn = false;
 
   function setCaptionFor(v: ZoomTarget): void {
     if (v === 'system') {
-      caption.textContent = trueScaleOn.system ? TRUE_SPACE_CAPTION : SPACE_CAPTION;
+      caption.textContent = store.get('distance') === 'true' ? TRUE_SPACE_CAPTION : SPACE_CAPTION;
       return;
     }
     if (v === 'map') {
       caption.textContent = MAP_CAPTION;
       return;
     }
-    const base = trueScaleOn.globe ? TRUE_GROUND_CAPTION : GROUND_CAPTION;
+    const base = store.get('relief') === 'true' ? TRUE_GROUND_CAPTION : GROUND_CAPTION;
     const seasonSuffix = seasonalHoldOn ? ` ${SEASONAL_HOLD_CAPTION}` : '';
-    const daySuffix = dayHoldOn ? ` ${DAY_HOLD_CAPTION}` : '';
+    const daySuffix = store.get('hold-season') === true ? ` ${DAY_HOLD_CAPTION}` : '';
     caption.textContent = `${base}${seasonSuffix}${daySuffix}`;
   }
 
   /** Engages/disengages the globe's seasonal hold (Task 9) for the given
    * active clock mult and refreshes the caption — called wherever the mult
-   * changes (boot, rung switch, and a direct speed pick). */
+   * changes (boot, rung switch, and a direct speed pick), and whenever the
+   * `hold-spin` control (the user's override at any rate) is flipped. */
   function applySeasonalHold(mult: number): void {
-    seasonalHoldOn = spinFrozenByUser || mult > SEASONAL_HOLD_MULT;
+    seasonalHoldOn = store.get('hold-spin') === true || mult > SEASONAL_HOLD_MULT;
     globeView.setSeasonalHold(seasonalHoldOn);
     setCaptionFor(view);
   }
-  function setViewButtonFor(v: ZoomTarget): void {
-    hud.setView(v); // the dropdown reflects the current view
-  }
 
-  /** Applies the current rung's true-scale state to its view, camera limits,
-   * and HUD button/caption — called on toggle and on every rung switch (each
-   * rung re-presents its own toggle state, button label included). */
-  function applyTrueScale(): void {
-    const on = trueScaleOn[view];
-    if (view === 'system') {
-      systemView.setTrueScale(on);
-      systemControls.minDistance = on ? 5e-4 : WORLD_CLOSE_DISTANCE;
-      systemCamera.near = on ? 1e-5 : 0.05;
-      systemCamera.updateProjectionMatrix();
-      if (!on) {
-        // Returning to schematic from a deep true-scale zoom: re-frame
-        // OUTSIDE the restored floor ourselves. Left alone, OrbitControls'
-        // next update() hard-clamps the camera onto minDistance exactly —
-        // which is also the wheel handoff's trigger boundary, so the next
-        // inward scroll would descend to the globe as a surprise.
-        const offset = systemCamera.position.clone().sub(systemControls.target);
-        const comfortable = WORLD_CLOSE_DISTANCE * 1.5;
-        if (offset.length() < comfortable) {
-          systemCamera.position.copy(systemControls.target).add(offset.setLength(comfortable));
-        }
+  /** The system rung's `distance` control: true distance needs a nearer clip
+   * plane and a nearer dolly floor to be approachable at all. (The globe's
+   * `relief` control is the other half of what one true-scale button used to
+   * be; it needs nothing but `globeView.setTrueRelief`.) */
+  function applyTrueDistance(on: boolean): void {
+    systemView.setTrueScale(on);
+    systemControls.minDistance = on ? 5e-4 : WORLD_CLOSE_DISTANCE;
+    systemCamera.near = on ? 1e-5 : 0.05;
+    systemCamera.updateProjectionMatrix();
+    if (!on) {
+      // Returning to schematic from a deep true-scale zoom: re-frame
+      // OUTSIDE the restored floor ourselves. Left alone, OrbitControls'
+      // next update() hard-clamps the camera onto minDistance exactly —
+      // which is also the wheel handoff's trigger boundary, so the next
+      // inward scroll would descend to the globe as a surprise.
+      const offset = systemCamera.position.clone().sub(systemControls.target);
+      const comfortable = WORLD_CLOSE_DISTANCE * 1.5;
+      if (offset.length() < comfortable) {
+        systemCamera.position.copy(systemControls.target).add(offset.setLength(comfortable));
       }
-    } else {
-      globeView.setTrueRelief(on);
     }
-    hud.setTrueScaleActive(on);
-    hud.setTrueScaleLabel(on ? 'schematic scale' : 'true scale');
     setCaptionFor(view);
   }
 
+  const drawingBuffer = new THREE.Vector2();
   function resize(): void {
     systemRenderer.setSize(window.innerWidth, window.innerHeight);
     globeRenderer.setSize(window.innerWidth, window.innerHeight);
@@ -422,6 +412,13 @@ function mountViews(
     systemCamera.updateProjectionMatrix();
     globeCamera.aspect = aspect;
     globeCamera.updateProjectionMatrix();
+    // The dither material's radial term measures `gl_FragCoord` — DEVICE
+    // pixels — so it needs the drawing buffer, not the CSS size the three
+    // `setSize` calls above take. On a DPR-2 display those differ by 2× and
+    // the term blows the frame out to white; ask the renderer rather than
+    // re-deriving `min(devicePixelRatio, 2)` here and drifting from it.
+    globeRenderer.getDrawingBufferSize(drawingBuffer);
+    globeView.setViewport(drawingBuffer.x, drawingBuffer.y);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -450,9 +447,6 @@ function mountViews(
     mapView.beginRegion(tile); // fetches the whole ring; replies route via boot -> deliverRegion
   }
 
-  const hudRoot = document.createElement('div');
-  app.append(hudRoot);
-
   const speedMemory = new SpeedMemory();
   let paused = false;
   let daysPerSecond = speedMemory.restore(view) / 86400;
@@ -460,22 +454,18 @@ function mountViews(
   let dayAtPlayStart = state.day;
   let day = state.day;
 
-  /** Rung switch: restore that rung's speed, re-cap the HUD, rebase the
-   * play-head. Used by the view toggle, the hashchange path, and (Task 7)
-   * the wheel handoff. */
+  /** Rung switch: restore that rung's speed, rebase the play-head, and
+   * re-evaluate availability (relief is globe-only, orbit distance is
+   * system-only). Used by the rung buttons and the hashchange path. */
   function applyView(v: ZoomTarget): void {
     view = v;
     zoom.setTarget(view, performance.now());
-    const mult = speedMemory.restore(view);
-    daysPerSecond = mult / 86400;
-    playStartMs = performance.now();
-    dayAtPlayStart = day;
-    hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
-    hud.setActiveSpeed(mult);
-    applySeasonalHold(mult);
-    setViewButtonFor(view);
+    applyRate(speedMemory.restore(view)); // also rebases, holds, and repaints the caption
+    consoleUi.statusBar.setRung(view);
     setCanvasPointerEvents(v);
-    applyTrueScale();
+    // The rung changed, so what is available changed — recomputed, never a
+    // captured snapshot.
+    consoleUi.refresh(ctx());
     if (v === 'map') enterMapRegion();
   }
 
@@ -506,7 +496,7 @@ function mountViews(
     // the URL contract ahead of that wiring (a reload while on the map rung
     // lands back on the globe, one rung up, rather than erroring).
     const urlView = view === 'map' ? 'globe' : view;
-    const hash = serializeAppState({ seed: state.seed, view: urlView, day });
+    const hash = serializeAppState({ seed: state.seed, view: urlView, day, controls: state.controls });
     if (location.hash !== hash) history.replaceState(null, '', hash);
   }
 
@@ -544,8 +534,158 @@ function mountViews(
     if (z.mapOpacity > 0) mapView.render(mapRenderer);
   }
 
-  const cb: HudCallbacks = {
-    onPlayPause() {
+  /** The live control context. Availability predicates read the CURRENT rung
+   * and the CURRENT Look, so this is recomputed on every refresh — a captured
+   * snapshot would freeze availability at boot. */
+  const ctx = (): ControlContext => ({ rung: view, tiles, lookId: String(store.get('look') ?? 'natural') });
+
+  /** `reconcileDayHold`'s "mark it off" hook. The store owns the day hold
+   * now, so the mark IS a store write; guarded on inequality so the write
+   * (which re-enters `setHoldSeason`) cannot loop. */
+  function syncDayHold(on: boolean): void {
+    if (store.get('hold-season') !== on) store.set('hold-season', on);
+  }
+
+  /** Shows `lens` on the status chip, and hands its caption to the lens
+   * control — that help line is where the old HUD's `.hud-caption` lives. */
+  function showLens(lens: Lens): void {
+    consoleUi.statusBar.setLens(lens.label);
+    lensControl.help = lens.caption;
+  }
+
+  /** The one place a clock rate takes effect: clamp to the rung's cap,
+   * remember it, rebase the play-head, repaint the rate chip, re-evaluate
+   * the seasonal hold. Returns what the rate actually became. */
+  function applyRate(mult: number): number {
+    const clamped = clampMult(view, mult);
+    speedMemory.remember(view, clamped);
+    daysPerSecond = clamped / 86400; // SPEED_STEPS mult is sim-s per real s
+    playStartMs = performance.now();
+    dayAtPlayStart = day;
+    consoleUi.transport.setRateLabel(rateLabel(clamped));
+    // Corrects the picker when the pick was over the rung's cap (and carries
+    // an internally-applied rate back onto it). Guarded on inequality so it
+    // terminates: the write re-enters `setRate` -> `applyRate`, which clamps
+    // to the same value and finds the store already holding it.
+    const picked = rateId(clamped);
+    if (store.get('rate') !== picked) store.set('rate', picked);
+    applySeasonalHold(clamped);
+    return clamped;
+  }
+
+  /** The day hold's whole relationship with the clock: engaging it drops a
+   * fast rate to a watchable one, and any OTHER rate change reconciles it
+   * back off. Both live in one object so the drop cannot cancel itself
+   * through `applyRate`'s picker write-back (see `DayHoldCoupling`). */
+  const dayHold = new DayHoldCoupling({
+    seasonalHoldMult: SEASONAL_HOLD_MULT,
+    mult: () => daysPerSecond * 86400,
+    watchableMult: () => SPEED_POLICY[view].defaultMult,
+    applyRate: (mult) => { applyRate(mult); },
+    setDayHold: (on) => globeView.setDayHold(on),
+    held: () => store.get('hold-season') === true,
+    setHeld: syncDayHold,
+  });
+
+  // THE registry: one entry per control, each `apply` closing over the view
+  // handle it drives. No callback interface, no per-control HUD setter trio.
+  const registry = buildRegistry({
+    setLens: (id) => {
+      const lens = lensById(id);
+      globeView.setLens(lens);
+      showLens(lens);
+    },
+    setLook: (id) => {
+      const look = lookById(id);
+      stylePipeline.setPasses(look.postPasses(tiles));
+      globeView.setStyle(look.globeMesh);
+      globeView.setSurface(look.globeSurface);
+      mapView.setStyle(look.mapRung);
+      // A Look's own settings appear and disappear with it, so availability
+      // is re-evaluated against the NEW lookId — the store's own notify
+      // would re-render against the context the sheet last saw.
+      consoleUi.refresh(ctx());
+    },
+    setWinds: (on) => globeView.setWinds(on),
+    setCurrents: (on) => globeView.setCurrents(on),
+    setClouds: (on) => globeView.setClouds(on),
+    setWaves: (on) => globeView.setWaves(on),
+    setGlint: (on) => globeView.setGlint(on),
+    setNightFill: (on) => globeView.setNightFill(on),
+    setTrueRelief: (on) => {
+      globeView.setTrueRelief(on);
+      setCaptionFor(view);
+      renderFrame(); // show the swap immediately, even while paused
+    },
+    setTrueDistance: (on) => {
+      applyTrueDistance(on);
+      renderFrame();
+    },
+    setHoldSpin: () => {
+      // The store already holds the new value; re-evaluate the hold against
+      // the current clock rate (daysPerSecond is the live mult / 86400) so
+      // the freeze takes effect immediately.
+      applySeasonalHold(daysPerSecond * 86400);
+    },
+    setHoldSeason: (on) => {
+      // Pins the season and, at a fast rate, drops to a watchable pace.
+      // `hold-spin` (the user's own explicit freeze choice) is untouched —
+      // this holds the season, not the spin, so it composes rather than
+      // overriding.
+      dayHold.engage(on);
+      setCaptionFor(view);
+    },
+    setRate: (mult) => {
+      // Watch-a-day and the fast seasonal-hold regime are mutually exclusive
+      // — a fast pick here disengages an active day-hold rather than
+      // composing with it (the coupling guards the other direction).
+      dayHold.reconcile(applyRate(mult));
+    },
+    rungDefaultRate: () => SPEED_POLICY[view].defaultMult,
+    reroll: () => {
+      // A different seed reloads via the hashchange listener below — the
+      // one deliberate full-reload path (module doc comment).
+      location.hash = serializeAppState(defaultAppState(randomSeed()));
+    },
+    share: () => {
+      navigator.clipboard.writeText(location.href).then(
+        () => consoleUi.statusBar.flashShared(),
+        // Clipboard can be denied; the date chip carries the notice until
+        // the next date repaint (next unpaused frame or discrete jump).
+        () => consoleUi.statusBar.setDate('copy failed — copy the address bar'),
+      );
+    },
+    // Only the active Look's settings are RENDERED, but the store holds every
+    // known control's value — so switching away and back restores the dot
+    // scale, and a shared link carries it either way (see ControlStore).
+    lookSettings: () => ditherSettingControls((s) => globeView.setDitherSettings(s)),
+    lensLegend: () => lensById(String(store.get('lens') ?? 'natural')).legend(tiles),
+  });
+  const store = new ControlStore(registry);
+  /** The lens entry, kept so its `help` can carry the ACTIVE lens's caption
+   * (the one control whose caption is not a fixed string). */
+  const lensControl = registry.find((c) => c.id === 'lens')!;
+
+  // The date field is bespoke chrome in the Time tab (Task 8b) — text entry
+  // needs parsing and an invalid state, which no control kind models. It must
+  // be built before `consoleUi` (it is passed in as the `time` group's
+  // extra), so `onJump` cannot close over `consoleUi` directly; it calls the
+  // named `jumpToDate` below instead, which is safe because `jumpToDate` is a
+  // hoisted function declaration and is only ever invoked after boot, long
+  // after `consoleUi` exists.
+  const dateField = buildDateField({ onJump: jumpToDate });
+
+  const consoleUi = buildConsoleUi({
+    controls: registry,
+    store,
+    tabs: SHEET_TABS,
+    extras: { time: [dateField.element] },
+    footer: caption,
+    onRung: (v) => {
+      applyView(v);
+      syncUrl(true);
+    },
+    onPlayPause: () => {
       paused = !paused;
       if (!paused) {
         // Resuming rebases the play-head so playback continues from
@@ -554,86 +694,9 @@ function mountViews(
         playStartMs = performance.now();
         dayAtPlayStart = day;
       }
-      hud.setPaused(paused);
+      consoleUi.transport.setPaused(paused);
     },
-    onSpeed(mult) {
-      const clamped = clampMult(view, mult);
-      speedMemory.remember(view, clamped);
-      daysPerSecond = clamped / 86400; // SPEED_STEPS mult is sim-s per real s
-      playStartMs = performance.now();
-      dayAtPlayStart = day;
-      hud.setActiveSpeed(clamped); // corrects the button if the click was over-cap
-      // Watch-a-day and the fast seasonal-hold regime are mutually exclusive
-      // (see onDayHold's doc comment) — a fast pick here disengages an
-      // active day-hold rather than composing with it (onDayHold already
-      // guards the other direction, engaging day-hold at a fast rate).
-      dayHoldOn = reconcileDayHold(dayHoldOn, clamped, SEASONAL_HOLD_MULT, globeView.setDayHold, hud.setDayHoldActive);
-      applySeasonalHold(clamped);
-    },
-    onFreezeSpin() {
-      spinFrozenByUser = !spinFrozenByUser;
-      // Re-evaluate the hold against the current clock rate (daysPerSecond is
-      // the live mult / 86400) so the freeze takes effect immediately.
-      applySeasonalHold(daysPerSecond * 86400);
-      hud.setFreezeSpinActive(spinFrozenByUser);
-    },
-    onDayHold() {
-      dayHoldOn = !dayHoldOn;
-      globeView.setDayHold(dayHoldOn);
-      if (dayHoldOn) {
-        // "Ensure a spinning (non-seasonal-hold) rate": the diurnal pulse is
-        // a once-per-day cycle, so at the fast rates that auto-engage the
-        // seasonal hold (Task 9) a whole day races by between frames and the
-        // pulse reads as noise, not a watchable cycle. Drop to the rung's
-        // default watchable pace in that case. `spinFrozenByUser` (the
-        // user's own explicit freeze-spin choice) is untouched — this holds
-        // the season, not the spin, so it composes rather than overriding.
-        const mult = daysPerSecond * 86400;
-        if (mult > SEASONAL_HOLD_MULT) {
-          const clamped = clampMult(view, SPEED_POLICY[view].defaultMult);
-          speedMemory.remember(view, clamped);
-          daysPerSecond = clamped / 86400;
-          playStartMs = performance.now();
-          dayAtPlayStart = day;
-          hud.setActiveSpeed(clamped);
-          applySeasonalHold(clamped);
-        }
-      }
-      hud.setDayHoldActive(dayHoldOn);
-      setCaptionFor(view);
-    },
-    onTrueScale() {
-      trueScaleOn[view] = !trueScaleOn[view];
-      applyTrueScale();
-      renderFrame();
-    },
-    onReroll() {
-      // A different seed reloads via the hashchange listener below — the
-      // one deliberate full-reload path (module doc comment).
-      location.hash = serializeAppState(defaultAppState(randomSeed()));
-    },
-    onShare() {
-      navigator.clipboard.writeText(location.href).then(
-        () => hud.flashShared(),
-        // Clipboard can be denied; the date line carries the notice until
-        // the next date repaint (next unpaused frame or discrete jump).
-        () => hud.setDate('copy failed — copy the address bar'),
-      );
-    },
-    onDateJump(year, dayOfYear) {
-      day = rawDateToDay(year, dayOfYear, system.world.yearDays);
-      playStartMs = performance.now();
-      dayAtPlayStart = day;
-      hud.setDay(day % system.world.yearDays);
-      updateDateLine();
-      renderFrame();
-      syncUrl(true);
-    },
-    onView: (v) => {
-      applyView(v);
-      syncUrl(true);
-    },
-    onScrub(scrubbedDay) {
+    onScrub: (scrubbedDay) => {
       day = Math.floor(day / system.world.yearDays) * system.world.yearDays + scrubbedDay;
       playStartMs = performance.now();
       dayAtPlayStart = day;
@@ -641,72 +704,41 @@ function mountViews(
       renderFrame();
       syncUrl(true);
     },
-    onLens(id) {
-      const lens = lensById(id);
-      globeView.setLens(lens);
-      hud.setLens(lens, lens.legend(tiles));
-    },
-    onStyle(id) {
-      const style = styleById(id);
-      stylePipeline.setStyle(style);
-      hud.setStyle(style);
-    },
-    onGlobeStyle(id) {
-      globeView.setStyle(id);
-      hud.setGlobeStyle(id);
-    },
-    onMapStyle(id) {
-      mapView.setStyle(id);
-      hud.setMapStyle(id);
-    },
-    onWinds() {
-      windsOn = !windsOn;
-      globeView.setWinds(windsOn);
-      hud.setWindsActive(windsOn);
-    },
-    onCurrents() {
-      currentsOn = !currentsOn;
-      globeView.setCurrents(currentsOn);
-      hud.setCurrentsActive(currentsOn);
-    },
-    onClouds() {
-      cloudsOn = !cloudsOn;
-      globeView.setClouds(cloudsOn);
-      hud.setCloudsActive(cloudsOn);
-    },
-    onEclipseMark(event) {
+    onEclipseMark: (event) => {
       infoCard.show(eclipseInfo(event));
     },
-    onWaves() {
-      wavesOn = !wavesOn;
-      globeView.setWaves(wavesOn);
-      hud.setWavesActive(wavesOn);
-    },
-    onGlint() {
-      glintOn = !glintOn;
-      globeView.setGlint(glintOn);
-      hud.setGlintActive(glintOn);
-    },
-    onNightFill() {
-      nightFillOn = !nightFillOn;
-      globeView.setNightFill(nightFillOn);
-      hud.setNightFillActive(nightFillOn);
-    },
-  };
+  });
+  app.append(consoleUi.element);
 
   /** Repaints the calendar text for the current `day`. Every discrete day
-   * mutation (jump, scrub, hash edit) calls this directly — autoplay's
-   * per-frame update is gated on `!paused`, so without these calls the
-   * date line goes stale exactly when the user pauses to look at a date. */
+   * mutation (scrub, hash edit) calls this directly — autoplay's per-frame
+   * update is gated on `!paused`, so without these calls the date line goes
+   * stale exactly when the user pauses to look at a date. */
   function updateDateLine(): void {
-    hud.setDate(formatRawDate(dayToRawDate(day, system.world.yearDays)));
+    const raw = dayToRawDate(day, system.world.yearDays);
+    consoleUi.statusBar.setDate(formatRawDate(raw));
+    // Keeps the date field's displayed value current as the clock advances,
+    // not just after a jump — 1-based, mirroring the status line.
+    dateField.setDate(raw.year + 1, raw.dayOfYear + 1);
   }
-  const hud = buildHud(hudRoot, state.seed, cb);
-  applySeasonalHold(speedMemory.restore(view)); // also sets the initial caption
-  setViewButtonFor(view);
+
+  /** The date field's jump path — the old HUD's `onDateJump`, verbatim:
+   * 1-based in from the field, 0-based to the engine. A named function
+   * (hoisted), not a closure captured at `dateField`'s construction, because
+   * the field is built before `consoleUi` exists. */
+  function jumpToDate(year: number, dayOfYear: number): void {
+    day = rawDateToDay(year - 1, dayOfYear - 1, system.world.yearDays);
+    playStartMs = performance.now();
+    dayAtPlayStart = day;
+    consoleUi.transport.setDay(day % system.world.yearDays);
+    updateDateLine();
+    renderFrame();
+    syncUrl(true);
+  }
+
   // Stacked canvases must route input to the visible rung only — mirrors
-  // applyView's pointer-events lines for the initial view (hud isn't built
-  // yet when zoom.jumpTo(view) runs above, so this can't literally call
+  // applyView's pointer-events lines for the initial view (the console isn't
+  // built yet when zoom.jumpTo(view) runs above, so this can't literally call
   // applyView at that point).
   systemCanvas.style.pointerEvents = view === 'system' ? 'auto' : 'none';
   globeCanvas.style.pointerEvents = view === 'globe' ? 'auto' : 'none';
@@ -716,36 +748,62 @@ function mountViews(
   // is unconditionally hidden at boot, unlike applyView's ternary which runs
   // after the ladder can actually reach 'map'.
   mapCanvas.style.pointerEvents = 'none';
-  hud.setDayRange(system.world.yearDays);
-  hud.setMaxSpeed(SPEED_POLICY[view].maxMult);
-  hud.setActiveSpeed(speedMemory.restore(view));
-  hud.setDay(day % system.world.yearDays);
+
+  consoleUi.statusBar.setSeed(state.seed);
+  consoleUi.statusBar.setRung(view);
+  showLens(naturalLens); // the picker, the chip and the globe agree from the first frame
+  consoleUi.transport.setDayRange(system.world.yearDays);
+  consoleUi.transport.setDay(day % system.world.yearDays);
+  consoleUi.transport.setEclipses(eclipses.events, system.world.yearDays);
   updateDateLine();
-  hud.setLens(naturalLens, naturalLens.legend(tiles)); // the picker and the globe agree from the first frame
-  hud.setStyle(styleById('photoreal')); // the picker and the pipeline agree from the first frame
-  hud.setGlobeStyle('smooth'); // the picker and the globe's default GlobeStyle agree from the first frame
-  hud.setMapStyle('voxel'); // the picker and the map view's default MapStyle agree from the first frame
-  hud.setWindsAvailable(
-    tiles.circulationBands !== null,
-    'no circulation bands: this world is tidally locked',
-  );
-  hud.setCurrentsAvailable(
-    // Match `createCurrents`'s own build condition: a tile counts as
-    // current-bearing if EITHER component is nonzero, not just east — an
-    // east-zero/north-nonzero current would otherwise wrongly disable the
-    // toggle for a world that has one.
-    tiles.currentEast.some((v) => v !== 0) || tiles.currentNorth.some((v) => v !== 0),
-    'no ocean-current data: this world is tidally locked',
-  );
-  hud.setCloudsAvailable(
-    // Match `createClouds`'s build condition: the cloud shell exists when any
-    // tile carries a non-clear cloud type (The Mantle). Unlike the old
-    // particle overlay this no longer requires circulation bands — a locked
-    // world has weather and clouds too.
-    tiles.cloudType.some((t) => t > 0),
-    'no clouds: every tile reports a clear sky',
-  );
-  hud.setEclipses(eclipses.events, system.world.yearDays);
+
+  // Persist every control change: into localStorage always, into the URL as
+  // a discrete user action (a control change isn't autoplay, so it bypasses
+  // syncUrl's throttle). Subscribing BEFORE restoring means the restore
+  // below flows through this same path, so a silent localStorage-only
+  // restore still leaves the URL (and thus Share) reflecting what's
+  // actually on screen, rather than the address bar catching up only once
+  // the viewer touches something.
+  //
+  // Debounced (see `CONTROL_PERSIST_DEBOUNCE_MS`): `store.set` itself still
+  // notifies, and the control's own `apply` still repaints, on every call —
+  // only the write below waits for quiet, and it always reads `store`
+  // fresh when it finally runs, so a burst's LAST value is what lands, never
+  // a stale one from mid-drag.
+  const persistControls = debounce(() => {
+    const encoded = encodeControls(store.nonDefaults());
+    saveLocalControls(encoded);
+    state.controls = encoded;
+    syncUrl(true);
+  }, CONTROL_PERSIST_DEBOUNCE_MS);
+  store.subscribe(persistControls);
+  // The debounce's one hole: a close, a reload or a back-navigation INSIDE
+  // the quiet window drops the pending write, so the setting the viewer just
+  // made is silently gone on the next load — a regression against the
+  // synchronous persist this replaced, and the common case now that seven
+  // sliders exist (release the drag, close the tab). `pagehide`, not
+  // `unload`: `unload` is unreliable-to-ignored on mobile Safari, which is
+  // the platform this whole surface is built for. Flushing when nothing is
+  // pending is a no-op, so this needs no condition.
+  window.addEventListener('pagehide', () => { persistControls.flush(); });
+
+  // URL first, local as the fallback — `resolveControls` is the one place
+  // that rule lives, so it has its own unit test rather than being an inline
+  // ternary nobody can exercise in isolation. `decodeControls` is forgiving
+  // (unknown ids ignored, sliders clamped, bad choices dropped), so a stale
+  // or hand-edited blob degrades gracefully rather than erroring.
+  const restored = decodeControls(resolveControls(state.controls, loadLocalControls), registry);
+  for (const [id, v] of Object.entries(restored)) store.set(id, v);
+
+  // The store applies nothing at construction, and it does not need to: every
+  // default IS the state its view was built in (overlays hidden, waves and
+  // glint on, schematic scale, the natural lens and Look, and the rate,
+  // whose default now tracks the rung — see `buildRegistry`'s
+  // `rungDefaultRate`). A restored rate already ran its own apply above (via
+  // `setRate` -> `applyRate`, which also engages the hold and sets the
+  // caption); anything else falls back to the rung's own resting pace here.
+  if (!('rate' in restored)) applyRate(speedMemory.restore(view));
+  consoleUi.refresh(ctx());
 
   const infoCard = mountInfoCard(app);
   const raycaster = new THREE.Raycaster();
@@ -821,7 +879,7 @@ function mountViews(
       day = next.day;
       dayAtPlayStart = day;
       playStartMs = performance.now();
-      hud.setDay(day % system.world.yearDays);
+      consoleUi.transport.setDay(day % system.world.yearDays);
       updateDateLine();
     }
   });
@@ -829,7 +887,7 @@ function mountViews(
   function frame(): void {
     if (!paused) {
       day = dayAtPlayStart + clockToDay(performance.now() - playStartMs, daysPerSecond);
-      hud.setDay(day % system.world.yearDays);
+      consoleUi.transport.setDay(day % system.world.yearDays);
       updateDateLine();
     }
     renderFrame();

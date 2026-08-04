@@ -103,6 +103,36 @@ export function quantizeBands(elevationM: number, bandM: number): number {
   return Math.floor(elevationM / bandM) * bandM;
 }
 
+/** A tile grid vertex's UV in CUBE-SPHERE FACE SPACE — `[0,1]²` across the
+ * whole face, NOT `[0,1]²` across this tile.
+ *
+ * This distinction is load-bearing for Surface-Stable Fractal Dithering
+ * (`./styles/dither3d`). The dither's dot density is derived from the
+ * screen-space derivative of the UV, so when the Cascade delivers a patch and
+ * a tile refines from level 2 to level 5, the density MUST NOT change.
+ * Face-space UVs guarantee that: the same surface point carries the same UV
+ * at every level, because `param()` subdivides a fixed [0,1] domain. Per-tile
+ * [0,1] UVs would reset density at every tile boundary AND re-scale it on
+ * every refine — visibly.
+ *
+ * Seams remain only at the 12 cube edges, where the face parametrization
+ * itself is discontinuous.
+ *
+ * `i` indexes `tileGrid`'s row-major (iy, then ix) grid; `n` is its side
+ * length (`TILE_QUADS + 1` for a tiles-export tile, `samples + 1` for a
+ * region patch). */
+export function faceSpaceUv(
+  tile: { level: number; ix: number; iy: number },
+  i: number,
+  n: number,
+): [number, number] {
+  const q = n - 1;
+  const col = i % n;
+  const row = Math.floor(i / n);
+  const span = 1 / (1 << tile.level);
+  return [(tile.ix + col / q) * span, (tile.iy + row / q) * span];
+}
+
 /** Build one cube-sphere *tile*'s displaced, vertex-colored geometry, at
  * whatever `level`/`ix`/`iy` the `TileId` names (a level-0 tile is the whole
  * face; deeper tiles are the adaptive-LOD quadtree's finer squares). Each
@@ -147,6 +177,7 @@ export function buildTileGeometry(
     skirtDepth,
     (i) => [grid.lats[i]!, grid.lons[i]!],
     radiusAtLatLon,
+    (i) => faceSpaceUv(tile, i, n),
   );
 }
 
@@ -188,6 +219,7 @@ export function buildRegionTileGeometry(
       return [latDeg, lonDeg];
     },
     radiusAtLatLon,
+    (i) => faceSpaceUv(region, i, n),
     // The patch's own bounds: outside them `sampleRegionElevationBilinear`
     // clamps, so the normal probe must step inward instead of reading a
     // flat-lie. See `analyticNormal`.
@@ -972,12 +1004,14 @@ function buildGridGeometry(
   skirtDepth: number,
   latLonAt: (i: number) => readonly [number, number],
   radiusAtLatLon: (lat: number, lon: number) => number,
+  uvAt: (i: number) => readonly [number, number],
   hasData?: (lat: number, lon: number) => boolean,
 ): THREE.BufferGeometry {
   // Growable arrays (the skirt appends past the n×n surface grid).
   const pos: number[] = [];
   const col: number[] = [];
   const nrmArr: number[] = []; // analytic normals, surface vertices only for now
+  const uvArr: number[] = [];
   for (let i = 0; i < n * n; i++) {
     const [ux, uy, uz] = unitAt(i);
     const r = radiusAt(i);
@@ -987,6 +1021,8 @@ function buildGridGeometry(
     const [lat, lon] = latLonAt(i);
     const [nx, ny, nz] = analyticNormal(lat, lon, radiusAtLatLon, hasData);
     nrmArr.push(nx, ny, nz);
+    const [tu, tv] = uvAt(i);
+    uvArr.push(tu, tv);
   }
   const q = n - 1;
   const indices: number[] = [];
@@ -1024,6 +1060,7 @@ function buildGridGeometry(
         const [gx, gy, gz] = unitAt(v);
         pos.push(pos[3 * v]! - gx * skirtDepth, pos[3 * v + 1]! - gy * skirtDepth, pos[3 * v + 2]! - gz * skirtDepth);
         col.push(col[3 * v]!, col[3 * v + 1]!, col[3 * v + 2]!);
+        uvArr.push(uvArr[2 * v]!, uvArr[2 * v + 1]!);
       }
       for (let k = 0; k < e.length; k++) skirtToEdge.push([start + k, e[k]!]);
       for (let k = 0; k < e.length - 1; k++) {
@@ -1047,6 +1084,7 @@ function buildGridGeometry(
   geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
   geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrmArr), 3));
+  geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvArr), 2));
   geom.setIndex(indices);
   if (skirtToEdge.length > 0) {
     // Give each skirt vertex its edge vertex's (outward) normal, so the double
