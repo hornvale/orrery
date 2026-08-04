@@ -131,19 +131,22 @@ canvas { display: block; touch-action: none; }   /* a globe drag must never scro
 /* The marks overlay is absolutely positioned and REQUIRES this positioned
    parent — a loose sibling is both invisible and unclickable. */
 .eclipse-marks { position: absolute; left: 8px; right: 8px; top: 50%; height: 0; pointer-events: none; }
+/* `pointer-events: none` — round 2's fix, replacing round 1's enlarged
+   ::before hit-box. That hit-box was correctly sized (44px, the --tap floor)
+   but centered on the SAME point as the scrubber `<input>` underneath, so
+   through a dense cluster of marks it shadowed a wide strip of the track's
+   own drag surface — a real regression for the scrubber's main job. Marks
+   are decorative now: a real pointer never hits one, it always lands on the
+   input, so a drag started "on" a mark still scrubs, by construction. The
+   tap-to-open-a-card behaviour moves to transport.ts's own pointerdown/
+   pointerup hit-test against the input (a generous-radius, not a CSS box),
+   plus the mark's own `click` listener stays wired for keyboard activation
+   (Tab focuses it, and pointer-events doesn't gate keyboard focus or the
+   `click` a keyboard Enter/Space dispatches straight to the focused
+   element, bypassing hit-testing entirely). */
 .eclipse-mark { position: absolute; top: 0; transform: translate(-50%, -50%);
   width: 14px; height: 14px; border-radius: 50%; padding: 0; border: 1px solid #a97a1e;
-  pointer-events: auto; cursor: pointer; }
-/* The visual dot stays 14px (any bigger and the scrubber track is unreadable
-   at a glance) but the TAP target is the --tap floor: a transparent ::before,
-   inset negative on all sides, expands the hit area without touching the
-   dot's own box or its siblings' stacking (the pseudo-element paints in the
-   mark's own box, so it still only intercepts a tap aimed near ITS dot —
-   two marks' expanded areas can still overlap if the dots themselves are
-   packed closer than --tap apart; see CLAUDE.md/the task report for when
-   that's expected and what to do about it). */
-.eclipse-mark::before { content: ''; position: absolute;
-  inset: calc((14px - var(--tap)) / 2); }
+  pointer-events: none; }
 .eclipse-solar { background: #e8b34a; border-color: #a97a1e; }
 .eclipse-lunar { background: #7d8fc7; border-color: #4a5a91; }
 .eclipse-annular { box-shadow: inset 0 0 0 2px rgba(5, 8, 18, 0.85); }

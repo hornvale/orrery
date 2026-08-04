@@ -31,12 +31,12 @@ async function assertUsableOnPhone(page: Page): Promise<void> {
   // target. `.transport > button` (direct children only — play/rate), NOT
   // `.transport button`: the eclipse marks are also `<button>`s, but nested
   // two levels deeper (`.transport-track > .eclipse-marks > button`), and
-  // they are DELIBERATELY a 14px visual dot with an enlarged *hit area* via
-  // `.eclipse-mark::before` (styles.css) rather than a 44px dot — a 44px dot
-  // would make the scrubber unreadable. That hit area isn't part of the
-  // mark's own `boundingBox()`, so sweeping marks into this generic check
-  // would both mismeasure them and (given a seed can pack several marks a
-  // few px apart — see the dedicated check below) blow this loop's own time
+  // they are `pointer-events: none` (styles.css) — a real tap/drag never
+  // lands on one at all, always on the scrubber underneath (see the
+  // dedicated eclipse-mark checks below for why, and for what a real pointer
+  // interaction does instead). Sweeping them into this generic box-height
+  // check would both mismeasure a deliberately-decorative element and (a
+  // seed can pack several marks a few px apart) blow this loop's own time
   // budget one mark at a time.
   for (const tab of ['lens', 'look', 'layers', 'time']) {
     await page.locator(`.sheet-tab[data-tab="${tab}"]`).click();
@@ -69,36 +69,48 @@ async function assertUsableOnPhone(page: Page): Promise<void> {
   expect(play).not.toBeNull();
   expect(play!.y + play!.height).toBeLessThanOrEqual(viewport.height);
 
-  // The eclipse marks' own dedicated check: excluded above because their
-  // VISUAL box is intentionally sub-floor, but their TAP target (the
-  // `::before` hit area) must still clear it. Read via computed style
-  // rather than `boundingBox()` — a pseudo-element has no box a locator can
-  // measure directly — and batched in one evaluate for the same reason as
-  // above (a seed can carry several marks).
-  //
-  // This does NOT prove every mark is independently reachable: seed 42
-  // packs a solar/lunar pair roughly every 8 days for several cycles, ~5px
-  // apart at this viewport width — already visually overlapping at the OLD
-  // 14px dot, so the enlarged hit area does not newly break anything there;
-  // it just formalizes that a tap inside a dense cluster resolves to
-  // whichever mark is topmost in DOM order, same ambiguity the dots already
-  // had. Isolated marks (the common case) get a real, individually
-  // resolvable 44px target, which is what this asserts.
-  const eclipseHitBoxes = await page.locator('.eclipse-mark').evaluateAll((els) =>
-    els.map((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect();
-      const cs = getComputedStyle(el, '::before');
-      const left = parseFloat(cs.left) || 0; // negative (outward) inset
-      const right = parseFloat(cs.right) || 0;
-      const top = parseFloat(cs.top) || 0;
-      const bottom = parseFloat(cs.bottom) || 0;
-      return { width: r.width - left - right, height: r.height - top - bottom };
-    }),
-  );
-  eclipseHitBoxes.forEach((box, i) => {
-    expect.soft(box.width, `eclipse mark ${i}'s tap target is too narrow`).toBeGreaterThanOrEqual(TAP - 1);
-    expect.soft(box.height, `eclipse mark ${i}'s tap target is too short`).toBeGreaterThanOrEqual(TAP - 1);
-  });
+  // The eclipse marks' round-2 fix, checked live in a real browser rather
+  // than reasoned about: a DRAG started exactly on a mark's own position
+  // must still move the scrubber. Round 1's enlarged CSS hit-box passed the
+  // touch-target floor but, centered on the same point as the slider
+  // underneath, shadowed a chunk of its drag surface through a dense
+  // cluster — a real regression this asserts against directly, on seed 42's
+  // actual dense solar/lunar cluster (days 86–119), not a synthetic one.
+  const scrub = page.locator('.transport-track input[type="range"]');
+  const clusterMark = page.locator('.eclipse-mark').first(); // seed 42: day 86, inside the dense cluster
+  const markBox = await clusterMark.boundingBox();
+  expect(markBox, 'expected at least one eclipse mark for seed 42').not.toBeNull();
+  if (markBox) {
+    const before = await scrub.inputValue();
+    const startX = markBox.x + markBox.width / 2;
+    const startY = markBox.y + markBox.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 80, startY, { steps: 8 }); // a real drag: well past TAP_MOVE_PX
+    await page.mouse.up();
+    const after = await scrub.inputValue();
+    expect(after, 'a drag started on a mark must still scrub — the mark must not have eaten it').not.toBe(before);
+  }
+
+  // The flip side: a TAP (no drag) at that same spot must still resolve to
+  // AN eclipse mark's card — `pointer-events: none` moved the interaction
+  // onto the scrubber, but transport.ts's own pointerdown/pointerup
+  // hit-test is what's supposed to recover tappability there. This does not
+  // prove every mark in the cluster is independently reachable (nearest-wins
+  // is deterministic, but seed 42 has no fully isolated mark to demonstrate
+  // that against in THIS world) — the unit tests in transport.test.ts pin
+  // the nearest-wins math directly; this only proves tapping the cluster at
+  // all still surfaces a card, i.e. constraint (a) — comfortably tappable —
+  // actually holds live, not just by construction.
+  if (markBox) {
+    const cx = markBox.x + markBox.width / 2;
+    const cy = markBox.y + markBox.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.up(); // no movement, no hold — a tap
+    await expect(page.locator('.info-card')).toContainText('eclipse', { timeout: 2_000 });
+    await page.keyboard.press('Escape');
+  }
 }
 
 // The device preset (touch, mobile UA, `defaultBrowserType`) is a worker-level

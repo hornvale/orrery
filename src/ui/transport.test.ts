@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildTransport } from './transport';
 import type { EclipseEvent } from '../sim/scene';
 
@@ -58,6 +58,45 @@ describe('the transport', () => {
     expect(marks.length).toBe(2);
     marks[1]!.click();
     expect(got).toBe(events[1]);
+  });
+
+  it('a tap on the scrubber near a mark (small movement) reports it — the real-pointer path, since the mark itself is pointer-events:none', () => {
+    const events: EclipseEvent[] = [
+      { day: 50, moonIndex: 0, body: 'solar', kind: 'total', track: null },
+      { day: 300, moonIndex: 0, body: 'lunar', kind: 'total', track: null },
+    ];
+    let got: EclipseEvent | null = null;
+    const t = buildTransport({ ...noop, onEclipseMark: (e) => { got = e; } });
+    t.setEclipses(events, 365);
+    const marksEl = t.element.querySelector('.eclipse-marks') as HTMLElement;
+    // jsdom/happy-dom never lays anything out, so getBoundingClientRect is
+    // all zeros by default — stand in a fixed 200px-wide box to give the
+    // hit-test something real to measure against.
+    vi.spyOn(marksEl, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, right: 200, width: 200, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON: () => '' } as DOMRect,
+    );
+    const scrub = t.element.querySelector('input[type="range"]') as HTMLInputElement;
+    // day 300 of 365 -> leftFraction ≈ 0.8219 -> x ≈ 164.4px into the 200px box.
+    scrub.dispatchEvent(new PointerEvent('pointerdown', { clientX: 165 }));
+    scrub.dispatchEvent(new PointerEvent('pointerup', { clientX: 166 })); // 1px — a tap
+    expect(got).toBe(events[1]);
+  });
+
+  it('a drag (large movement between pointerdown and pointerup) does not report a mark, even one it passes over', () => {
+    const events: EclipseEvent[] = [
+      { day: 300, moonIndex: 0, body: 'lunar', kind: 'total', track: null },
+    ];
+    let fired = 0;
+    const t = buildTransport({ ...noop, onEclipseMark: () => { fired++; } });
+    t.setEclipses(events, 365);
+    const marksEl = t.element.querySelector('.eclipse-marks') as HTMLElement;
+    vi.spyOn(marksEl, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, right: 200, width: 200, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON: () => '' } as DOMRect,
+    );
+    const scrub = t.element.querySelector('input[type="range"]') as HTMLInputElement;
+    scrub.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0 }));
+    scrub.dispatchEvent(new PointerEvent('pointerup', { clientX: 165 })); // sails past the mark — a drag
+    expect(fired).toBe(0);
   });
 
   it('shows the current rate as a chip', () => {
