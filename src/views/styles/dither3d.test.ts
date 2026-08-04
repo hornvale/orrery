@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import { DITHER_DEFAULTS, DITHER_DOT_PX, createDitherMaterial } from './dither3d';
 
 describe('the dither material', () => {
@@ -87,6 +88,55 @@ describe('the dither material', () => {
     it('solves the level for a fixed screen-pixel cell, so dotScale is in pixels', () => {
       expect(DITHER_DOT_PX).toBeGreaterThan(1);
       expect(chunk()).toMatch(/-log2\(footprint \* uDotScale \* DITHER_DOT_PX\)/);
+    });
+  });
+
+  /* The injection is three `String.replace` calls against three's own shader
+   * chunk markers, and `String.replace` on a token that is not there is a
+   * SILENT no-op: the material compiles, the globe renders, and the Look does
+   * nothing at all. `three` is pinned `^0.166.0` — a caret, so a minor bump
+   * that renames or drops a chunk lands without a lockfile-visible major.
+   * Neither the assertions above (which only grep the chunk STRING, which
+   * exists whether or not it is ever spliced in) nor e2e's non-blank floor
+   * can see that. These two can. */
+  describe('the injection actually lands in three\'s own shader source', () => {
+    // MeshStandardMaterial and MeshPhysicalMaterial both compile from
+    // `ShaderLib.physical` (three's `WebGLPrograms` shaderIDs table), so this
+    // IS the source `createDitherMaterial`'s material is built from.
+    const stock = (): { vertexShader: string; fragmentShader: string } => THREE.ShaderLib.physical;
+
+    it('finds every one of its three replace targets in the stock physical shader', () => {
+      expect(stock().vertexShader, 'vertex #include <common> gone').toContain('#include <common>');
+      expect(stock().vertexShader, 'vertex #include <uv_vertex> gone').toContain('#include <uv_vertex>');
+      expect(stock().fragmentShader, 'fragment #include <common> gone').toContain('#include <common>');
+      expect(stock().fragmentShader, 'fragment #include <dithering_fragment> gone')
+        .toContain('#include <dithering_fragment>');
+    });
+
+    it('splices the varying, the uniforms and the chunk into the real source, not into nothing', () => {
+      const { material } = createDitherMaterial();
+      type CompileShader = Parameters<THREE.Material['onBeforeCompile']>[0];
+      const shader = {
+        uniforms: {},
+        vertexShader: stock().vertexShader,
+        fragmentShader: stock().fragmentShader,
+      } as unknown as CompileShader;
+      material.onBeforeCompile(shader, undefined as unknown as THREE.WebGLRenderer);
+
+      // The vertex half: the varying is declared and written from `uv`.
+      expect(shader.vertexShader).toContain('varying vec2 vDitherUv;');
+      expect(shader.vertexShader).toContain('vDitherUv = uv;');
+      // The fragment half: the uniform block and the chunk itself, and the
+      // chunk lands AFTER lighting (its whole point — it quantizes the LIT
+      // colour, which is what preserves the honest terminator).
+      expect(shader.fragmentShader).toContain('uniform sampler3D uDither;');
+      const chunk = (material.userData as { ditherChunk: string }).ditherChunk;
+      expect(shader.fragmentShader).toContain(chunk);
+      expect(shader.fragmentShader.indexOf(chunk))
+        .toBeGreaterThan(shader.fragmentShader.indexOf('#include <dithering_fragment>'));
+      // ...and the uniforms the chunk reads are actually on the shader.
+      expect(Object.keys(shader.uniforms)).toContain('uDither');
+      expect(Object.keys(shader.uniforms)).toContain('uViewport');
     });
   });
 

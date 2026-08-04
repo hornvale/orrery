@@ -272,6 +272,10 @@ test('the Look roster: every Look option renders the globe non-blank (Task 3)', 
   const look = await control(page, 'look', 'look');
   await expect(look).toHaveCount(1);
 
+  // `natural` is the roster's first stop, and its frame is the baseline the
+  // dither is diffed against below.
+  let natural: Buffer | undefined;
+
   for (const id of ['natural', 'voxel', 'dither3d', 'pixel']) {
     await look.locator(`[data-option="${id}"]`).click();
     await expect(globeCanvas).toBeVisible();
@@ -285,6 +289,22 @@ test('the Look roster: every Look option renders the globe non-blank (Task 3)', 
     // not a pixel-baseline comparison (none exists; WebGL is too noisy for
     // one).
     expect(shot.length, `${id} rendered blank`).toBeGreaterThan(5_000);
+    if (id === 'natural') natural = shot;
+
+    // A non-blank floor alone cannot see the dither's own failure mode.
+    // `dither3d` is injected into three's stock `physical` shader by three
+    // `String.replace` calls against chunk markers, and `String.replace` on a
+    // marker that is not there is a SILENT no-op: the material still
+    // compiles, the globe still renders, and the frame is simply `natural`
+    // again. `three` is pinned with a caret, so a minor bump that renames a
+    // chunk would ship exactly that and pass this whole test green. Diff it
+    // against `natural`, the way the pixel Look's own test does — the clock
+    // is paused and the camera has not moved since, so the only thing that
+    // can differ is the Look. (dither3d.test.ts pins the injection targets
+    // themselves; this is the end-to-end half of the same guard.)
+    if (id === 'dither3d' && natural) {
+      expect(shot.equals(natural), 'dither3d did not transform the frame — the shader injection is a no-op').toBe(false);
+    }
   }
 
   expect(errors).toEqual([]);
