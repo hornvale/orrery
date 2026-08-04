@@ -23,6 +23,10 @@ export function buildSheet(opts: {
   controls: readonly Control[];
   store: ControlStore;
   tabs: readonly SheetTab[];
+  /** Bespoke chrome to append after a group's controls. The sheet appends
+   * these opaque nodes and knows nothing about them — the seam that lets the
+   * date field live in the Time tab without becoming a control kind. */
+  extras?: Partial<Record<GroupId, HTMLElement[]>>;
 }): Sheet {
   const { controls, store, tabs } = opts;
   const element = el('div', 'sheet');
@@ -56,6 +60,7 @@ export function buildSheet(opts: {
       if (c.group !== active) continue;
       body.appendChild(renderControl(c, ctx, store));
     }
+    for (const extra of opts.extras?.[active] ?? []) body.appendChild(extra);
   }
 
   function setTab(group: GroupId): void {

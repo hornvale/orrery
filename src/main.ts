@@ -18,7 +18,8 @@ import type { ControlContext } from './ui/controls/kinds';
 import { mountInfoCard } from './ui/infoCard';
 import { eclipseInfo, moonInfo, namedTarget, siteInfo, starInfo, worldInfo } from './ui/inspect';
 import { clockToDay } from './time/clock';
-import { dayToRawDate, formatRawDate } from './time/calendar';
+import { dayToRawDate, formatRawDate, rawDateToDay } from './time/calendar';
+import { buildDateField } from './ui/dateField';
 import { createSystemView } from './views/system';
 import { createGlobeView, GLOBE_RADIUS, RELIEF_EXAGGERATION, seasonalSpinZ, type GlobeView } from './views/globe';
 import {
@@ -635,10 +636,20 @@ function mountViews(
    * (the one control whose caption is not a fixed string). */
   const lensControl = registry.find((c) => c.id === 'lens')!;
 
+  // The date field is bespoke chrome in the Time tab (Task 8b) — text entry
+  // needs parsing and an invalid state, which no control kind models. It must
+  // be built before `consoleUi` (it is passed in as the `time` group's
+  // extra), so `onJump` cannot close over `consoleUi` directly; it calls the
+  // named `jumpToDate` below instead, which is safe because `jumpToDate` is a
+  // hoisted function declaration and is only ever invoked after boot, long
+  // after `consoleUi` exists.
+  const dateField = buildDateField({ onJump: jumpToDate });
+
   const consoleUi = buildConsoleUi({
     controls: registry,
     store,
     tabs: SHEET_TABS,
+    extras: { time: [dateField.element] },
     onRung: (v) => {
       applyView(v);
       syncUrl(true);
@@ -673,7 +684,25 @@ function mountViews(
    * update is gated on `!paused`, so without these calls the date line goes
    * stale exactly when the user pauses to look at a date. */
   function updateDateLine(): void {
-    consoleUi.statusBar.setDate(formatRawDate(dayToRawDate(day, system.world.yearDays)));
+    const raw = dayToRawDate(day, system.world.yearDays);
+    consoleUi.statusBar.setDate(formatRawDate(raw));
+    // Keeps the date field's displayed value current as the clock advances,
+    // not just after a jump — 1-based, mirroring the status line.
+    dateField.setDate(raw.year + 1, raw.dayOfYear + 1);
+  }
+
+  /** The date field's jump path — the old HUD's `onDateJump`, verbatim:
+   * 1-based in from the field, 0-based to the engine. A named function
+   * (hoisted), not a closure captured at `dateField`'s construction, because
+   * the field is built before `consoleUi` exists. */
+  function jumpToDate(year: number, dayOfYear: number): void {
+    day = rawDateToDay(year - 1, dayOfYear - 1, system.world.yearDays);
+    playStartMs = performance.now();
+    dayAtPlayStart = day;
+    consoleUi.transport.setDay(day % system.world.yearDays);
+    updateDateLine();
+    renderFrame();
+    syncUrl(true);
   }
 
   // Stacked canvases must route input to the visible rung only — mirrors

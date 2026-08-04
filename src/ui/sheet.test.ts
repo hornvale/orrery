@@ -177,4 +177,16 @@ describe('the sheet renderer', () => {
     sheet.setTab('look');
     expect(el.querySelector('[data-control="gamma"] .control-legend')).toBeNull();
   });
+
+  it('appends a groups extras after its controls, and only in that group', () => {
+    const controls = fakeControls([]);
+    const store = new ControlStore(controls);
+    const extra = document.createElement('div');
+    extra.id = 'bespoke';
+    const sheet = buildSheet({ controls, store, tabs: TABS, extras: { look: [extra] } });
+    sheet.render(GLOBE);
+    expect(sheet.element.querySelector('#bespoke')).toBeNull(); // layers tab is active
+    sheet.setTab('look');
+    expect(sheet.element.querySelector('#bespoke')).toBe(extra);
+  });
 });

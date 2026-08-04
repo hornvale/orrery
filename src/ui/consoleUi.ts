@@ -4,7 +4,7 @@
  *
  * Named `ConsoleUi`, not `Console`: `console` is a global, and a local
  * binding of that name in `main.ts` would shadow it. */
-import type { Control, ControlContext } from './controls/kinds';
+import type { Control, ControlContext, GroupId } from './controls/kinds';
 import type { ControlStore } from './controls/store';
 import { buildSheet, type Sheet, type SheetTab } from './sheet';
 import { buildStatusBar, type StatusBar } from './statusBar';
@@ -29,8 +29,11 @@ export function buildConsoleUi(opts: {
   onPlayPause(): void;
   onScrub(day: number): void;
   onEclipseMark(e: EclipseEvent): void;
+  /** Bespoke chrome (the date field) to append into a group's tab — passed
+   * straight through to the sheet, which appends it as an opaque node. */
+  extras?: Partial<Record<GroupId, HTMLElement[]>>;
 }): ConsoleUi {
-  const sheet = buildSheet({ controls: opts.controls, store: opts.store, tabs: opts.tabs });
+  const sheet = buildSheet({ controls: opts.controls, store: opts.store, tabs: opts.tabs, extras: opts.extras });
   const statusBar = buildStatusBar({
     onRung: opts.onRung,
     // `world` is a GroupId with no tab of its own — `setTab` accepts it and
