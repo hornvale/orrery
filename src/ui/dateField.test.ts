@@ -89,10 +89,13 @@ describe('the date field', () => {
 // mid-typing on the very next frame — the field would be unusable during
 // playback, which is precisely when a jump is most likely wanted. "Being
 // edited" is defined as: dirty since the last real `input` event, and NOT
-// dirty once a submit succeeds or the field is blurred with its value
-// unchanged from what the clock last wrote. Focus alone does not count —
-// a viewer can focus and walk away without typing, and that must resume
-// tracking, not freeze the field forever.
+// dirty once a submit succeeds. Focus alone does not count — a viewer can
+// focus and walk away without typing, and that must resume tracking, not
+// freeze the field forever. Blurring WITHOUT submitting is abandonment: the
+// dirty flag clears unconditionally and the input is restored to the
+// clock's current value right then, rather than waiting for a coincidence
+// (edited text happening to match the still-moving clock) that would in
+// practice never arrive and would otherwise freeze the field silently.
 describe('setDate does not clobber an edit in progress', () => {
   it('does NOT change the value while the viewer has typed something', () => {
     const f = buildDateField({ onJump: () => {} });
@@ -132,29 +135,19 @@ describe('setDate does not clobber an edit in progress', () => {
     expect(input.value).toBe('nonsense');
   });
 
-  it('resumes tracking on blur if the value is unchanged from what the clock last wrote', () => {
+  it('treats an unsubmitted blur as abandonment: resumes tracking and shows the clock value, not the abandoned text', () => {
     const f = buildDateField({ onJump: () => {} });
     const input = f.element.querySelector('input') as HTMLInputElement;
-    f.setDate(3, 214);
-    // Some input events fire without a real edit (focus/composition quirks);
-    // re-typing the identical value should still be treated as "walked away
-    // without changing anything" once the field loses focus.
-    input.value = '3 214';
-    input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new Event('blur'));
-    f.setDate(9, 10);
-    expect(input.value).toBe('9 10');
-  });
-
-  it('does NOT resume tracking on blur while a real edit is still pending', () => {
-    const f = buildDateField({ onJump: () => {} });
-    const input = f.element.querySelector('input') as HTMLInputElement;
-    f.setDate(3, 214);
+    f.setDate(3, 214); // the clock currently reads Y3/D214
     input.value = '99 1';
     input.dispatchEvent(new Event('input'));
     input.dispatchEvent(new Event('blur'));
+    // The abandoned text is replaced immediately on blur, not left frozen —
+    // this is the honest-feedback half of the fix.
+    expect(input.value).toBe('3 214');
+    // And ordinary clock-tracking resumes on the next tick.
     f.setDate(9, 10);
-    expect(input.value).toBe('99 1');
+    expect(input.value).toBe('9 10');
   });
 });
 

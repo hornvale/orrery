@@ -65,11 +65,19 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   // edited" is a dirty flag, not focus: a viewer can focus the field and
   // walk away without typing, and that must still resume tracking rather
   // than freeze the field forever. The flag goes dirty on a real `input`
-  // event, and clean again on a successful submit (the edit is now spent)
-  // or on blur if the value is exactly what the clock last wrote (nothing
-  // was actually changed, so there is nothing left to protect).
+  // event, and clean again on a successful submit (the edit is now spent).
+  //
+  // Blur WITHOUT a submit is treated as abandonment, not "still editing
+  // elsewhere": it clears `dirty` unconditionally and restores the input to
+  // `liveValue` immediately. An "only if unchanged" rule was tried first and
+  // rejected — `liveValue` moves with the clock on every `setDate` call
+  // regardless of `dirty`, so a genuinely edited value would almost never
+  // coincide with it again, leaving the field dirty (and therefore frozen,
+  // silently, for the rest of the session) forever. Discarding on blur is
+  // honest instead: the viewer's abandoned text is visibly replaced by the
+  // real date, and there is no silent-freeze path left to trigger.
   let dirty = false;
-  let lastSynced = '';
+  let liveValue = ''; // the clock's current text, kept current every `setDate` call regardless of `dirty`
 
   function submit(): void {
     const parsed = parseDateEntry(input.value);
@@ -86,7 +94,9 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   input.addEventListener('input', () => { dirty = true; });
   input.addEventListener('blur', () => {
-    if (input.value === lastSynced) dirty = false;
+    dirty = false;
+    input.value = liveValue;
+    element.classList.remove('invalid');
   });
 
   row.append(input, go);
@@ -95,9 +105,9 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
   return {
     element,
     setDate: (year, dayOfYear) => {
-      lastSynced = `${year} ${dayOfYear}`;
+      liveValue = `${year} ${dayOfYear}`;
       if (dirty) return; // an edit is in progress — do not clobber it
-      input.value = lastSynced;
+      input.value = liveValue;
       element.classList.remove('invalid');
     },
   };
