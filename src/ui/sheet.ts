@@ -111,6 +111,19 @@ function renderControl(c: Control, ctx: ControlContext, store: ControlStore): HT
       row.appendChild(b);
     }
     wrap.appendChild(row);
+    if (c.legend) {
+      const box = el('div', 'control-legend');
+      for (const row of c.legend()) {
+        const item = el('div', 'control-legend-row');
+        const sw = el('span', 'control-swatch');
+        sw.style.background = `rgb(${row.swatch[0]}, ${row.swatch[1]}, ${row.swatch[2]})`;
+        const label = el('span', 'control-legend-label');
+        label.textContent = row.label;
+        item.append(sw, label);
+        box.appendChild(item);
+      }
+      wrap.appendChild(box);
+    }
   } else if (c.kind === 'slider') {
     const input = document.createElement('input');
     input.type = 'range';

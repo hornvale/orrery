@@ -14,6 +14,7 @@ function deps(): RegistryDeps {
     setTrueDistance: nop, setHoldSpin: nop, setHoldSeason: nop, setRate: nop,
     reroll: nop, share: nop,
     lookSettings: () => [],
+    lensLegend: () => [],
   };
 }
 
@@ -86,5 +87,12 @@ describe('the control registry', () => {
     expect(relief.available!(ctx('system')).ok).toBe(false);
     expect(distance.available!(ctx('system')).ok).toBe(true);
     expect(distance.available!(ctx('globe')).ok).toBe(false);
+  });
+
+  it('gives the lens control a legend, so its colour key renders', () => {
+    const r = buildRegistry(deps());
+    const lens = r.find((c) => c.id === 'lens')!;
+    expect(lens.kind).toBe('choice');
+    if (lens.kind === 'choice') expect(typeof lens.legend).toBe('function');
   });
 });

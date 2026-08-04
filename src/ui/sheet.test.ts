@@ -21,6 +21,14 @@ function fakeControls(log: string[] = []): Control[] {
       min: 0, max: 10, step: 1, default: 5, apply: (v) => { log.push(`delta:${v}`); } },
     { kind: 'action', id: 'epsilon', label: 'Epsilon', group: 'world',
       run: () => { log.push('epsilon'); } },
+    { kind: 'choice', id: 'zeta', label: 'Zeta', group: 'look',
+      options: [{ id: 'p', label: 'P' }, { id: 'q', label: 'Q' }],
+      default: 'p',
+      legend: () => ([
+        { swatch: [255, 0, 0] as [number, number, number], label: 'hot' },
+        { swatch: [0, 0, 255] as [number, number, number], label: 'cold' },
+      ]),
+      apply: () => {} },
   ];
 }
 
@@ -146,5 +154,27 @@ describe('the sheet renderer', () => {
     sheet.render(SYSTEM);
     expect(sheet.activeTab()).toBe('layers');
     expect(el.querySelector('[data-control="beta"]')!.classList.contains('unavailable')).toBe(true);
+  });
+
+  it('renders a legend row per entry for a choice that has one', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    const rows = [...el.querySelectorAll('[data-control="zeta"] .control-legend-row')];
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.querySelector('.control-legend-label')!.textContent))
+      .toEqual(['hot', 'cold']);
+  });
+
+  it('paints each swatch from its rgb triple', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    const sw = el.querySelector('[data-control="zeta"] .control-swatch') as HTMLElement;
+    expect(sw.style.background).toBe('rgb(255, 0, 0)');
+  });
+
+  it('renders no legend element for a choice without one', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    expect(el.querySelector('[data-control="gamma"] .control-legend')).toBeNull();
   });
 });

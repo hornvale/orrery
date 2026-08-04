@@ -6,7 +6,7 @@
  *
  * Adding a control costs ONE entry here. No renderer edit, no callback
  * interface, no test file. That is the whole point of the indirection. */
-import type { Control, ControlContext } from './kinds';
+import type { Control, ControlContext, LegendRow } from './kinds';
 import { AVAILABLE } from './kinds';
 import type { SheetTab } from '../sheet';
 import { LENSES } from '../../views/lens';
@@ -42,6 +42,9 @@ export interface RegistryDeps {
   /** The active Look's own settings, merged in at build time. Empty until
    * Stage 5 gives dither3d its seven. */
   lookSettings(): Control[];
+  /** The active lens's legend rows, for the lens control's colour key. Read
+   * through a function so it tracks the live lens and the live world. */
+  lensLegend(): LegendRow[];
 }
 
 const globeOnly = (ctx: ControlContext) =>
@@ -57,6 +60,7 @@ export function buildRegistry(d: RegistryDeps): Control[] {
       options: LENSES.map((l) => ({ id: l.id, label: l.label })),
       default: 'natural',
       apply: (v) => d.setLens(v),
+      legend: () => d.lensLegend(),
     },
 
     // ---- Look -------------------------------------------------------------

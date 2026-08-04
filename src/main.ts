@@ -628,6 +628,7 @@ function mountViews(
       );
     },
     lookSettings: () => [], // Stage 5 gives dither3d its seven
+    lensLegend: () => lensById(String(store.get('lens') ?? 'natural')).legend(tiles),
   });
   const store = new ControlStore(registry);
   /** The lens entry, kept so its `help` can carry the ACTIVE lens's caption

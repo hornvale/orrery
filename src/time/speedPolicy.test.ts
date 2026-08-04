@@ -104,6 +104,7 @@ function wireRung(rung: ZoomTarget, startMult: number) {
     setWaves: nop, setGlint: nop, setNightFill: nop, setTrueRelief: nop,
     setTrueDistance: nop, setHoldSpin: nop, reroll: nop, share: nop,
     lookSettings: () => [],
+    lensLegend: () => [],
     setHoldSeason: (on) => dayHold.engage(on),
     setRate: (m) => dayHold.reconcile(applyRate(m)),
   };

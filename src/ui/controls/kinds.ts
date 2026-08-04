@@ -27,6 +27,16 @@ export interface ControlContext {
 
 export type ControlValue = boolean | string | number;
 
+/** One row of a control's colour key. Structurally identical to
+ * `views/lens.ts`'s `LegendEntry` on purpose: a lens's own legend satisfies
+ * this without a cast, while `src/ui/controls/` stays free of any dependency
+ * on the views layer. Structural typing does the work. */
+export interface LegendRow {
+  /** 0-255 RGB. */
+  swatch: [number, number, number];
+  label: string;
+}
+
 interface ControlBase {
   /** Stable. The URL codec writes it, e2e addresses it, the DOM carries it
    * as `data-control`. One name, three consumers — never rename casually. */
@@ -50,6 +60,10 @@ export interface Choice extends ControlBase {
   options: Array<{ id: string; label: string }>;
   default: string;
   apply(v: string): void;
+  /** Optional colour key rendered beneath the options. A function, not a
+   * value, because a legend can depend on the world (a lens's ramp is keyed
+   * to that world's sea level) and on which option is active. */
+  legend?(): LegendRow[];
 }
 
 export interface Slider extends ControlBase {
