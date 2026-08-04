@@ -1,7 +1,7 @@
 /** Pure placement math for the day-scrubber's eclipse marks: where each
  * event lands along the scrubber track, and what it should carry so a click
- * can open its inspector card. No DOM here — see hud.ts's
- * `div.hud-eclipse-marks` for the overlay this feeds. */
+ * can open its inspector card. No DOM here — see transport.ts's
+ * `div.eclipse-marks` for the overlay this feeds. */
 import type { EclipseEvent } from '../sim/scene';
 
 /** One eclipse mark's placement on the scrubber track. */

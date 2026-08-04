@@ -4,6 +4,18 @@
  * second. */
 import type { ZoomTarget } from '../views/zoom';
 
+/** The offered playback rates, as sim-seconds per real second. Time policy,
+ * not chrome: the control registry turns each step into a `rate` option, and
+ * `SPEED_POLICY` below caps which of them a rung will accept. */
+export const SPEED_STEPS: Array<{ label: string; mult: number }> = [
+  { label: '1×', mult: 1 },
+  { label: '1 min/s', mult: 60 },
+  { label: '1 hr/s', mult: 3600 },
+  { label: '1 day/s', mult: 86400 },
+  { label: '10 d/s', mult: 864000 },
+  { label: '~1 mo/s', mult: 2.6e6 },
+];
+
 /** One rung's default and cap (null = uncapped). */
 export interface RungPolicy { defaultMult: number; maxMult: number | null }
 
