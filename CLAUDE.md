@@ -121,6 +121,13 @@ settings as `Control` entries if it has any.
 - **Spin vs. clock** are decoupled by the seasonal **hold**: freezing the
   mesh spin while the terminator keeps tracking the season (`seasonalSpinZ`,
   `setSeasonalHold`). The `freeze spin` toggle forces it on at any rate.
+- **The globe's surface is a two-material swap, not a per-tile choice.**
+  `GlobeView.setSurface('standard' | 'dither')` swaps every MOUNTED tile's
+  material in place — no geometry rebuild, so a Look switch is instant and
+  composes independently of the geometry-family axis (`setStyle`,
+  smooth/voxel). A tile built after the swap picks up whichever surface is
+  currently active; voxel geometry has no `uv`, so the dither material is
+  inert over it and the tile reads as flat-shaded standard regardless.
 
 ## LOD status
 
@@ -135,6 +142,15 @@ Mixed-level boundaries are crack-filled by **skirts** — `buildTileGeometry`'s
 `skirtDepth` apron, double-winded and edge-normal-lit, hidden below the surface
 when neighbours match. The whole geometry pipeline is keyed by tile slot, so a
 rebuild at any mix of levels is mechanical.
+
+Every tile geometry — base and region alike — also carries a **face-space
+`uv`** (`faceSpaceUv`), continuous across the whole cube face rather than
+per-tile [0,1]. This is what makes the `dither3d` Look's dots surface-stable:
+the dither shader's fractal level is solved from the UV's screen-space
+derivative (`dFdx`/`dFdy`), so a per-tile UV would jump discontinuously at
+every tile boundary and every LOD refine. Region tiles must pass
+`faceSpaceUv(region, …)`, not a resampled per-tile UV, or dot density visibly
+jumps when the Cascade refines a tile under the camera.
 
 **The base globe is region-served (The Cascade).** `REGION_MIN_LEVEL` is **0**
 — *every* tile the globe can show, base set included, renders from the
