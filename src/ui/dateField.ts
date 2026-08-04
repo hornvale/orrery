@@ -90,6 +90,16 @@ export function buildDateField(cb: { onJump(year: number, dayOfYear: number): vo
     cb.onJump(parsed.year, parsed.dayOfYear);
   }
 
+  // A real click on `go` is mousedown -> blur (focus leaving the input) ->
+  // mouseup -> click, in that order — so without this, the blur handler
+  // below discards the typed value as "abandoned" a tick before `submit`
+  // ever runs, and a mouse click on Go could never work. `preventDefault`
+  // on mousedown stops the browser's default focus-shift (the actual cause
+  // of the blur), while still letting the click fire normally afterward.
+  // `.click()` calls in tests bypass this entirely (they fire a bare
+  // `click`, no real focus transfer), which is why no unit test caught it —
+  // this is a real-browser-only bug, the kind e2e exists to catch.
+  go.addEventListener('mousedown', (e) => { e.preventDefault(); });
   go.addEventListener('click', submit);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   input.addEventListener('input', () => { dirty = true; });

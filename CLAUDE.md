@@ -53,7 +53,8 @@ are regenerated from the new producer.
 npm test          # vitest: co-located *.test.ts (needs the wasm for fixtures)
 npm run smoke     # node: hw_new + scene doc sanity over the wasm
 npm run build     # tsc --noEmit + vite build (the typecheck IS the lint)
-npm run e2e       # playwright: boots seed 42 in a real browser, helm + lenses
+npm run e2e       # playwright: boots seed 42 in a real browser, the console's
+                  # tabs/rungs/lenses/Looks, plus a 375px/390px mobile pass
 ```
 
 Run all four before pushing. `npm run dev` for the live app. e2e needs the
@@ -71,24 +72,42 @@ root-cache browser is invisible to the test run).
   rates; the spin/clock coupling lives here).
 - `src/views/` — the three.js layer: `globe.ts` (the world), `ocean.ts`,
   `winds.ts`, `ice.ts`, `lens.ts` (+ `colormap.ts`, `biomePalette.ts`),
-  `moonShading.ts`/`moonTexture.ts`, `starfield.ts`, `system.ts`, and the LOD
-  scaffolding `cubeSphere.ts` / `worldMesh.ts` / `regionPatch.ts` /
-  `cascade.ts` (the region-request scheduler) / `scale.ts`
-  / `zoom.ts`.
-- `src/ui/` — `hud.ts`, `inspect.ts`, `seed.ts`, `infoCard.ts`.
+  `look.ts` (the one Look axis — globe mesh, surface material, map rung, and
+  post passes, replacing the old three separate style axes), `moonShading.ts`/
+  `moonTexture.ts`, `starfield.ts`, `system.ts`, and the LOD scaffolding
+  `cubeSphere.ts` / `worldMesh.ts` / `regionPatch.ts` / `cascade.ts` (the
+  region-request scheduler) / `scale.ts` / `zoom.ts`.
+- `src/ui/` — the control surface: `src/ui/controls/` (`kinds.ts`'s four
+  control kinds — toggle/choice/slider/action — plus `registry.ts`, the one
+  place every control is declared, and `codec.ts`/`store.ts`, its URL/
+  localStorage persistence and live value store), `sheet.ts` (the generic
+  tabbed renderer over the registry), `statusBar.ts` (rung buttons, lens/date
+  chips, the seed), `transport.ts` (play/pause, the day scrubber, eclipse
+  marks), `consoleUi.ts` (assembles the three), `dateField.ts` (the "jump to a
+  date" chrome), `inspect.ts`, `seed.ts`, `infoCard.ts`. The day scrubber and
+  the date field are deliberate BESPOKE exceptions to the registry — neither
+  fits the four generic control kinds (a scrubber must distinguish a user
+  drag from autoplay driving it; a date field needs text parsing and an
+  invalid state) — so they stay hand-wired chrome rather than being forced
+  into a kind that doesn't fit them.
 - `src/state/url.ts` — deep-link state (seed/view/day in the hash).
 
 ## The two patterns you'll reuse
 
-**Adding a lens** costs *one file* (`src/views/lens.ts`): its own colormap,
-legend, and caption. No HUD edit. Colormaps are presentation-only.
+**Adding a control** costs *one entry* in `src/ui/controls/registry.ts`: an
+`id`, a `label`, a `group`, an `apply`, and optionally an `available()`
+predicate that names its own reason for being unavailable. The sheet renders
+it, the codec persists it to the URL and localStorage, and e2e addresses it by
+`data-control="<id>"` — none of them need editing. `sheet.test.ts` renders from
+a *fake* registry precisely so a real control never touches it.
 
-**Adding a globe display toggle** threads one path, every layer pure and
-unit-tested: a `View` method (e.g. `OceanView.setGlint`) → a `GlobeView`
-forwarder → a HUD callback + active-class setter (`hud.ts`, and its `noop` in
-`hud.test.ts` needs the new callback) → `main.ts` state + wiring. The winds,
-waves, glint, night-fill, and freeze-spin toggles are all this shape — copy
-one.
+**Adding a lens** still costs *one file* (`src/views/lens.ts`): its own
+colormap, legend, and caption. The registry builds the lens picker's options
+from `LENSES`, so there is no picker edit either.
+
+**Adding a Look** costs one entry in `src/views/look.ts` — declaring its globe
+mesh, its surface material, its map rung, and its post passes — plus its own
+settings as `Control` entries if it has any.
 
 ## Rendering conventions worth knowing
 
