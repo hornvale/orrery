@@ -65,13 +65,6 @@ export const RELIEF_EXAGGERATION = 60;
  * ground, close enough that it reads as standing on it. */
 export const MARKER_CLEARANCE = 0.006;
 
-/** The Terraced style's elevation band width, in metres — every tile's
- * sampled elevation snaps to a multiple of this (`quantizeBands` in
- * `./worldMesh.ts`) before it displaces the surface, producing the stepped
- * "rice-terrace" contour. A tunable constant, not derived from the data;
- * start ~250m per the campaign brief, retune in the visual pass. */
-const TERRACE_BAND_M = 250;
-
 /** The Voxel style's block granularity — cells per tile edge, passed to
  * `buildVoxelTileGeometryIndexed`/`buildVoxelRegionTileGeometryIndexed`.
  * Deliberately bounded, NOT the full `TILE_QUADS` (64) lattice: a voxel
@@ -81,13 +74,13 @@ const TERRACE_BAND_M = 250;
  * is Task 6's concern, not this wiring task's. */
 const VOXEL_CELLS_PER_EDGE = 48;
 
-/** The Voxel style's elevation band width, in metres — reuses
- * `quantizeBands` exactly like `TERRACE_BAND_M` (Task 2) does. A distinct
- * constant (not literally `TERRACE_BAND_M`) since a voxel "block" and a
- * terrace "contour" may want to read at different step heights once the
- * visual pass (Task 5) compares them side by side; same starting value for
- * now. */
-const VOXEL_BAND_M = TERRACE_BAND_M;
+/** The Voxel style's elevation band width, in metres — every voxel cell's
+ * sampled elevation snaps to a multiple of this (`quantizeBands` in
+ * `./worldMesh.ts`) before it becomes a block height. A tunable constant,
+ * not derived from the data; start ~250m per the campaign brief, retune in
+ * the visual pass. (Formerly shared with the deleted Terraced style, which
+ * used the same starting value under the name `TERRACE_BAND_M` — Task 2.) */
+const VOXEL_BAND_M = 250;
 
 /** Distance of the directional "sun" light from the globe center, in world
  * units — far enough to read as parallel light across the whole sphere. */
@@ -277,17 +270,14 @@ function placeMarker(m: Marker, reliefScale: number): void {
 
 /** The globe's render style — geometry + shading, orthogonal to the data
  * `Lens` (which only recolors). `smooth` is today's cube-sphere mesh;
- * `faceted` flat-shades the existing mesh, the cheapest style — just a
- * material flag; `terraced` (Task 2) quantizes elevation into discrete bands
- * (`TERRACE_BAND_M`, `quantizeBands` in `./worldMesh.ts`) before
- * displacement, flat-shaded, producing a stepped "rice-terrace" contour on
- * the same shared-vertex mesh; `voxel` (Task 3/4) rebuilds each tile as
- * extruded, flat-topped blocks (`buildVoxelBlocks` in `./worldMesh.ts`,
- * `VOXEL_CELLS_PER_EDGE`/`VOXEL_BAND_M` below) — the base or region variant
- * depending on whether a region patch is already cached for that tile — with
- * per-cell cliff walls where a neighbor's band is lower. Selecting it is
- * exposed on the HUD by a later task; the switch itself never throws. */
-export type GlobeStyle = 'smooth' | 'voxel' | 'terraced' | 'faceted';
+ * `voxel` (Task 3/4) rebuilds each tile as extruded, flat-topped blocks
+ * (`buildVoxelBlocks` in `./worldMesh.ts`, `VOXEL_CELLS_PER_EDGE`/
+ * `VOXEL_BAND_M` below) — the base or region variant depending on whether a
+ * region patch is already cached for that tile — with per-cell cliff walls
+ * where a neighbor's band is lower. (The `terraced` and `faceted` styles
+ * that once lived alongside these were deleted in Task 2.) Selecting it is
+ * exposed on the HUD; the switch itself never throws. */
+export type GlobeStyle = 'smooth' | 'voxel';
 
 /** The globe view's public surface: a mountable object graph plus the
  * per-frame driver a caller (main.ts's rAF loop) needs. */
@@ -352,11 +342,10 @@ export interface GlobeView {
    * visual spin only; this one freezes the season only, orthogonal state).
    * Off by default, matching today's un-pinned season. */
   setDayHold(on: boolean): void;
-  /** Switch the render style: `faceted` flat-shades the surface material in
-   * place (no rebuild); `terraced` (Task 2) rebuilds every mounted tile with
-   * its elevation quantized into bands, flat-shaded; `voxel` is still
-   * smooth-geometry-for-now until its own task lands — the switch is always
-   * safe, never throws. */
+  /** Switch the render style: `smooth` is the shared-vertex cube-sphere
+   * mesh; `voxel` rebuilds every mounted tile as extruded, flat-shaded
+   * blocks. Switching families triggers a full rebuild; the switch itself
+   * is always safe, never throws. */
   setStyle(style: GlobeStyle): void;
 }
 
@@ -475,11 +464,12 @@ export function createGlobeView(
   const reliefScale = (): number => (reliefOn ? 1 : RELIEF_EXAGGERATION);
   // The render-style axis (The Massing): declared here, ahead of
   // `buildTileSlot` below, which reads it — a `let` declared after its first
-  // read would throw (temporal dead zone). `bandM()` is `buildTileSlot`'s
-  // single source of truth for whether a tile bands its elevation (Terraced)
-  // or stays continuous (everything else, including today's Smooth).
+  // read would throw (temporal dead zone).
   let activeStyle: GlobeStyle = 'smooth';
-  const bandM = (): number | undefined => (activeStyle === 'terraced' ? TERRACE_BAND_M : undefined);
+  // No style bands its elevation any more (terraced is gone); the voxel
+  // builder does its own banding internally. Kept as a named constant so
+  // `buildTileSlot`'s call sites read unchanged.
+  const bandM = (): number | undefined => undefined;
 
   // Region patches (true higher-res terrain): cached by tile key, requested
   // async through the worker. Gated to spinning worlds (the locked-temperature
@@ -610,11 +600,11 @@ export function createGlobeView(
     let darken: Float32Array | undefined;
     if (activeStyle === 'voxel') {
       // Extruded flat-topped blocks (worldMesh.ts's shared `buildVoxelBlocks`
-      // algorithm) instead of the shared-vertex smooth/terraced mesh — the
-      // region variant when a higher-res patch is already cached for this
-      // tile, the base (tiles-export) variant otherwise, exactly mirroring
-      // the smooth/terraced branch below. No skirt (voxel walls seal the
-      // silhouette on their own — see `buildVoxelBlocks`'s doc comment).
+      // algorithm) instead of the shared-vertex smooth mesh — the region
+      // variant when a higher-res patch is already cached for this tile,
+      // the base (tiles-export) variant otherwise, exactly mirroring the
+      // smooth branch below. No skirt (voxel walls seal the silhouette on
+      // their own — see `buildVoxelBlocks`'s doc comment).
       const voxelOpts = { cellsPerEdge: VOXEL_CELLS_PER_EDGE, bandM: VOXEL_BAND_M };
       if (region) {
         const built = buildVoxelRegionTileGeometryIndexed(
@@ -635,8 +625,8 @@ export function createGlobeView(
         darken = built.darken;
         colorSrc = tiles;
         // Ask for the region if it would sharpen this tile — the same request
-        // path the smooth/terraced branch uses below, so a deep voxel tile
-        // still upgrades to true higher-res terrain. Submitting is cheap and
+        // path the smooth branch uses below, so a deep voxel tile still
+        // upgrades to true higher-res terrain. Submitting is cheap and
         // idempotent; `update` deals the actual requests.
         if (wantsRegion) cascade.submit([t]);
       }
@@ -688,8 +678,8 @@ export function createGlobeView(
    *
    * A no-op under the Voxel style: `stitchNormals` averages the normals of
    * every geometry's vertices at a shared 3D position, which is exactly
-   * right for the smooth/terraced builders' per-VERTEX analytic normals but
-   * wrong for voxel's per-CELL flat normals — two adjacent tiles' boundary
+   * right for the smooth builder's per-VERTEX analytic normals but wrong
+   * for voxel's per-CELL flat normals — two adjacent tiles' boundary
    * cells share their corner *positions* (same cube-sphere addressing) but
    * are different blocks with deliberately different flat normals; blending
    * them would smear the blocky look Task 3 built voxel to have. Voxel
@@ -729,8 +719,8 @@ export function createGlobeView(
    * style — see `TileSlot`'s doc comment). Applying `darken` AFTER the ice
    * blend (rather than baking it into `base`) is what lets a voxel slot's
    * repaint recolor a wall correctly without a full geometry rebuild: the
-   * SAME per-vertex loop that already recolors a smooth/terraced tile's
-   * vertices also recolors a voxel tile's, it just additionally scales a
+   * SAME per-vertex loop that already recolors a smooth tile's vertices
+   * also recolors a voxel tile's, it just additionally scales a
    * wall vertex's final colour by its cell's darken multiplier. Shared by
    * the full `repaint` below and the incremental path's targeted repaint of
    * just-built slots. */
@@ -921,7 +911,7 @@ export function createGlobeView(
   /** Queue a rebuild of the whole current leaf set, for the two whole-globe
    * events where every tile's geometry changes without the leaf SET changing:
    * a relief-scale toggle (`setTrueRelief`) and a style change that crosses
-   * geometry families (`setStyle` — smooth↔terraced↔voxel). Never the
+   * geometry families (`setStyle` — smooth↔voxel). Never the
    * per-frame LOD path (`applyTileSet` above, which the incremental
    * diff/harness covers).
    *
@@ -1309,34 +1299,20 @@ export function createGlobeView(
     nightFill.intensity = on ? NIGHT_FILL_INTENSITY : 0;
   }
 
-  /** Which geometry a style's tiles are built from — `buildTileSlot` reads
-   * `activeStyle` directly, but `setStyle` only needs to know whether the
-   * OLD and NEW styles share a geometry family: `faceted` reuses `smooth`'s
-   * mesh (material-only difference), while `terraced` and `voxel` each bake
-   * their own distinct vertex layout at build time. */
-  const geometryFamilyOf = (s: GlobeStyle): 'smooth' | 'terraced' | 'voxel' =>
-    s === 'terraced' ? 'terraced' : s === 'voxel' ? 'voxel' : 'smooth';
+  /** Which geometry a style's tiles are built from. With `terraced` and
+   * `faceted` gone the mapping is the identity — kept as a named function
+   * because `setStyle` reads it twice and the Look axis may reintroduce a
+   * material-only variant later. */
+  const geometryFamilyOf = (s: GlobeStyle): 'smooth' | 'voxel' => s;
 
-  // The render-style axis (The Massing): `material` is one object shared
-  // across every tile slot (`buildTileSlot`, above), so flipping its
-  // `flatShading` flag here repaints every already-built tile without a
-  // rebuild — flat shading only recomputes per-face normals from the
-  // existing geometry. `terraced` and `voxel` DO change geometry — banding
-  // (terraced) or the whole block layout (voxel) is baked into each tile's
-  // vertex positions at build time — so entering or leaving either needs a
-  // full rebuild, unlike the material-only faceted switch (`buildTileSlot`
-  // branches on `activeStyle`, and `activeStyle` is assigned before the
-  // enqueue below, so each queued rebuild picks up the right builder whenever
-  // it lands). Both also flat-shade: a stepped/blocky surface reads as such
-  // only without smooth-shaded normals blurring the risers/cliffs — voxel's
-  // own per-cell flat normal attribute (`buildVoxelBlocks`) already agrees
-  // with this, so `flatShading` and the geometry's own normals reinforce
-  // rather than fight each other.
   function setStyle(style: GlobeStyle): void {
     const prevFamily = geometryFamilyOf(activeStyle);
     activeStyle = style;
     const nextFamily = geometryFamilyOf(activeStyle);
-    material.flatShading = activeStyle === 'faceted' || activeStyle === 'terraced' || activeStyle === 'voxel';
+    // Voxel flat-shades: a blocky surface reads as such only without
+    // smooth-shaded normals blurring the cliffs. Voxel's own per-cell flat
+    // normals already agree with this.
+    material.flatShading = activeStyle === 'voxel';
     material.needsUpdate = true;
     // As in `setTrueRelief`: `enqueueRebuildAll` iterates `currentSelected`
     // only, so a mounted-but-RETIRING tile keeps its OLD style for the few

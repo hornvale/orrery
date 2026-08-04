@@ -14,8 +14,6 @@ import type { ZoomTarget } from '../views/zoom';
 export const GLOBE_STYLES: Array<{ id: GlobeStyle; label: string }> = [
   { id: 'smooth', label: 'smooth' },
   { id: 'voxel', label: 'voxel' },
-  { id: 'terraced', label: 'terraced' },
-  { id: 'faceted', label: 'faceted' },
 ];
 
 /** The Diorama's map rung styles, offered on the HUD's `map-style-select`

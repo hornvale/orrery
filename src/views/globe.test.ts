@@ -969,21 +969,6 @@ function surfaceMaterial(globe: ReturnType<typeof createGlobeView>): THREE.MeshS
   return (mesh as unknown as THREE.Mesh).material as THREE.MeshStandardMaterial;
 }
 
-test('setStyle("faceted") flat-shades the surface material; "smooth" restores smooth shading', () => {
-  const view = createGlobeView(markerTiles([]), spinningSys());
-  const mat = surfaceMaterial(view);
-  expect(mat.flatShading).toBe(false);
-  // `Material.needsUpdate` (three.js) is a write-only accessor — it has no
-  // getter, so reading it back is always `undefined` regardless of what was
-  // set. Spy on the setter itself to confirm `setStyle` actually flips it.
-  const needsUpdateSpy = vi.spyOn(mat, 'needsUpdate', 'set');
-  view.setStyle('faceted');
-  expect(mat.flatShading).toBe(true);
-  expect(needsUpdateSpy).toHaveBeenCalledWith(true);
-  view.setStyle('smooth');
-  expect(mat.flatShading).toBe(false);
-});
-
 test('setStyle("voxel") rebuilds tile geometry as extruded blocks with cliff walls; "smooth" restores the shared-vertex mesh', () => {
   const globe = makeGlobe(); // real seed-42 terrain — enough relief to produce at least one voxel wall
   const mat = surfaceMaterial(globe);
@@ -1229,52 +1214,4 @@ test('onRegion + setStyle("voxel"): a mounted voxel tile upgrades to the region 
   // tiles' 0.1 — confirms `buildTileSlot`'s voxel branch took the region
   // path (`buildVoxelRegionTileGeometryIndexed`), not the base one.
   expect(afterSample).not.toEqual(beforeSample);
-});
-
-test('setStyle("terraced") flat-shades AND rebuilds tile geometry with banded elevation', () => {
-  const globe = makeGlobe(); // real seed-42 terrain — enough relief to distinguish banded from continuous
-  const mat = surfaceMaterial(globe);
-  expect(mat.flatShading).toBe(false);
-
-  const beforeGeom = baseTileMesh(globe).geometry;
-
-  globe.setStyle('terraced');
-  expect(mat.flatShading).toBe(true);
-  // Unlike faceted (a material-only flag flip), banding changes vertex
-  // positions — this must be an actual geometry rebuild, not the same
-  // object reused. Queued, so drain it first (`enqueueRebuildAll`).
-  pump(globe);
-  const afterGeom = baseTileMesh(globe).geometry;
-  expect(afterGeom).not.toBe(beforeGeom);
-
-  // Real terrain has enough relief variation that a continuous (Smooth)
-  // build shows a distinct radius at nearly every vertex; terraced collapses
-  // them onto a small, finite set of band floors — the geometry-level half
-  // of `worldMesh.test.ts`'s `quantizeBands` coverage, confirming globe.ts
-  // actually wires `bandM` through for a real mounted tile.
-  const pos = afterGeom.getAttribute('position');
-  const radii = new Set<number>();
-  for (let i = 0; i < pos.count; i++) {
-    radii.add(Number(Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i)).toFixed(5)));
-  }
-  expect(radii.size).toBeGreaterThan(0);
-  expect(radii.size).toBeLessThan(pos.count / 4); // far fewer bands than vertices
-
-  globe.setStyle('smooth');
-  expect(mat.flatShading).toBe(false);
-
-  // Symmetric with the forward (smooth->terraced) collapse assertion above:
-  // switching back must actually rebuild the geometry away from the banded
-  // set, not merely flip flatShading back. Real terrain has enough relief
-  // variation that a continuous build shows a distinct radius at nearly
-  // every vertex, so the reverse rebuild should recover (most of) that
-  // many-valued distribution rather than staying stuck on the small banded set.
-  pump(globe);
-  const smoothGeom = baseTileMesh(globe).geometry;
-  const smoothPos = smoothGeom.getAttribute('position');
-  const smoothRadii = new Set<number>();
-  for (let i = 0; i < smoothPos.count; i++) {
-    smoothRadii.add(Number(Math.hypot(smoothPos.getX(i), smoothPos.getY(i), smoothPos.getZ(i)).toFixed(5)));
-  }
-  expect(smoothRadii.size).toBeGreaterThan(smoothPos.count / 2); // back to (near-)continuous, not banded
 });

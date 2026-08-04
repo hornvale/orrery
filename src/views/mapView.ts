@@ -109,11 +109,11 @@ export function tileOffsetForWorldPoint(
 }
 
 /** Elevation-band size (m) the voxel diorama quantizes to before scaling to
- * world height — the same value the globe's Terraced/Voxel styles use
- * (`globe.ts`'s private `TERRACE_BAND_M`/`VOXEL_BAND_M`), so a step reads as
- * "one band" the same way on both rungs. Kept as its own local constant
- * (not imported from `globe.ts`) to avoid a view-to-view coupling for what's
- * a shared visual convention, not a shared dependency. */
+ * world height — the same value the globe's Voxel style uses (`globe.ts`'s
+ * private `VOXEL_BAND_M`), so a step reads as "one band" the same way on
+ * both rungs. Kept as its own local constant (not imported from `globe.ts`)
+ * to avoid a view-to-view coupling for what's a shared visual convention,
+ * not a shared dependency. */
 export const MAP_VOXEL_BAND_M = 250;
 
 /** World-height per meter of banded elevation. Follows the same

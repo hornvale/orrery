@@ -30,8 +30,10 @@ import { expect, test } from '@playwright/test';
  * Strictly `=== 0` (`undefined` → `-1`): before the globe view exists the hook
  * is absent, and treating that as ready would reintroduce the very false-pass
  * this replaces. The trailing double-rAF then guarantees one frame has been
- * RENDERED with the finished set — which also covers the material-only style
- * switches (smooth↔faceted) that legitimately enqueue nothing at all.
+ * RENDERED with the finished set — which also covers a re-select of the
+ * SAME style, which legitimately enqueues nothing at all. (Task 2 deleted
+ * `faceted`, the one style that used to cross no geometry family; every
+ * remaining style switch now enqueues a rebuild.)
  *
  * `expect.poll`, not `waitForFunction`, on purpose: when it does give up, the
  * failure reads `expected 0, received 37` — which distinguishes "the box is
@@ -203,11 +205,11 @@ test('the lens roster: every lens repaints the globe and updates its own caption
 });
 
 test('the globe geometry styles: every .hud-style option renders the globe non-blank (The Massing, Task 7)', async ({ page }) => {
-  // Three of the four styles cross a geometry family, and each of those re-cuts
-  // the whole 95-tile selection through the amortized queue. Measured under a
-  // 6x CPU throttle: ~38s, ~40s and ~44s for voxel/terraced/faceted, on top of
-  // the boot mount — 167s total against the old 240s cap, which is why this
-  // was the test that ran out of budget on CI rather than one that hung.
+  // Voxel crosses a geometry family and re-cuts the whole 95-tile selection
+  // through the amortized queue. Measured under a 6x CPU throttle: ~38s for
+  // voxel, on top of the boot mount — comfortably inside the timeout below.
+  // (Formerly three styles crossed a family here — terraced and faceted were
+  // deleted in Task 2.)
   test.setTimeout(480_000);
   const errors: string[] = [];
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -234,11 +236,11 @@ test('the globe geometry styles: every .hud-style option renders the globe non-b
 
   // This is a DIFFERENT axis from `.hud-styles`/`[data-style]` above (the
   // Idioms' screen-space post-process roster) — `.hud-style` is The
-  // Massing's globe geometry/shading dropdown (smooth/voxel/terraced/faceted).
+  // Massing's globe geometry/shading dropdown (smooth/voxel).
   const styleSelect = page.locator('.hud-style');
   await expect(styleSelect).toHaveCount(1);
 
-  for (const style of ['smooth', 'voxel', 'terraced', 'faceted']) {
+  for (const style of ['smooth', 'voxel']) {
     await styleSelect.selectOption(style);
     await expect(globeCanvas).toBeVisible();
     // The rebuild is amortized across frames — wait for the queue to drain,
