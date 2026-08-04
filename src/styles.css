@@ -1,38 +1,156 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #app { width: 100%; height: 100%; overflow: hidden; background: #05070f; }
-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #cfd8e3; }
-canvas { display: block; }
-.hud { position: absolute; display: flex; gap: 0.5rem; align-items: center;
-  background: rgba(5, 8, 18, 0.65); border: 1px solid #2a3350; border-radius: 8px;
-  padding: 0.4rem 0.7rem; font-size: 0.8rem; user-select: none; }
-.hud button { background: #1a2340; color: #cfd8e3; border: 1px solid #2a3350;
-  border-radius: 5px; padding: 0.15rem 0.55rem; font: inherit; cursor: pointer; }
-.hud button.active { background: #3350a0; }
-.hud button:disabled { opacity: 0.35; cursor: default; }
-.hud input { background: #10182e; color: inherit; border: 1px solid #2a3350; border-radius: 5px; padding: 0.15rem 0.35rem; font: inherit; }
-.hud-top-left { top: 12px; left: 12px; }
-.hud-top-right { top: 12px; right: 12px; }
-.hud-bottom { bottom: 12px; left: 50%; transform: translateX(-50%); }
-.hud-scrubber { bottom: 56px; left: 50%; transform: translateX(-50%); width: 340px; }
-.hud-scrubber input[type="range"] { flex: 1; }
-.hud-eclipse-marks { position: absolute; left: 0.7rem; right: 3.6rem; top: 50%;
-  height: 0; pointer-events: none; }
-.hud-eclipse-mark { position: absolute; top: 0; transform: translate(-50%, -50%);
-  width: 0.55rem; height: 0.55rem; border-radius: 50%; padding: 0;
+
+:root {
+  --ink: #cfd8e3;
+  --dim: #9fb0c8;
+  --panel: rgba(8, 12, 24, 0.94);
+  --edge: #2a3350;
+  --chip: #141c33;
+  --on: #3350a0;
+  --tap: 44px;               /* minimum touch target, both dimensions */
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+/* 100dvh, not 100% — iOS Safari's collapsing toolbar makes a percentage
+   height taller than the visible viewport, pushing the bottom chrome under
+   the browser UI where it cannot be reached. That is the single biggest
+   reason the old HUD was unusable on a phone. */
+html, body, #app { width: 100%; height: 100dvh; overflow: hidden; background: #05070f; }
+body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+  font-size: 13px; line-height: 1.45; -webkit-text-size-adjust: 100%; }
+canvas { display: block; touch-action: none; }   /* a globe drag must never scroll the page */
+
+.console { position: absolute; inset: 0; pointer-events: none; }
+.console > * { pointer-events: auto; }
+
+/* ---- status bar ---- */
+.status-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center;
+  gap: 6px; padding: calc(6px + var(--safe-t)) 10px 6px; background: rgba(6, 10, 22, 0.85);
+  border-bottom: 1px solid #222c46; user-select: none; }
+.status-spacer { flex: 1; }
+/* The rung switcher (System/Globe/Map) is the primary navigation for the
+   whole app — `flex: none` on it AND on each rung keeps it from ever being
+   squeezed. Without this, a real date string plus "seed <u64>" plus the
+   overflow button do not fit a 390px iPhone row, and because this element
+   is the only one with `overflow: hidden` (which zeroes a flex item's
+   automatic minimum width), flexbox pushes ALL of the deficit onto it —
+   crushing System/Globe/Map to a couple of pixels while everything else
+   still overflows the viewport. Caught by a real-viewport check, not by any
+   unit test. */
+.rung-segmented { display: flex; flex: none; border: 1px solid #2f3a58; border-radius: 999px; overflow: hidden; }
+.rung { flex: none; min-height: var(--tap); padding: 0 12px; background: var(--chip); color: inherit;
+  border: none; font: inherit; cursor: pointer; }
+.rung.active { background: var(--on); }
+/* The lens chip and the date chip carry variable, sometimes-long text (a
+   full "Y1 · Day 214 · 07:01" date string). They — not the nav — are what
+   should give way on a narrow screen, so they get `min-width: 0` (letting
+   flexbox actually shrink them) and truncate with an ellipsis instead of
+   spilling past the viewport edge. */
+.status-chip { flex: 0 1 auto; min-width: 0; min-height: var(--tap); padding: 0 10px;
+  background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 999px;
+  font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-seed { flex: 0 1 auto; min-width: 0; color: var(--dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.status-overflow { flex: none; min-width: var(--tap); min-height: var(--tap); background: var(--chip);
+  color: inherit; border: 1px solid #2f3a58; border-radius: 10px; font: inherit; cursor: pointer; }
+
+/* ---- the dock: sheet + transport ---- */
+.console-dock { position: absolute; left: 0; right: 0; bottom: 0; background: var(--panel);
+  border-top: 1px solid var(--edge); border-radius: 16px 16px 0 0;
+  padding: 6px 10px calc(8px + var(--safe-b)); max-height: 72dvh;
+  display: flex; flex-direction: column; }
+.sheet { display: flex; flex-direction: column; min-height: 0; }
+.sheet-grabber { width: 34px; height: 4px; border-radius: 2px; background: #3a4463;
+  margin: 2px auto 8px; flex: none; }
+.sheet-tabs { display: flex; gap: 4px; flex: none; }
+.sheet-tab { flex: 1; min-height: var(--tap); background: var(--chip); color: inherit;
+  border: 1px solid #2f3a58; border-radius: 8px; font: inherit; cursor: pointer; }
+.sheet-tab.active { background: var(--on); border-color: #4a6ac0; }
+.sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 0 4px; min-height: 0; }
+
+/* ---- controls ---- */
+.control { margin-bottom: 10px; }
+.control-label { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: #7d8ba8; margin-bottom: 4px; }
+.control-toggle, .control-option, .control-action { min-height: var(--tap); padding: 0 12px;
+  background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 8px;
+  font: inherit; cursor: pointer; }
+.control-toggle.active, .control-option.active { background: var(--on); border-color: #4a6ac0; }
+.control-toggle:disabled, .control-option:disabled, .control-action:disabled { opacity: 0.35; cursor: default; }
+.control-options { display: flex; gap: 5px; flex-wrap: wrap; }
+.control-slider-row { display: flex; align-items: center; gap: 8px; }
+/* A range input's default hit area is ~20px tall; the thumb needs the full
+   target or a thumb-drag on a phone misses more often than it lands. */
+.control-slider { flex: 1; min-height: var(--tap); }
+.control-value { min-width: 3.2em; text-align: right; color: var(--dim); }
+.control-help { font-size: 11px; color: var(--dim); margin-top: 4px; }
+.control-reason { font-size: 11px; color: #7d8ba8; margin-top: 4px; }
+.control.unavailable .control-label { opacity: 0.5; }
+
+/* A choice control's colour key (Task 8a) — one swatch+label row per legend
+   entry, rendered beneath the option buttons. `flex: none` on the swatch
+   matters: without it the chip collapses to nothing in the flex row (the old
+   HUD's `.hud-swatch` had the same rule for the same reason). */
+.control-legend { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.control-legend-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+.control-swatch { width: 13px; height: 13px; border-radius: 2px; border: 1px solid var(--edge); flex: none; }
+.control-legend-label { color: var(--ink); }
+
+/* ---- date field (Task 8b) — bespoke chrome in the Time tab, not a
+   registry control (kinds.ts's four kinds have no text-entry shape). ---- */
+.date-field { margin-bottom: 10px; }
+.date-field-row { display: flex; gap: 6px; }
+.date-field-row input { flex: 1; min-width: 0; min-height: var(--tap); padding: 0 10px;
+  background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 8px;
+  font: inherit; }
+.date-go { min-width: var(--tap); min-height: var(--tap); padding: 0 14px;
+  background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 8px;
+  font: inherit; cursor: pointer; }
+/* Invalid entry must read without relying on colour alone (partial colour
+   blindness, direct sun on a phone screen): the border also thickens and an
+   explicit hint line appears, not just a colour change. */
+.date-field.invalid .date-field-row input { border-color: #e2574c; border-width: 2px; }
+.date-field.invalid::after { content: "enter as: year day — e.g. \"3 214\"";
+  display: block; font-size: 11px; color: #e2574c; margin-top: 4px; }
+
+/* ---- transport (the sheet's collapsed state; never moves) ---- */
+.transport { display: flex; align-items: center; gap: 8px; flex: none;
+  padding-top: 6px; border-top: 1px solid #1c2540; }
+.transport-play, .transport-rate { min-width: var(--tap); min-height: var(--tap);
+  background: var(--chip); color: inherit; border: 1px solid #2f3a58; border-radius: 10px;
+  font: inherit; cursor: pointer; }
+.transport-track { position: relative; flex: 1; display: flex; align-items: center; }
+.transport-track input[type="range"] { flex: 1; min-height: var(--tap); }
+/* The marks overlay is absolutely positioned and REQUIRES this positioned
+   parent — a loose sibling is both invisible and unclickable. */
+.eclipse-marks { position: absolute; left: 8px; right: 8px; top: 50%; height: 0; pointer-events: none; }
+.eclipse-mark { position: absolute; top: 0; transform: translate(-50%, -50%);
+  width: 14px; height: 14px; border-radius: 50%; padding: 0; border: 1px solid #a97a1e;
   pointer-events: auto; cursor: pointer; }
-.hud-eclipse-solar { background: #e8b34a; border: 1px solid #a97a1e; }
-.hud-eclipse-lunar { background: #7d8fc7; border: 1px solid #4a5a91; }
-.hud-eclipse-annular { box-shadow: inset 0 0 0 2px rgba(5, 8, 18, 0.65); }
-.hud-lens-panel { top: 64px; left: 12px; flex-direction: column; align-items: flex-start;
-  max-height: calc(100vh - 180px); overflow-y: auto; max-width: 220px; }
-.hud-lens-panel > *:first-child { margin-top: 0; }
-.hud-lenses, .hud-looks { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-top: 0.35rem; }
-.hud-legend { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.35rem; }
-.hud-legend-row { display: flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; }
-.hud-swatch { width: 0.75rem; height: 0.75rem; border-radius: 2px; border: 1px solid #2a3350; flex: none; }
-.hud-caption { margin-top: 0.35rem; font-size: 0.65rem; color: #9fb0c8; max-width: 26rem; line-height: 1.4; }
-.hud-winds-row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.35rem; }
-.hud-winds-reason { font-size: 0.65rem; color: #9fb0c8; line-height: 1.3; }
+.eclipse-solar { background: #e8b34a; border-color: #a97a1e; }
+.eclipse-lunar { background: #7d8fc7; border-color: #4a5a91; }
+.eclipse-annular { box-shadow: inset 0 0 0 2px rgba(5, 8, 18, 0.85); }
+
+/* On a narrow phone the status bar's own content — nav + lens chip + date
+   chip + seed + overflow — does not fit legibly on one row even once
+   shrinking is directed away from the nav (see .status-chip above): the
+   date chip would still be squeezed to a sliver. The seed text is the one
+   piece already duplicated elsewhere (the overflow button's World tab), so
+   it is what gives way, not the date. */
+@media (max-width: 480px) {
+  .status-seed { display: none; }
+}
+
+/* ---- desktop: the dock becomes a left column ---- */
+@media (min-width: 760px) {
+  .console-dock { top: 52px; right: auto; width: 260px; bottom: 0;
+    border-radius: 0 12px 0 0; border-right: 1px solid var(--edge); border-top: none;
+    max-height: none; }
+  .sheet-body { padding-bottom: 12px; }
+}
+
+/* ---- non-control-surface rules, preserved verbatim ---- */
 .body-label { color: #9fb0c8; font-size: 0.7rem; text-shadow: 0 0 4px #000;
   pointer-events: none; white-space: nowrap; }
 .scale-caption { position: absolute; left: 12px; bottom: 12px; max-width: 260px;
