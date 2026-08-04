@@ -32,7 +32,7 @@ Each stage ends with the gate green and is independently shippable. Stop after a
 |---|---|---|
 | 1 — Strip | 1–3 | Dead skins deleted; one `Look` axis behind the existing HUD |
 | 2 — Registry | 4–5 | `kinds` / `store` / `codec`, pure and tested, no UI |
-| 3 — Surface | 6–10 | The new control surface; `hud.ts` deleted; mobile-first CSS |
+| 3 — Surface | 6–10 (incl. 8a, 8b) | The new control surface; `hud.ts` deleted; mobile-first CSS |
 | 4 — Persistence | 11 | URL + localStorage |
 | 5 — Dither3D | 12–15 | Face-space UVs, Bayer texture, material, settings |
 
@@ -2120,6 +2120,521 @@ hud.ts (486 lines) and HudCallbacks (20 methods) are deleted; the
 per-control setXActive/setXAvailable trios go with them.
 
 Adding a control now costs one registry entry."
+```
+
+---
+
+## Task 8a: The lens legend — an optional legend on choice controls
+
+Restores a spec requirement the plan omitted (Console spec §2: the Lens tab shows
+"the seven lenses with their legend and caption reunited"). Task 8 shipped the
+caption (on the lens control's `help`) but the colour swatches were lost with
+`hud.ts`.
+
+**Nathan's ruling:** add an optional `legend` to the `choice` kind and have the
+sheet render swatches generically — do NOT special-case lenses in the sheet. Any
+future control with a colour key then gets a legend for free, and the sheet stays
+ignorant of what a lens is.
+
+**Files:**
+- Modify: `src/ui/controls/kinds.ts` (add `LegendRow`, add `legend?` to `Choice`)
+- Modify: `src/ui/sheet.ts` (render it), `src/ui/sheet.test.ts` (cover it)
+- Modify: `src/ui/controls/registry.ts` (lens control supplies its legend)
+- Modify: `src/main.ts` (the legend must follow the ACTIVE lens)
+
+**Interfaces:**
+- Consumes: `Control`, `Choice` from `./kinds`; `LENSES`, `lensById` from `../../views/lens`.
+- Produces: `interface LegendRow { swatch: [number, number, number]; label: string }` on `kinds.ts`; `Choice.legend?: () => LegendRow[]`.
+
+**Why `LegendRow` is declared in `kinds.ts` rather than imported from `lens.ts`:**
+`src/ui/controls/` must not depend on `src/views/lens`. `LegendRow` is
+structurally identical to `lens.ts`'s `LegendEntry` (`{ swatch: RGB; label: string }`,
+RGB being `[number, number, number]`), so a lens legend satisfies it without a
+cast or an adapter. Structural typing does the work; a nominal import would
+couple the two layers for nothing.
+
+- [ ] **Step 1: Write the failing sheet test**
+
+Add to `src/ui/sheet.test.ts`'s fake registry a choice control carrying a legend,
+and two tests. Add this control to the `fakeControls` array (keep the existing
+five untouched):
+
+```ts
+    { kind: 'choice', id: 'zeta', label: 'Zeta', group: 'look',
+      options: [{ id: 'p', label: 'P' }, { id: 'q', label: 'Q' }],
+      default: 'p',
+      legend: () => ([
+        { swatch: [255, 0, 0] as [number, number, number], label: 'hot' },
+        { swatch: [0, 0, 255] as [number, number, number], label: 'cold' },
+      ]),
+      apply: () => {} },
+```
+
+And these tests:
+
+```ts
+  it('renders a legend row per entry for a choice that has one', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    const rows = [...el.querySelectorAll('[data-control="zeta"] .control-legend-row')];
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.querySelector('.control-legend-label')!.textContent))
+      .toEqual(['hot', 'cold']);
+  });
+
+  it('paints each swatch from its rgb triple', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    const sw = el.querySelector('[data-control="zeta"] .control-swatch') as HTMLElement;
+    expect(sw.style.background).toBe('rgb(255, 0, 0)');
+  });
+
+  it('renders no legend element for a choice without one', () => {
+    const { el, sheet } = mount();
+    sheet.setTab('look');
+    expect(el.querySelector('[data-control="gamma"] .control-legend')).toBeNull();
+  });
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run src/ui/sheet.test.ts`
+Expected: FAIL — the legend rows do not exist.
+
+- [ ] **Step 3: Extend the Choice kind**
+
+In `src/ui/controls/kinds.ts`, above `ControlBase`:
+
+```ts
+/** One row of a control's colour key. Structurally identical to
+ * `views/lens.ts`'s `LegendEntry` on purpose: a lens's own legend satisfies
+ * this without a cast, while `src/ui/controls/` stays free of any dependency
+ * on the views layer. Structural typing does the work. */
+export interface LegendRow {
+  /** 0-255 RGB. */
+  swatch: [number, number, number];
+  label: string;
+}
+```
+
+and add to `Choice`:
+
+```ts
+  /** Optional colour key rendered beneath the options. A function, not a
+   * value, because a legend can depend on the world (a lens's ramp is keyed
+   * to that world's sea level) and on which option is active. */
+  legend?(): LegendRow[];
+```
+
+- [ ] **Step 4: Render it in the sheet**
+
+In `src/ui/sheet.ts`'s `renderControl`, inside the `c.kind === 'choice'` branch,
+after the options row is appended:
+
+```ts
+    if (c.legend) {
+      const box = el('div', 'control-legend');
+      for (const row of c.legend()) {
+        const item = el('div', 'control-legend-row');
+        const sw = el('span', 'control-swatch');
+        sw.style.background = `rgb(${row.swatch[0]}, ${row.swatch[1]}, ${row.swatch[2]})`;
+        const label = el('span', 'control-legend-label');
+        label.textContent = row.label;
+        item.append(sw, label);
+        box.appendChild(item);
+      }
+      wrap.appendChild(box);
+    }
+```
+
+- [ ] **Step 5: Run the sheet test to verify it passes**
+
+Run: `npx vitest run src/ui/sheet.test.ts`
+Expected: PASS.
+
+- [ ] **Step 6: Give the lens control its legend**
+
+`RegistryDeps` gains one member:
+
+```ts
+  /** The active lens's legend rows, for the lens control's colour key. Read
+   * through a function so it tracks the live lens and the live world. */
+  lensLegend(): LegendRow[];
+```
+
+and the lens control (`registry.ts`, the `id: 'lens'` entry) gains:
+
+```ts
+      legend: () => d.lensLegend(),
+```
+
+In `src/main.ts`, supply it from the active lens — the same source the old HUD's
+`setLens` used:
+
+```ts
+    lensLegend: () => lensById(String(store.get('lens') ?? 'natural')).legend(tiles),
+```
+
+- [ ] **Step 7: Verify the legend follows the active lens**
+
+The sheet re-renders on any non-slider store write, and `lens` is a choice, so
+picking a lens already triggers a re-render that calls `legend()` afresh. Confirm
+by reading `sheet.ts`'s subscribe guard — do not add a second refresh call.
+
+Add to `src/ui/controls/registry.test.ts`:
+
+```ts
+  it('gives the lens control a legend, so its colour key renders', () => {
+    const r = buildRegistry(deps());
+    const lens = r.find((c) => c.id === 'lens')!;
+    expect(lens.kind).toBe('choice');
+    if (lens.kind === 'choice') expect(typeof lens.legend).toBe('function');
+  });
+```
+
+and add `lensLegend: () => []` to that test file's `deps()` fixture.
+
+- [ ] **Step 8: Run the gate**
+
+Run: `npm test` then `npm run build`, both FOREGROUND with `timeout: 900000`.
+Expected: PASS. Do not run e2e — it is expected broken until Task 10.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -F - <<'MSG'
+feat(the-console): the lens legend, as a generic choice-control legend
+
+Restores a spec requirement the plan omitted: Task 8 kept the lens
+caption but the colour swatches went out with hud.ts.
+
+A choice control may now carry an optional legend() and the sheet
+renders swatches from it generically — the sheet still knows nothing
+about lenses, and any future control with a colour key gets one free.
+LegendRow is declared in kinds.ts rather than imported from views/lens
+so src/ui/controls/ keeps no dependency on the views layer; it is
+structurally identical to LegendEntry, so a lens legend satisfies it
+with no cast.
+MSG
+```
+
+---
+
+## Task 8b: The date field — jumping to a year
+
+Restores the other spec requirement the plan omitted (Console spec §2: the Time
+tab holds "a single tappable date field"). The old HUD's `Y`/`day` inputs and
+`jump` button went out with `hud.ts` and nothing replaced them, so jumping to a
+specific YEAR is currently impossible — the scrubber only moves within one year.
+
+**Nathan's ruling:** rebuild it as BESPOKE chrome, a third exception alongside the
+scrubber and the info card. Text entry needs parsing and validation, which no
+control kind does, and inventing a `text` kind for one consumer would be a worse
+trade than admitting the exception.
+
+**Files:**
+- Create: `src/ui/dateField.ts`, `src/ui/dateField.test.ts`
+- Modify: `src/ui/sheet.ts` (an `extras` seam), `src/ui/sheet.test.ts`
+- Modify: `src/ui/consoleUi.ts`, `src/main.ts`
+
+**Interfaces:**
+- Consumes: nothing from other tasks.
+- Produces:
+  - `function parseDateEntry(raw: string): { year: number; dayOfYear: number } | null` — 1-based in, 1-based out
+  - `interface DateField { element: HTMLElement; setDate(year: number, dayOfYear: number): void }`
+  - `function buildDateField(cb: { onJump(year: number, dayOfYear: number): void }): DateField`
+  - `buildSheet` gains `extras?: Partial<Record<GroupId, HTMLElement[]>>`
+
+**The `extras` seam.** The sheet renders registry controls only, so bespoke chrome
+needs a way in. `extras` appends caller-supplied elements after a group's controls.
+The sheet still knows nothing about what they are — it appends opaque nodes. This
+is the same seam any future bespoke control will use.
+
+- [ ] **Step 1: Write the failing parser test**
+
+Create `src/ui/dateField.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { buildDateField, parseDateEntry } from './dateField';
+
+describe('parseDateEntry', () => {
+  it('reads a year and a day separated by a space', () => {
+    expect(parseDateEntry('3 214')).toEqual({ year: 3, dayOfYear: 214 });
+  });
+
+  it('accepts a slash, a comma, or the Y/d prefixes a viewer might copy from the status bar', () => {
+    expect(parseDateEntry('3/214')).toEqual({ year: 3, dayOfYear: 214 });
+    expect(parseDateEntry('3, 214')).toEqual({ year: 3, dayOfYear: 214 });
+    expect(parseDateEntry('Y3 d214')).toEqual({ year: 3, dayOfYear: 214 });
+    expect(parseDateEntry('  Year 3, day 214 ')).toEqual({ year: 3, dayOfYear: 214 });
+  });
+
+  it('defaults the day to 1 when only a year is given', () => {
+    expect(parseDateEntry('412')).toEqual({ year: 412, dayOfYear: 1 });
+  });
+
+  it('rejects junk rather than guessing', () => {
+    expect(parseDateEntry('')).toBeNull();
+    expect(parseDateEntry('soon')).toBeNull();
+    expect(parseDateEntry('Y')).toBeNull();
+  });
+
+  it('rejects a year or day below 1 — the UI is 1-based', () => {
+    expect(parseDateEntry('0 5')).toBeNull();
+    expect(parseDateEntry('3 0')).toBeNull();
+    expect(parseDateEntry('-2 5')).toBeNull();
+  });
+
+  it('floors a fractional entry rather than rejecting it', () => {
+    expect(parseDateEntry('3 214.7')).toEqual({ year: 3, dayOfYear: 214 });
+  });
+});
+
+describe('the date field', () => {
+  it('reports a parsed jump', () => {
+    let got: [number, number] | null = null;
+    const f = buildDateField({ onJump: (y, d) => { got = [y, d]; } });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    input.value = '412 3';
+    (f.element.querySelector('[data-date="go"]') as HTMLButtonElement).click();
+    expect(got).toEqual([412, 3]);
+  });
+
+  it('submits on Enter as well as the button', () => {
+    let got: [number, number] | null = null;
+    const f = buildDateField({ onJump: (y, d) => { got = [y, d]; } });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    input.value = '7 8';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(got).toEqual([7, 8]);
+  });
+
+  it('does not fire and marks itself invalid on junk', () => {
+    let fired = 0;
+    const f = buildDateField({ onJump: () => { fired++; } });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    input.value = 'nonsense';
+    (f.element.querySelector('[data-date="go"]') as HTMLButtonElement).click();
+    expect(fired).toBe(0);
+    expect(f.element.classList.contains('invalid')).toBe(true);
+  });
+
+  it('clears the invalid mark once a good value is entered', () => {
+    const f = buildDateField({ onJump: () => {} });
+    const input = f.element.querySelector('input') as HTMLInputElement;
+    const go = f.element.querySelector('[data-date="go"]') as HTMLButtonElement;
+    input.value = 'nonsense';
+    go.click();
+    input.value = '3 214';
+    go.click();
+    expect(f.element.classList.contains('invalid')).toBe(false);
+  });
+
+  it('setDate fills the input without firing onJump', () => {
+    let fired = 0;
+    const f = buildDateField({ onJump: () => { fired++; } });
+    f.setDate(3, 214);
+    expect((f.element.querySelector('input') as HTMLInputElement).value).toBe('3 214');
+    expect(fired).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run src/ui/dateField.test.ts`
+Expected: FAIL — `Failed to resolve import "./dateField"`.
+
+- [ ] **Step 3: Write the module**
+
+Create `src/ui/dateField.ts`:
+
+```ts
+/** Jump to a date. BESPOKE chrome, not a registry control — a third exception
+ * alongside the day scrubber and the info card (Console spec §1).
+ *
+ * Text entry needs parsing, validation, and an invalid state, none of which
+ * the four control kinds model. Inventing a `text` kind for one consumer would
+ * cost more than admitting the exception.
+ *
+ * Why it exists at all: the scrubber only moves within ONE year, so without
+ * this there is no way to reach year 412. */
+
+/** Parse a viewer's date entry. 1-based in, 1-based out — the caller converts
+ * to the engine's 0-based form, exactly as the old HUD's jump button did.
+ *
+ * Deliberately lenient about separators and prefixes so that text copied
+ * straight out of the status bar ("Year 3, day 214") round-trips. Deliberately
+ * strict about everything else: junk returns null rather than a guess, because
+ * silently jumping somewhere unintended is worse than refusing. */
+export function parseDateEntry(raw: string): { year: number; dayOfYear: number } | null {
+  const nums = raw.match(/\d+(?:\.\d+)?/g);
+  if (!nums || nums.length === 0) return null;
+  // A leading minus is never a separator we accept, so reject it explicitly —
+  // the digit scan above would otherwise read "-2 5" as year 2.
+  if (/-\s*\d/.test(raw)) return null;
+  const year = Math.floor(Number(nums[0]));
+  const dayOfYear = nums.length > 1 ? Math.floor(Number(nums[1])) : 1;
+  if (!Number.isFinite(year) || !Number.isFinite(dayOfYear)) return null;
+  if (year < 1 || dayOfYear < 1) return null;
+  return { year, dayOfYear };
+}
+
+export interface DateField {
+  element: HTMLElement;
+  /** Reflect the current date without firing `onJump` — the clock driving the
+   * UI, not the viewer typing into it. Mirrors the transport's `setDay`. */
+  setDate(year: number, dayOfYear: number): void;
+}
+
+export function buildDateField(cb: { onJump(year: number, dayOfYear: number): void }): DateField {
+  const element = document.createElement('div');
+  element.className = 'date-field';
+
+  const label = document.createElement('div');
+  label.className = 'control-label';
+  label.textContent = 'Go to';
+
+  const row = document.createElement('div');
+  row.className = 'date-field-row';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.name = 'date-entry';
+  input.inputMode = 'numeric';
+  input.placeholder = 'year day';
+  input.setAttribute('aria-label', 'jump to year and day');
+
+  const go = document.createElement('button');
+  go.className = 'date-go';
+  go.dataset.date = 'go';
+  go.textContent = 'Go';
+
+  function submit(): void {
+    const parsed = parseDateEntry(input.value);
+    if (!parsed) {
+      element.classList.add('invalid');
+      return;
+    }
+    element.classList.remove('invalid');
+    cb.onJump(parsed.year, parsed.dayOfYear);
+  }
+
+  go.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+  row.append(input, go);
+  element.append(label, row);
+
+  return {
+    element,
+    setDate: (year, dayOfYear) => {
+      input.value = `${year} ${dayOfYear}`;
+      element.classList.remove('invalid');
+    },
+  };
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `npx vitest run src/ui/dateField.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Add the `extras` seam to the sheet**
+
+In `src/ui/sheet.ts`, widen the options and append extras after the group's
+controls. `buildSheet`'s parameter object gains:
+
+```ts
+  /** Bespoke chrome to append after a group's controls. The sheet appends
+   * these opaque nodes and knows nothing about them — the seam that lets the
+   * date field live in the Time tab without becoming a control kind. */
+  extras?: Partial<Record<GroupId, HTMLElement[]>>;
+```
+
+and at the end of `render`, after the control loop:
+
+```ts
+    for (const extra of opts.extras?.[active] ?? []) body.appendChild(extra);
+```
+
+Add to `src/ui/sheet.test.ts`:
+
+```ts
+  it('appends a groups extras after its controls, and only in that group', () => {
+    const controls = fakeControls([]);
+    const store = new ControlStore(controls);
+    const extra = document.createElement('div');
+    extra.id = 'bespoke';
+    const sheet = buildSheet({ controls, store, tabs: TABS, extras: { look: [extra] } });
+    sheet.render(GLOBE);
+    expect(sheet.element.querySelector('#bespoke')).toBeNull(); // layers tab is active
+    sheet.setTab('look');
+    expect(sheet.element.querySelector('#bespoke')).toBe(extra);
+  });
+```
+
+- [ ] **Step 6: Wire it through the console and main**
+
+`buildConsoleUi`'s options gain `extras?: Partial<Record<GroupId, HTMLElement[]>>`,
+passed straight through to `buildSheet`. It also returns the field so `main.ts`
+can drive it.
+
+In `src/main.ts`: build the field, pass it as the `time` group's extra, and jump
+on submit. The conversion is the old HUD's, unchanged — the UI is 1-based, the
+engine 0-based:
+
+```ts
+  // The date field is bespoke chrome in the Time tab (Task 8b). Its jump path
+  // is the old HUD's `onDateJump`, verbatim: 1-based in, 0-based to the engine.
+  const dateField = buildDateField({
+    onJump: (year, dayOfYear) => {
+      day = rawDateToDay(year - 1, dayOfYear - 1, system.world.yearDays);
+      playStartMs = performance.now();
+      dayAtPlayStart = day;
+      consoleUi.transport.setDay(day % system.world.yearDays);
+      updateDateLine();
+      renderFrame();
+      syncUrl(true);
+    },
+  });
+```
+
+`rawDateToDay` is already imported by `main.ts`? Check — Task 8's review noted it
+became unused. Re-import from `./time/calendar` if the import was dropped.
+
+Keep the field's displayed value current wherever `updateDateLine()` runs, using
+`dayToRawDate(day, system.world.yearDays)` and adding 1 to each component.
+
+- [ ] **Step 7: Run the gate**
+
+Run: `npm test` then `npm run build`, FOREGROUND, `timeout: 900000`.
+Expected: PASS. Do not run e2e — expected broken until Task 10.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -F - <<'MSG'
+feat(the-console): the date field, and the sheet's extras seam
+
+Restores the other spec requirement the plan omitted: the old HUD's
+Y/day jump went out with hud.ts and nothing replaced it, so reaching
+year 412 was impossible — the scrubber only moves within one year.
+
+Bespoke chrome, not a control kind: text entry needs parsing, an
+invalid state, and lenient separators, none of which the four kinds
+model. It reaches the Time tab through a new `extras` seam on the
+sheet, which appends opaque caller-supplied nodes after a group's
+controls — the sheet still knows nothing about what they are.
+
+The parser is a pure function so the leniency is actually tested:
+"Year 3, day 214" copied out of the status bar round-trips, while
+junk refuses rather than guessing.
+MSG
 ```
 
 ---
