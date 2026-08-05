@@ -2,10 +2,10 @@ name: Deploy
 on:
   push:
     branches: [main]
-  # The gate (build job) also runs on PRs into main, so a branch can be
-  # adjudicated before merge — notably `npm run e2e`, which is timeout-
-  # marginal on a loaded dev box and needs a clean runner to be trusted.
-  # Deployment stays main-only; see the `if` on the deploy job.
+  # The gate (build + e2e) also runs on PRs into main, so a branch can be
+  # adjudicated before merge — notably `npm run e2e`, which is timeout-marginal
+  # on a loaded dev box and needs a clean runner to be trusted. Deployment
+  # stays main-only; see the `if` on the deploy job.
   pull_request:
     branches: [main]
 permissions:
@@ -13,12 +13,13 @@ permissions:
   pages: write
   id-token: write
 jobs:
+  # The fast half of the gate, and the only job that produces the artifact.
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
-        with: { node-version: 22 }
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       # Fetch the catalog binary BEFORE the tests: the contract tests
       # (catalogFixture, climate equivalence) drive the real vendored
@@ -28,12 +29,56 @@ jobs:
       - run: npm test
       - run: npm run smoke
       - run: npm run build -- --base=/orrery/
-      - run: npx playwright install --with-deps chromium
-      - run: npm run e2e
       - uses: actions/upload-pages-artifact@v5
         with: { path: dist }
+
+  # The slow half, split across runners.
+  #
+  # Run serially this suite took ~21 minutes on a 2-core runner and the
+  # marginal specs began timing out — not because the runner cannot execute
+  # them, but because they were queued behind twenty minutes of contention.
+  # The two failures were `waitForGlobeIdle`'s 90 s drain and a canvas
+  # stability screenshot: both timing-sensitive, both passing in isolation.
+  # Sharding gives each group a fresh runner — ~5 tests, ~6 minutes, parallel.
+  #
+  # This is free: orrery is public, so Actions minutes are unlimited and the
+  # concurrency cap is far above four.
+  #
+  # Test-level (rather than file-level) splitting requires `fullyParallel:
+  # true` in playwright.config.ts. 16 of the 18 tests live in smoke.spec.ts, so
+  # without it shard 1 takes all 18 and the other three idle — verified with
+  # `--shard=1/4 --list` before this job was written.
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every shard. One failure should not hide whether the others
+      # were healthy — that contrast is most of the diagnosis for a flake.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      # e2e serves the real production shape and the app fetches the catalog at
+      # runtime, so the wasm must be in place before the build here too — not
+      # only before the unit tests in the build job.
+      - run: npm run wasm:release
+      - run: npm run build -- --base=/orrery/
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e -- --shard=${{ matrix.shard }}/4
+      # Keep a failing shard's traces and screenshots. A timing failure is
+      # near-impossible to diagnose from a log line alone.
+      - if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report-shard-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 7
+
   deploy:
-    needs: build
+    needs: [build, e2e]
     # Never deploy from a PR run — only a push that landed on main.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
